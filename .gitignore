@@ -15,3 +15,7 @@ Thumbs.db
 # Editor
 .idea/
 .vscode/
+/.env
+/prompt.txt
+/.claude
+/wp-health-check.prompt

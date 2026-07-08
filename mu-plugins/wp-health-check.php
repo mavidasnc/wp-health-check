@@ -67,7 +67,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_GH_REPO' ) ) {
  * firma (comportamento sicuro "fail closed", non "fail open").
  */
 if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY' ) ) {
-	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY', '' );
+	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY', 'uXzoP9VTpihQ1ipNUMCwITN9wKmJV/VFuYxms5Tt0CE=' );
 }
 
 // -----------------------------------------------------------------------
@@ -431,9 +431,9 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 
 	$signature_valid = false;
 	if (
-		false !== $pubkey_raw && false !== $signature_raw &&
-		SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES === strlen( $pubkey_raw ) &&
-		SODIUM_CRYPTO_SIGN_BYTES === strlen( $signature_raw )
+		false !== $pubkey_raw && false !== $signature_raw
+		&& SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES === strlen( $pubkey_raw )
+		&& SODIUM_CRYPTO_SIGN_BYTES === strlen( $signature_raw )
 	) {
 		try {
 			$signature_valid = sodium_crypto_sign_verify_detached( $signature_raw, $message, $pubkey_raw );
@@ -912,12 +912,14 @@ function wphc_route_update( WP_REST_Request $request ) {
 
 	if ( null === $asset_url ) {
 		@unlink( $test_file );
+
 		return new WP_Error( 'wphc_update_asset_missing', __( 'Asset wp-health-check.php non trovato nella release.', 'wp-health-check' ), array( 'status' => 502 ) );
 	}
 
 	$download = wp_remote_get( $asset_url, array( 'timeout' => 30 ) );
 	if ( is_wp_error( $download ) || 200 !== (int) wp_remote_retrieve_response_code( $download ) ) {
 		@unlink( $test_file );
+
 		return new WP_Error( 'wphc_update_download_failed', __( 'Impossibile scaricare il nuovo file del plugin.', 'wp-health-check' ), array( 'status' => 502 ) );
 	}
 	$new_contents = wp_remote_retrieve_body( $download );
@@ -947,7 +949,9 @@ function wphc_route_update( WP_REST_Request $request ) {
 		$integrity_ok = false;
 	} elseif ( 0 !== strpos( $new_contents, '<?php' ) ) {
 		$integrity_ok = false;
-	} elseif ( false === strpos( $new_contents, 'Version: ' . $latest_tag ) ) {
+	} elseif ( ! preg_match( '/Version:\s+' . preg_quote( $latest_tag, '/' ) . '(?:\s|$)/', $new_contents ) ) {
+		// L'header del plugin allinea i campi con spazi multipli (es. "Version:     1.0.0"),
+		// quindi il confronto non puo' cercare un singolo spazio letterale dopo "Version:".
 		$integrity_ok = false;
 	} elseif ( empty( $expected_sha256 ) || ! hash_equals( $expected_sha256, hash( 'sha256', $new_contents ) ) ) {
 		$integrity_ok = false;
@@ -955,6 +959,7 @@ function wphc_route_update( WP_REST_Request $request ) {
 
 	if ( ! $integrity_ok ) {
 		@unlink( $test_file );
+
 		return rest_ensure_response(
 			array(
 				'updated' => false,
@@ -968,6 +973,7 @@ function wphc_route_update( WP_REST_Request $request ) {
 	$backup_file = $plugin_file . '.bak';
 	if ( false === @copy( $plugin_file, $backup_file ) ) {
 		@unlink( $test_file );
+
 		return new WP_Error( 'wphc_update_backup_failed', __( 'Impossibile creare il backup prima di aggiornare.', 'wp-health-check' ), array( 'status' => 500 ) );
 	}
 
@@ -983,6 +989,7 @@ function wphc_route_update( WP_REST_Request $request ) {
 	if ( false === @file_put_contents( $tmp_file, $new_contents ) || false === @rename( $tmp_file, $plugin_file ) ) {
 		@unlink( $tmp_file );
 		@unlink( $test_file );
+
 		return new WP_Error( 'wphc_update_write_failed', __( 'Scrittura del nuovo file fallita.', 'wp-health-check' ), array( 'status' => 500 ) );
 	}
 
@@ -992,6 +999,7 @@ function wphc_route_update( WP_REST_Request $request ) {
 	if ( false === $written_contents || '' === $written_contents || 0 !== strpos( $written_contents, '<?php' ) ) {
 		@copy( $backup_file, $plugin_file );
 		@unlink( $test_file );
+
 		return new WP_Error( 'wphc_update_sanity_failed', __( 'Verifica post-scrittura fallita: ripristinato il backup precedente.', 'wp-health-check' ), array( 'status' => 500 ) );
 	}
 	// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
@@ -1025,7 +1033,6 @@ function wphc_route_update( WP_REST_Request $request ) {
 // -----------------------------------------------------------------------
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
-
 	/**
 	 * Comandi WP-CLI del fleet agent wp-health-check.
 	 *
