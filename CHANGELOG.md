@@ -7,6 +7,14 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-08
+
+### Changed
+
+- `POST /update` torna protetta dal bearer token (`wphc_require_token`), come
+  le altre rotte dati. Era stata resa temporaneamente pubblica nella 1.1.0 per
+  sbloccare i test da un'app/dashboard in sviluppo locale.
+
 ## [1.1.0] - 2026-07-08
 
 ### Added
@@ -55,6 +63,7 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mavidasnc/wp-health-check/releases/tag/v1.0.0

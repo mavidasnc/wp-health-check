@@ -1,0 +1,55 @@
+### WP Health Check — richieste di test per le rotte REST del fleet agent.
+#
+# Compatibile con l'estensione "REST Client" di VS Code e con l'HTTP Client
+# integrato in JetBrains/PhpStorm: apri il file e clicca "Send Request" sopra
+# ogni blocco separato da "###".
+#
+# Prima di usarlo, valorizza le variabili qui sotto. Per il sito locale via
+# wp-env: baseUrl = http://localhost:8888 (porta di default, vedi .wp-env.json
+# e "npx @wordpress/env start").
+#
+# Per test con valori REALI (token, host di un sito vero): NON modificare
+# questo file. Copialo in wp-health-check.local.http nella stessa cartella
+# (pattern escluso da git, vedi .gitignore) e valorizzalo lì.
+
+@baseUrl = http://localhost:8888
+@token = INSERISCI_IL_TOKEN_DI_ENROLLMENT
+
+### POST /enroll — bootstrap firmato (nessun token richiesto, serve la firma
+# Ed25519 del sistema centrale: vedi README.md, sezione "Il problema del
+# bootstrap e l'enroll firmato". site_url, token, issued_at e signature vanno
+# calcolati lato centro, non qui.
+POST {{baseUrl}}/wp-json/health-check/v1/enroll
+Content-Type: application/json
+
+{
+  "site_url": "{{baseUrl}}",
+  "token": "INSERISCI_TOKEN_CALCOLATO_DAL_CENTRO",
+  "dashboard_origin": null,
+  "issued_at": 1735689600,
+  "signature": "INSERISCI_FIRMA_ED25519_BASE64"
+}
+
+### GET /health — sommario economico (polling frequente)
+GET {{baseUrl}}/wp-json/health-check/v1/health
+Authorization: Bearer {{token}}
+
+### GET /health — forza refresh (bypassa la cache, esegue i check remoti core)
+GET {{baseUrl}}/wp-json/health-check/v1/health?fresh=1
+Authorization: Bearer {{token}}
+
+### GET /detail/plugins — elenco completo plugin
+GET {{baseUrl}}/wp-json/health-check/v1/detail/plugins
+Authorization: Bearer {{token}}
+
+### GET /detail/theme — tema attivo e parent
+GET {{baseUrl}}/wp-json/health-check/v1/detail/theme
+Authorization: Bearer {{token}}
+
+### GET /detail/server — ambiente server/PHP/database (cache 12h)
+GET {{baseUrl}}/wp-json/health-check/v1/detail/server
+Authorization: Bearer {{token}}
+
+### POST /update — self-update da GitHub (protetta da bearer token)
+POST {{baseUrl}}/wp-json/health-check/v1/update
+Authorization: Bearer {{token}}

@@ -19,3 +19,6 @@ Thumbs.db
 /prompt.txt
 /.claude
 /wp-health-check.prompt
+
+# File .http con valori reali (token, host) per test locali: mai da committare.
+/http/*.local.http

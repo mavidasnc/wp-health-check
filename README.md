@@ -416,19 +416,11 @@ costruzione, indipendentemente da come una futura versione del core li chiami.
 
 Vedi la sezione dedicata [Self-update](#self-update-flusso-passo-per-passo).
 
-> **Stato TEMPORANEO:** a differenza delle altre rotte dati, `/update` è
-> attualmente **pubblica** (`permission_callback` a `__return_true`,
-> nessun controllo del bearer token), per sbloccare le chiamate dirette da
-> un'app/dashboard in sviluppo locale. È una scelta di progetto reversibile,
-> non definitiva: va ripristinato `wphc_require_token` come
-> `permission_callback` non appena il flusso di autenticazione bearer sarà di
-> nuovo attivo lato dashboard. Finché resta pubblica, chiunque conosca l'URL
-> del sito può innescare un self-update (comunque verificato via SHA-256 e
-> coerenza di versione, mai in grado di eseguire codice arbitrario non
-> pubblicato sul repository GitHub configurato).
+Protetta dal token, come `/health` e `/detail/*`.
 
 ```bash
-curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update'
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
 ```
 
 Risposte possibili:
@@ -448,8 +440,8 @@ Risposte possibili:
 
 ## Tracciamento accessi
 
-A ogni richiesta dati riuscita (`/health`, `/detail/*`, `/update`) il plugin
-registra:
+A ogni richiesta dati autenticata con successo (`/health`, `/detail/*`, `/update`)
+il plugin registra:
 
 - `wp_health_check_last_request_at`: timestamp ISO 8601;
 - `wp_health_check_last_request_ip`: IP del chiamante.
@@ -598,13 +590,6 @@ browser stesso, come difesa in profondità aggiuntiva rispetto
 all'autenticazione a token.
 
 ## Considerazioni e limiti di sicurezza
-
-> **`/update` è temporaneamente pubblica** (vedi la nota nella sezione
-> [Rotte REST](#post-update--self-update-da-github)): finché resta in questo
-> stato, il punto 2 di "Scenario account GitHub compromesso" più sotto non
-> vale più, perché innescare l'update non richiede più il token del sito.
-> L'unica difesa residua per `/update` in questo stato è la verifica di
-> integrità (sha256 + coerenza versione) sul contenuto scaricato da GitHub.
 
 **Raggio d'azione di una compromissione del token.** Il token di un sito da
 accesso in lettura ai dati di quel sito e alla possibilità di innescarne il
