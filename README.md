@@ -617,6 +617,19 @@ Le richieste `OPTIONS` (preflight del browser) vengono intercettate a livello di
 normale: rispondono `200` con i soli header CORS, **senza autenticazione** — il
 preflight del browser non include mai `Authorization`.
 
+**Il default del core REST API di WordPress viene neutralizzato per questo
+namespace.** WordPress registra di serie `rest_send_cors_headers()` su
+`rest_pre_serve_request`, che per *qualunque* rotta REST riflette *qualunque*
+`Origin` con `Access-Control-Allow-Credentials: true` — un comportamento
+molto più permissivo di quello di questo plugin, e che girerebbe *dopo* la
+nostra logica (vanificandola, perché `header()` sostituisce di default un
+header già impostato con lo stesso nome). Per questo
+`wphc_maybe_send_cors_headers()` viene richiamata una seconda volta su
+`rest_pre_serve_request` stesso (priorità 20, dopo il 10 di default del
+core, solo per le rotte di `health-check/v1`), rimuovendo prima qualunque
+header CORS già impostato: è questa seconda chiamata ad avere sempre
+l'ultima parola.
+
 ## Considerazioni e limiti di sicurezza
 
 **Raggio d'azione di una compromissione del token.** Il token di un sito da

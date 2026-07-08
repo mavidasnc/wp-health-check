@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.5.0
+ * Version:     1.6.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.5.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.6.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -249,15 +249,27 @@ function wphc_is_valid_origin( $value ) {
  * Ed25519 (vedi wphc_require_token()): CORS qui e' difesa in profondita'
  * aggiuntiva, non il controllo di accesso primario.
  *
- * IMPORTANTE: dice ANCHE a WordPress (e ai plugin di page-cache come
- * LiteSpeed Cache, WP Super Cache, W3TC, WP Rocket...) di non mettere mai in
- * cache questa risposta. Senza questo, una cache condivisa lato server puo'
- * salvare la risposta di UN chiamante (con il SUO Origin, o senza Origin
- * affatto) e riservirla identica a chiunque altro, ignorando sia l'Origin
- * reale del richiedente sia il bearer token: e' esattamente la causa di
- * risposte CORS incoerenti osservate in produzione dietro LiteSpeed Cache.
- * La cache "propria" del plugin resta quella via transient nelle singole
- * rotte (vedi Caching per-rotta in README.md), non influenzata da questo.
+ * IMPORTANTE #1 (cache): dice ANCHE a WordPress (e ai plugin di page-cache
+ * come LiteSpeed Cache, WP Super Cache, W3TC, WP Rocket...) di non mettere
+ * mai in cache questa risposta. Senza questo, una cache condivisa lato
+ * server puo' salvare la risposta di UN chiamante (con il SUO Origin, o
+ * senza Origin affatto) e riservirla identica a chiunque altro, ignorando
+ * sia l'Origin reale del richiedente sia il bearer token: e' esattamente
+ * la causa di risposte CORS incoerenti osservate in produzione dietro
+ * LiteSpeed Cache. La cache "propria" del plugin resta quella via
+ * transient nelle singole rotte (vedi Caching per-rotta in README.md), non
+ * influenzata da questo.
+ *
+ * IMPORTANTE #2 (default del core): WordPress core registra di serie
+ * rest_send_cors_headers() sul filtro rest_pre_serve_request, che riflette
+ * QUALUNQUE Origin con Access-Control-Allow-Credentials: true, per l'intera
+ * REST API. Quel filtro gira DOPO il dispatch della rotta (quindi dopo la
+ * prima chiamata a questa funzione), e header() di PHP sostituisce di
+ * default un header con lo stesso nome: senza rimuovere prima gli header
+ * eventualmente gia' impostati dal core, la restrizione su
+ * wp_health_check_dashboard_origin sarebbe vanificata. Per questo la
+ * funzione va richiamata una seconda volta, con priorita' piu' alta, su
+ * rest_pre_serve_request stesso: vedi wphc_reassert_cors_headers().
  */
 function wphc_maybe_send_cors_headers() {
 	if ( ! defined( 'DONOTCACHEPAGE' ) ) {
@@ -268,6 +280,15 @@ function wphc_maybe_send_cors_headers() {
 		define( 'DONOTCACHEPAGE', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
 	}
 	nocache_headers();
+
+	// Rimuove eventuali header CORS gia' impostati (tipicamente dal
+	// rest_send_cors_headers() di default del core, vedi sopra): questa
+	// funzione deve avere sempre l'ultima parola su questi header.
+	header_remove( 'Access-Control-Allow-Origin' );
+	header_remove( 'Access-Control-Allow-Credentials' );
+	header_remove( 'Access-Control-Allow-Methods' );
+	header_remove( 'Access-Control-Allow-Headers' );
+	header_remove( 'Access-Control-Expose-Headers' );
 
 	$request_origin = isset( $_SERVER['HTTP_ORIGIN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_ORIGIN'] ) ) : '';
 	if ( '' === $request_origin ) {
@@ -286,6 +307,33 @@ function wphc_maybe_send_cors_headers() {
 	// risposta CORS di un'origin ad un'altra origin diversa.
 	header( 'Vary: Origin' );
 }
+
+/**
+ * Riapplica wphc_maybe_send_cors_headers() su rest_pre_serve_request, con
+ * priorita' piu' alta del rest_send_cors_headers() di default del core
+ * (priorita' 10): senza questo, il comportamento permissivo del core
+ * (qualunque Origin, con credenziali) vincerebbe sempre sulle regole di
+ * wp_health_check_dashboard_origin, perche' gira dopo il dispatch della
+ * rotta. Limitata al solo namespace health-check/v1, per non interferire
+ * con le altre rotte REST del sito.
+ *
+ * @param bool            $served  Valore corrente del filtro (non alterato).
+ * @param mixed           $result  Risultato della richiesta (non usato).
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return bool Il valore $served invariato.
+ */
+function wphc_reassert_cors_headers( $served, $result, $request ) {
+	unset( $result );
+
+	if ( 0 !== strpos( $request->get_route(), '/health-check/v1' ) ) {
+		return $served;
+	}
+
+	wphc_maybe_send_cors_headers();
+
+	return $served;
+}
+add_filter( 'rest_pre_serve_request', 'wphc_reassert_cors_headers', 20, 3 );
 
 /**
  * Intercetta le richieste OPTIONS (preflight CORS) dirette al namespace

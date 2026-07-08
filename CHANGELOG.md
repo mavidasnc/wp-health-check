@@ -7,6 +7,19 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-08
+
+### Fixed
+
+- Il default del core REST API di WordPress (`rest_send_cors_headers()`, che
+  riflette qualunque `Origin` con `Access-Control-Allow-Credentials: true`
+  per l'intera REST API) girava dopo la logica di questo plugin e la
+  sovrascriveva, vanificando di fatto la restrizione su
+  `wp_health_check_dashboard_origin`. `wphc_maybe_send_cors_headers()` viene
+  ora richiamata una seconda volta su `rest_pre_serve_request` (priorità 20,
+  dopo il 10 di default del core), limitata al namespace `health-check/v1`,
+  rimuovendo prima qualunque header CORS già impostato dal core.
+
 ## [1.5.0] - 2026-07-08
 
 ### Fixed
@@ -102,7 +115,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...v1.3.0
