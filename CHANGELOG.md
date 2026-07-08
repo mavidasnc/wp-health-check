@@ -7,6 +7,22 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-08
+
+### Fixed
+
+- `GET /health` riportava sempre `plugins_updates: 0`, `themes_updates: 0` e
+  `core_update: false` anche con aggiornamenti realmente disponibili
+  (osservato in produzione: `/detail/plugins` mostrava correttamente un
+  aggiornamento disponibile per lo stesso sito). Causa: i conteggi di
+  `wp_get_update_data()` sono condizionati da
+  `current_user_can( 'update_plugins'/'update_themes'/'update_core' )`, che
+  in questa rotta vale sempre `false` — l'autenticazione è il bearer token,
+  non una sessione utente WordPress. Ora i conteggi vengono letti
+  direttamente dagli stessi transient di update mantenuti dal cron
+  (`update_plugins`, `update_themes`, `get_core_updates()`), con la stessa
+  logica di `wp_get_update_data()` ma senza il controllo di capability.
+
 ## [1.6.0] - 2026-07-08
 
 ### Fixed
@@ -115,7 +131,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...v1.4.0

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.6.0
+ * Version:     1.7.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.6.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.7.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -636,12 +636,34 @@ function wphc_route_health( WP_REST_Request $request ) {
 	$all_plugins    = get_plugins();
 	$active_plugins = (array) get_option( 'active_plugins', array() );
 
-	// wp_get_update_data() legge dai transient di update gia' mantenuti
-	// dal cron: nessuna chiamata remota qui, coerente col contratto.
-	$update_data = wp_get_update_data();
-
+	// NON wp_get_update_data(): i suoi conteggi sono condizionati da
+	// current_user_can( 'update_plugins'/'update_themes'/'update_core' ),
+	// che in questa rotta vale sempre false (nessun utente WP loggato:
+	// l'autenticazione qui e' il bearer token, non una sessione utente),
+	// quindi restituirebbe sempre 0/false anche con aggiornamenti
+	// realmente disponibili — bug osservato in produzione: /detail/plugins
+	// (che usa get_plugin_updates(), senza alcun controllo di capability)
+	// mostrava correttamente un aggiornamento disponibile, mentre /health
+	// riportava plugins_updates: 0 per lo stesso sito. Si leggono quindi
+	// direttamente gli stessi transient di update gia' mantenuti dal cron,
+	// con la stessa logica di conteggio di wp_get_update_data() ma senza
+	// il controllo di capability.
 	$update_plugins_transient = get_site_transient( 'update_plugins' );
-	$updates_checked_at       = ( is_object( $update_plugins_transient ) && ! empty( $update_plugins_transient->last_checked ) )
+	$plugins_updates_count    = ( is_object( $update_plugins_transient ) && ! empty( $update_plugins_transient->response ) )
+		? count( $update_plugins_transient->response )
+		: 0;
+
+	$update_themes_transient = get_site_transient( 'update_themes' );
+	$themes_updates_count    = ( is_object( $update_themes_transient ) && ! empty( $update_themes_transient->response ) )
+		? count( $update_themes_transient->response )
+		: 0;
+
+	$core_updates          = get_core_updates( array( 'dismissed' => false ) );
+	$core_update_available = is_array( $core_updates )
+		&& isset( $core_updates[0]->response )
+		&& ! in_array( $core_updates[0]->response, array( 'development', 'latest' ), true );
+
+	$updates_checked_at = ( is_object( $update_plugins_transient ) && ! empty( $update_plugins_transient->last_checked ) )
 		? gmdate( 'c', (int) $update_plugins_transient->last_checked )
 		: null;
 
@@ -655,9 +677,9 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'plugin_version'     => WP_HEALTH_CHECK_VERSION,
 			'plugins_total'      => count( $all_plugins ),
 			'plugins_active'     => count( $active_plugins ),
-			'plugins_updates'    => (int) $update_data['counts']['plugins'],
-			'themes_updates'     => (int) $update_data['counts']['themes'],
-			'core_update'        => $update_data['counts']['wordpress'] > 0,
+			'plugins_updates'    => $plugins_updates_count,
+			'themes_updates'     => $themes_updates_count,
+			'core_update'        => $core_update_available,
 			'mu_dir_writable'    => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at' => $updates_checked_at,
 		),
