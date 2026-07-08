@@ -7,6 +7,27 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-08
+
+### Added
+
+- Campo `plugin_version` nel `summary` di `GET /health`, accanto a `wp_version`
+  e `php_version`.
+
+### Changed
+
+- `POST /update` è temporaneamente pubblica (nessun controllo bearer token),
+  per sbloccare le chiamate dirette da un'app/dashboard in sviluppo locale.
+  Va ripristinata l'autenticazione a token non appena il flusso bearer sarà
+  di nuovo attivo lato dashboard (vedi nota nel README).
+
+### Fixed
+
+- `GET /detail/server` poteva rispondere `500` se `WP_Debug_Data::debug_data()`
+  lanciava un'eccezione diversa da `ImagickException` durante l'introspezione
+  dell'ambiente server (es. su alcuni host). Il catch ora copre `Throwable` in
+  generale: la rotta non fallisce più, prosegue senza quella sezione.
+
 ## [1.0.0] - 2026-07-08
 
 ### Added
@@ -34,5 +55,6 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mavidasnc/wp-health-check/releases/tag/v1.0.0

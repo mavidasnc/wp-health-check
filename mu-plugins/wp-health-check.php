@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.0.0
+ * Version:     1.1.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.0.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.1.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -375,7 +375,11 @@ function wphc_register_routes() {
 		array(
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => 'wphc_route_update',
-			'permission_callback' => 'wphc_require_token',
+			// TEMPORANEO: nessun controllo di token, per sbloccare le chiamate
+			// dirette dalla dashboard/app di sviluppo in locale. Il piano e'
+			// ripristinare 'wphc_require_token' non appena il flusso di
+			// autenticazione bearer sara' di nuovo attivo lato dashboard.
+			'permission_callback' => '__return_true',
 		)
 	);
 }
@@ -536,6 +540,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 		'summary'             => array(
 			'wp_version'         => get_bloginfo( 'version' ),
 			'php_version'        => PHP_VERSION,
+			'plugin_version'     => WP_HEALTH_CHECK_VERSION,
 			'plugins_total'      => count( $all_plugins ),
 			'plugins_active'     => count( $active_plugins ),
 			'plugins_updates'    => (int) $update_data['counts']['plugins'],
@@ -733,13 +738,15 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 
 	try {
 		$debug_data = WP_Debug_Data::debug_data();
-	} catch ( ImagickException $e ) {
-		// Imagick puo' lanciare eccezioni durante l'introspezione (es.
-		// delegate mancanti sull'host): non deve far fallire l'intera
-		// rotta, si prosegue semplicemente senza quella sezione.
+	} catch ( Throwable $e ) {
+		// WP_Debug_Data::debug_data() introspeziona l'intero ambiente
+		// (Imagick, GD, filesystem, ecc.) e su alcuni host puo' lanciare
+		// eccezioni impreviste durante quell'introspezione: non deve far
+		// fallire l'intera rotta con un 500, si prosegue semplicemente
+		// senza quella sezione (i campi restano con i fallback sotto).
 		$debug_data = array();
 		if ( WP_DEBUG ) {
-			error_log( 'wp-health-check: ImagickException in debug_data(): ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			error_log( 'wp-health-check: eccezione in debug_data(): ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		}
 	}
 
@@ -820,9 +827,13 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 function wphc_route_update( WP_REST_Request $request ) {
 	unset( $request );
 
-	// 1. L'autenticazione e' gia' garantita dal permission_callback; qui
-	// si registra soltanto l'accesso, come richiesto per ogni chiamata
-	// dati autenticata con successo.
+	// La rotta e' TEMPORANEAMENTE pubblica (vedi wphc_register_routes()):
+	// gli header CORS non sono piu' inviati da wphc_require_token(), quindi
+	// vanno inviati esplicitamente qui, come fa wphc_route_enroll().
+	wphc_maybe_send_cors_headers();
+
+	// 1. Registra l'accesso corrente (in assenza di token non c'e' piu'
+	// un'autenticazione da verificare qui).
 	wphc_record_access();
 
 	$current_version = WP_HEALTH_CHECK_VERSION;
