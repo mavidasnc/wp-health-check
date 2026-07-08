@@ -1,0 +1,17 @@
+# Dipendenze di sviluppo (PHPCS, PHPStan, stubs) - non servono a runtime
+# composer.lock resta versionato per build riproducibili del tooling dev
+/vendor/
+
+# wp-env (Docker/wp-cli scaffolding locale)
+.wp-env-override.json
+
+# Node (se in futuro si aggiungono tool JS di sviluppo)
+/node_modules/
+
+# File di sistema
+.DS_Store
+Thumbs.db
+
+# Editor
+.idea/
+.vscode/

@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<ruleset name="wp-health-check">
+    <description>
+        Coding standards per wp-health-check. Il plugin runtime (mu-plugins/wp-health-check.php)
+        deve restare compatibile PHP 7.4+ (flotta di siti clienti eterogenea), anche se il
+        tooling di sviluppo di questo repository gira su PHP 8.1+.
+    </description>
+
+    <!-- Sorgente analizzata: solo il plugin runtime -->
+    <file>mu-plugins</file>
+    <file>bin</file>
+
+    <arg name="basepath" value="."/>
+    <arg name="colors"/>
+    <arg name="extensions" value="php"/>
+    <arg value="sp"/>
+
+    <!-- WordPress Coding Standards -->
+    <rule ref="WordPress-Extra">
+        <!-- Il plugin usa nomi di funzione con prefisso wphc_ invece del prefisso plugin-slug
+             completo: e' una scelta esplicita del prompt di progetto, non un refuso. -->
+        <exclude name="WordPress.NamingConventions.PrefixAllGlobals.ShortPrefixPassed"/>
+
+        <!-- Vincolo architetturale del progetto: file singolo autoconsistente (WordPress
+             carica solo i .php nella radice di mu-plugins). La classe WPHC_CLI_Command
+             (comando WP-CLI) convive quindi nello stesso file delle funzioni di rotta:
+             non e' una svista, e' l'unica struttura compatibile col vincolo. -->
+        <exclude name="Universal.Files.SeparateFunctionsFromOO.Mixed"/>
+
+        <!-- base64_decode() qui decodifica chiavi pubbliche e firme Ed25519 (dati
+             crittografici in transito), non offusca codice: uso legittimo. -->
+        <exclude name="WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode"/>
+    </rule>
+    <rule ref="WordPress-Docs"/>
+
+    <!-- Compatibilita' PHP: il runtime deve funzionare da 7.4 in su (vincolo esplicito
+         di progetto), indipendentemente dalla versione PHP usata in sviluppo. -->
+    <config name="testVersion" value="7.4-"/>
+    <rule ref="PHPCompatibilityWP"/>
+
+    <!-- Prefissi opzioni/transient/funzioni previsti dal progetto -->
+    <rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+        <properties>
+            <property name="prefixes" type="array">
+                <element value="wphc"/>
+                <element value="WP_HEALTH_CHECK"/>
+            </property>
+        </properties>
+    </rule>
+
+    <rule ref="WordPress.Files.FileName">
+        <properties>
+            <!-- bin/generate-keys.php e' uno script CLI, non una classe -->
+            <property name="strict_class_file_names" value="false"/>
+        </properties>
+    </rule>
+
+</ruleset>

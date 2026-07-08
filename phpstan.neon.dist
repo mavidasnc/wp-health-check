@@ -1,0 +1,9 @@
+parameters:
+    level: 5
+    paths:
+        - mu-plugins
+        - bin
+    scanFiles:
+        # WP-CLI non fa parte del core WordPress: la classe WP_CLI, usata solo
+        # dentro il branch defined('WP_CLI') && WP_CLI, va scansionata a parte.
+        - vendor/php-stubs/wp-cli-stubs/wp-cli-stubs.php
