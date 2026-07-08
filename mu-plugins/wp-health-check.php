@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.4.0
+ * Version:     1.5.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.4.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.5.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -248,8 +248,27 @@ function wphc_is_valid_origin( $value ) {
  * L'autenticazione resta comunque affidata al bearer token o alla firma
  * Ed25519 (vedi wphc_require_token()): CORS qui e' difesa in profondita'
  * aggiuntiva, non il controllo di accesso primario.
+ *
+ * IMPORTANTE: dice ANCHE a WordPress (e ai plugin di page-cache come
+ * LiteSpeed Cache, WP Super Cache, W3TC, WP Rocket...) di non mettere mai in
+ * cache questa risposta. Senza questo, una cache condivisa lato server puo'
+ * salvare la risposta di UN chiamante (con il SUO Origin, o senza Origin
+ * affatto) e riservirla identica a chiunque altro, ignorando sia l'Origin
+ * reale del richiedente sia il bearer token: e' esattamente la causa di
+ * risposte CORS incoerenti osservate in produzione dietro LiteSpeed Cache.
+ * La cache "propria" del plugin resta quella via transient nelle singole
+ * rotte (vedi Caching per-rotta in README.md), non influenzata da questo.
  */
 function wphc_maybe_send_cors_headers() {
+	if ( ! defined( 'DONOTCACHEPAGE' ) ) {
+		// Nome imposto dalla convenzione condivisa fra i plugin di
+		// page-cache (LiteSpeed Cache, WP Super Cache, W3TC, WP Rocket...):
+		// non puo' avere il prefisso wphc_/WP_HEALTH_CHECK, o quei plugin
+		// non lo riconoscerebbero piu'.
+		define( 'DONOTCACHEPAGE', true ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedConstantFound
+	}
+	nocache_headers();
+
 	$request_origin = isset( $_SERVER['HTTP_ORIGIN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_ORIGIN'] ) ) : '';
 	if ( '' === $request_origin ) {
 		return;

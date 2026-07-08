@@ -571,6 +571,23 @@ frequente diventerebbe insostenibile per il sito. Tutto ciò che è costoso vive
 esclusivamente in `/detail/server`, dietro cache lunga, o dietro `?fresh=1` quando
 serve davvero un dato fresco.
 
+**Cache "propria" via transient vs cache HTTP/edge — non vanno confuse.** Le
+righe sopra descrivono la cache applicativa del plugin (transient, letta e
+scritta in PHP). È completamente separata dalla cache HTTP lato server (es.
+LiteSpeed Cache, WP Super Cache, W3TC, WP Rocket, una CDN davanti al sito):
+quel livello **non deve mai** mettere in cache le risposte di
+`health-check/v1`, perché sono autenticate per bearer token e dipendono
+dall'`Origin` del chiamante (vedi [CORS](#cors) sotto) — una cache condivisa
+che ignori questi due fattori servirebbe la risposta di un chiamante
+(incluso l'header CORS con il SUO `Origin`) a chiunque altro. Per questo ogni
+rotta invia esplicitamente `nocache_headers()` e definisce la costante
+`DONOTCACHEPAGE` (riconosciuta dai principali plugin di page-cache), prima di
+qualunque header CORS: vedi `wphc_maybe_send_cors_headers()`. Se un sito
+sembra restituire lo stesso `Access-Control-Allow-Origin` a prescindere
+dall'`Origin` inviato, o CORS funziona in modo incoerente, il primo sospetto
+è una cache condivisa che ha già memorizzato una risposta prima di questo fix
+(serve un purge della cache lato hosting) o che ignora questi header.
+
 ## CORS
 
 Se `wp_health_check_dashboard_origin` è impostata (dall'enroll) e l'header

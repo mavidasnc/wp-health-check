@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-08
+
+### Fixed
+
+- Le rotte di `health-check/v1` ora impediscono esplicitamente la cache
+  HTTP/edge lato server (`nocache_headers()` + costante `DONOTCACHEPAGE`),
+  inviati da `wphc_maybe_send_cors_headers()` prima di qualunque header CORS.
+  Senza questo, un plugin di page-cache (es. LiteSpeed Cache) poteva mettere
+  in cache l'intera risposta — inclusi gli header CORS legati all'`Origin`
+  del chiamante — e riservirla identica a chiunque altro, causando errori
+  CORS incoerenti in produzione (osservato dietro LiteSpeed Cache: lo stesso
+  `Access-Control-Allow-Origin` restituito a prescindere dall'`Origin`
+  inviato). La cache applicativa via transient del plugin non è interessata
+  da questo fix, resta invariata.
+
 ## [1.4.0] - 2026-07-08
 
 ### Added
@@ -87,7 +102,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...v1.2.0
