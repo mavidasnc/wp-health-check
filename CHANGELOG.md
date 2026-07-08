@@ -7,6 +7,19 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-08
+
+### Added
+
+- Nuova tab "WP Health Check" in Strumenti → Salute del sito (via
+  `site_health_navigation_tabs`/`site_health_tab_content`, disponibili da
+  WordPress 5.8), visibile solo a chi ha `manage_options`: versione plugin,
+  repository GitHub configurato, stato enrollment, ultimo accesso, stato
+  `trust_proxy`, campo per leggere/modificare `wp_health_check_dashboard_origin`
+  e pulsante di reset enrollment (equivalente a `wp health-check reset`).
+- Funzione condivisa `wphc_reset_enrollment()`, usata sia dal comando WP-CLI
+  sia dal nuovo pulsante di reset nella tab Site Health.
+
 ## [1.3.0] - 2026-07-08
 
 ### Changed
@@ -74,7 +87,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.0.0...v1.1.0

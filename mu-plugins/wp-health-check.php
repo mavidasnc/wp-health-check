@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.3.0
+ * Version:     1.4.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.3.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.4.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -186,6 +186,49 @@ function wphc_build_enroll_signing_payload( $site_url, $token, $dashboard_origin
 	$origin_component = null === $dashboard_origin ? '' : (string) $dashboard_origin;
 
 	return $site_url . "\n" . $token . "\n" . $origin_component . "\n" . (string) $issued_at;
+}
+
+/**
+ * Cancella tutte le opzioni di enrollment di questo sito. Condivisa dal
+ * comando WP-CLI "wp health-check reset" e dal pulsante di reset nella tab
+ * Site Health: un'unica lista di opzioni, per evitare che le due strade
+ * finiscano per disallinearsi nel tempo.
+ */
+function wphc_reset_enrollment() {
+	$options = array(
+		'wp_health_check_token',
+		'wp_health_check_dashboard_origin',
+		'wp_health_check_enrolled_at',
+		'wp_health_check_enrolled_ip',
+		'wp_health_check_enroll_issued_at',
+		'wp_health_check_last_request_at',
+		'wp_health_check_last_request_ip',
+	);
+	foreach ( $options as $option_name ) {
+		delete_option( $option_name );
+	}
+}
+
+/**
+ * Verifica che una stringa sia un origin HTTP(S) valido: schema http/https,
+ * host presente, nessun path/query/frammento (un origin non li contempla).
+ * Usata per validare il valore inserito manualmente nella tab Site Health,
+ * prima di salvarlo in wp_health_check_dashboard_origin.
+ *
+ * @param string $value Valore da validare.
+ * @return bool True se e' un origin valido.
+ */
+function wphc_is_valid_origin( $value ) {
+	$parts = wp_parse_url( $value );
+
+	if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
+		return false;
+	}
+	if ( ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
+		return false;
+	}
+
+	return empty( $parts['path'] ) && empty( $parts['query'] ) && empty( $parts['fragment'] );
 }
 
 // -----------------------------------------------------------------------
@@ -1038,6 +1081,206 @@ function wphc_route_update( WP_REST_Request $request ) {
 }
 
 // -----------------------------------------------------------------------
+// TAB SITE HEALTH: stato e configurazione da wp-admin
+// -----------------------------------------------------------------------
+//
+// Aggiunge una tab dedicata in Strumenti -> Salute del sito (disponibile
+// da WordPress 5.8 via i filtri/azioni site_health_navigation_tabs e
+// site_health_tab_content), visibile solo a chi puo' manage_options: a
+// differenza della tab "Informazioni" (sola lettura, alimentata dal filtro
+// debug_information), qui si puo' anche MODIFICARE wp_health_check_dashboard_origin
+// e resettare l'enrollment, quindi il controllo di accesso e' piu' stretto
+// della sola capacita' di visualizzare la Salute del sito.
+
+/**
+ * Registra la tab "WP Health Check" nella pagina Salute del sito.
+ *
+ * @param array<string,string> $tabs Tab gia' registrate (slug => etichetta).
+ * @return array<string,string> Tab con l'eventuale aggiunta.
+ */
+function wphc_register_site_health_tab( $tabs ) {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		return $tabs;
+	}
+
+	$tabs['wp-health-check'] = __( 'WP Health Check', 'wp-health-check' );
+
+	return $tabs;
+}
+add_filter( 'site_health_navigation_tabs', 'wphc_register_site_health_tab' );
+
+/**
+ * Renderizza il contenuto della tab "WP Health Check": versione del plugin,
+ * stato di enrollment, ultimo accesso, form per modificare
+ * wp_health_check_dashboard_origin e pulsante di reset dell'enrollment.
+ *
+ * @param string $tab Slug della tab richiesta.
+ */
+function wphc_render_site_health_tab( $tab ) {
+	if ( 'wp-health-check' !== $tab || ! current_user_can( 'manage_options' ) ) {
+		return;
+	}
+
+	$dashboard_origin = (string) get_option( 'wp_health_check_dashboard_origin', '' );
+	$is_enrolled      = ! empty( get_option( 'wp_health_check_token' ) );
+	$enrolled_at      = get_option( 'wp_health_check_enrolled_at' );
+	$enrolled_ip      = get_option( 'wp_health_check_enrolled_ip' );
+	$last_request_at  = get_option( 'wp_health_check_last_request_at' );
+	$last_request_ip  = get_option( 'wp_health_check_last_request_ip' );
+	$trust_proxy      = (bool) get_option( 'wp_health_check_trust_proxy', false );
+	?>
+	<div class="health-check-body health-check-wp-health-check-tab hide-if-no-js">
+		<h2><?php esc_html_e( 'WP Health Check — Fleet Agent', 'wp-health-check' ); ?></h2>
+
+		<?php if ( isset( $_GET['wphc_saved'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- solo un flag di stato per il messaggio, nessuna azione eseguita qui. ?>
+			<div class="notice notice-success"><p><?php esc_html_e( 'Origin della dashboard aggiornata.', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_error'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-error"><p><?php esc_html_e( 'Origin non valida: deve essere nella forma schema://host[:porta], senza percorso (es. https://dashboard.esempio.com).', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_reset'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success"><p><?php esc_html_e( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".', 'wp-health-check' ); ?></p></div>
+		<?php endif; ?>
+
+		<table class="widefat striped" style="max-width: 800px;">
+			<tbody>
+				<tr>
+					<td><?php esc_html_e( 'Versione plugin', 'wp-health-check' ); ?></td>
+					<td><code><?php echo esc_html( WP_HEALTH_CHECK_VERSION ); ?></code></td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Repository GitHub', 'wp-health-check' ); ?></td>
+					<td><code><?php echo esc_html( WP_HEALTH_CHECK_GH_OWNER . '/' . WP_HEALTH_CHECK_GH_REPO ); ?></code></td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Stato enrollment', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( $is_enrolled ) : ?>
+							<?php esc_html_e( 'Registrato', 'wp-health-check' ); ?>
+							<?php if ( $enrolled_at ) : ?>
+								<?php
+								printf(
+									/* translators: 1: data/ora ISO 8601 dell'enroll, 2: IP del chiamante. */
+									esc_html__( '(il %1$s da %2$s)', 'wp-health-check' ),
+									esc_html( $enrolled_at ),
+									esc_html( $enrolled_ip ? $enrolled_ip : '—' )
+								);
+								?>
+							<?php endif; ?>
+						<?php else : ?>
+							<?php esc_html_e( 'Non registrato (in attesa di /enroll)', 'wp-health-check' ); ?>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Ultimo accesso registrato', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( $last_request_at ) : ?>
+							<?php echo esc_html( $last_request_at ); ?> — <?php echo esc_html( $last_request_ip ? $last_request_ip : '—' ); ?>
+						<?php else : ?>
+							&mdash;
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Trust proxy (X-Forwarded-For)', 'wp-health-check' ); ?></td>
+					<td>
+						<?php echo $trust_proxy ? esc_html__( 'Attivo', 'wp-health-check' ) : esc_html__( 'Disattivo', 'wp-health-check' ); ?>
+						<p class="description">
+							<?php esc_html_e( 'Sola lettura qui: va attivato solo manualmente (wp option update wp_health_check_trust_proxy 1) e solo se un proxy/CDN fidato sovrascrive sempre l\'header, mai di default.', 'wp-health-check' ); ?>
+						</p>
+					</td>
+				</tr>
+			</tbody>
+		</table>
+
+		<h3><?php esc_html_e( 'Origin della dashboard', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Origin autorizzata per le richieste CORS da browser (es. https://dashboard.esempio.com). Se lasciata vuota, viene autorizzata qualunque origin.', 'wp-health-check' ); ?>
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="wphc_save_dashboard_origin" />
+			<?php wp_nonce_field( 'wphc_save_dashboard_origin' ); ?>
+			<input
+				type="url"
+				name="wphc_dashboard_origin"
+				value="<?php echo esc_attr( $dashboard_origin ); ?>"
+				class="regular-text"
+				placeholder="https://dashboard.esempio.com"
+			/>
+			<?php submit_button( __( 'Salva origin', 'wp-health-check' ), 'primary', 'submit', false ); ?>
+		</form>
+
+		<h3><?php esc_html_e( 'Reset enrollment', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Cancella token, origin della dashboard e tutti i metadati di enrollment. Il sito torna allo stato "non registrato" finche\' il sistema centrale non ripete l\'enroll. Equivalente a "wp health-check reset".', 'wp-health-check' ); ?>
+		</p>
+		<form
+			method="post"
+			action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+			onsubmit="return confirm( <?php echo wp_json_encode( __( 'Confermi il reset dell\'enrollment? Il sito restera\' non registrato finche\' il sistema centrale non ripete l\'enroll.', 'wp-health-check' ) ); ?> );"
+		>
+			<input type="hidden" name="action" value="wphc_reset_enrollment" />
+			<?php wp_nonce_field( 'wphc_reset_enrollment' ); ?>
+			<?php submit_button( __( 'Resetta enrollment', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+		</form>
+	</div>
+	<?php
+}
+add_action( 'site_health_tab_content', 'wphc_render_site_health_tab' );
+
+/**
+ * Handler di admin-post.php per il salvataggio di wp_health_check_dashboard_origin
+ * dalla tab Site Health. Valida l'origin (o accetta la stringa vuota, che
+ * riapre CORS a qualunque origin, vedi wphc_maybe_send_cors_headers()) e
+ * reindirizza alla tab con un flag di esito (pattern POST-redirect-GET).
+ */
+function wphc_handle_save_dashboard_origin() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_save_dashboard_origin' );
+
+	$origin = isset( $_POST['wphc_dashboard_origin'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['wphc_dashboard_origin'] ) ) ) : '';
+
+	$redirect_args = array( 'tab' => 'wp-health-check' );
+	if ( '' === $origin || wphc_is_valid_origin( $origin ) ) {
+		update_option( 'wp_health_check_dashboard_origin', $origin, false );
+		$redirect_args['wphc_saved'] = '1';
+	} else {
+		$redirect_args['wphc_error'] = '1';
+	}
+
+	wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'site-health.php' ) ) );
+	exit;
+}
+add_action( 'admin_post_wphc_save_dashboard_origin', 'wphc_handle_save_dashboard_origin' );
+
+/**
+ * Handler di admin-post.php per il pulsante di reset enrollment nella tab
+ * Site Health: stessa logica condivisa con "wp health-check reset"
+ * (wphc_reset_enrollment()), poi redirect alla tab (POST-redirect-GET).
+ */
+function wphc_handle_reset_enrollment() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_reset_enrollment' );
+
+	wphc_reset_enrollment();
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'        => 'wp-health-check',
+				'wphc_reset' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_reset_enrollment', 'wphc_handle_reset_enrollment' );
+
+// -----------------------------------------------------------------------
 // COMANDO WP-CLI: wp health-check reset
 // -----------------------------------------------------------------------
 
@@ -1072,18 +1315,7 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 		public function reset( $args, $assoc_args ) {
 			unset( $args, $assoc_args );
 
-			$options = array(
-				'wp_health_check_token',
-				'wp_health_check_dashboard_origin',
-				'wp_health_check_enrolled_at',
-				'wp_health_check_enrolled_ip',
-				'wp_health_check_enroll_issued_at',
-				'wp_health_check_last_request_at',
-				'wp_health_check_last_request_ip',
-			);
-			foreach ( $options as $option_name ) {
-				delete_option( $option_name );
-			}
+			wphc_reset_enrollment();
 
 			WP_CLI::success( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".' );
 		}

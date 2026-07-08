@@ -23,7 +23,8 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 11. [CORS](#cors)
 12. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
 13. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
-14. [Sviluppo locale](#sviluppo-locale)
+14. [Tab Site Health](#tab-site-health)
+15. [Sviluppo locale](#sviluppo-locale)
 
 ---
 
@@ -76,10 +77,14 @@ risolte così, per trasparenza:
    `.php` in radice): resta prioritario. L'autoload PSR-4 dichiarato in
    `composer.json` copre solo gli script di tooling del repository (es.
    `bin/generate-keys.php`), mai il plugin runtime, che non ha classi autoloaded.
-3. **SCSS/BEM.** Il plugin è headless: espone solo endpoint REST, senza alcuna
-   pagina di amministrazione o asset frontend richiesti nella specifica
-   funzionale. Non ho introdotto SCSS/CSS speculativi senza nulla da stilare; se in
-   futuro si aggiunge una UI (es. una pagina di stato in bacheca), è il momento
+3. **SCSS/BEM.** Il plugin è headless: espone endpoint REST, senza asset frontend
+   richiesti nella specifica funzionale originale. Non ho introdotto SCSS/CSS
+   speculativi senza nulla da stilare. Da `1.4.0` è stata aggiunta una tab in
+   Site Health (vedi [Tab Site Health](#tab-site-health)), la prima UI del
+   plugin: si appoggia solo alle classi CSS già caricate da wp-admin
+   (`widefat`, `notice`, i bottoni di `submit_button()`), senza introdurre
+   alcun asset proprio, perché la superficie è minima (una tabella e due
+   form). Se in futuro l'interfaccia crescesse oltre questo, è il momento
    giusto per introdurre asset SCSS con metodologia BEM.
 
 ## Il problema del bootstrap e l'enroll firmato
@@ -672,7 +677,9 @@ Cancella tutte le opzioni di enrollment (`wp_health_check_token`,
 ultimo accesso). È una utility operativa di re-provisioning/offboarding — ad
 esempio quando un sito cambia dominio, o esce dalla flotta — **non** un
 meccanismo di scadenza: dopo il reset il sito torna semplicemente allo stato "non
-registrato" finché il centro non ripete l'enroll.
+registrato" finché il centro non ripete l'enroll. Stessa identica azione
+disponibile anche dal pulsante "Resetta enrollment" nella [tab Site
+Health](#tab-site-health), per chi non ha accesso a WP-CLI.
 
 ### Rollback da `.bak`
 
@@ -686,6 +693,39 @@ cp wp-content/mu-plugins/wp-health-check.php.bak wp-content/mu-plugins/wp-health
 
 Il `.bak` viene sovrascritto ad ogni update riuscito con la versione
 immediatamente precedente (non è uno storico multiplo).
+
+## Tab Site Health
+
+Da `1.4.0`, in **Strumenti → Salute del sito** compare una tab **"WP Health
+Check"** (registrata via i filtri/azioni core `site_health_navigation_tabs` e
+`site_health_tab_content`, disponibili da WordPress 5.8), visibile solo agli
+utenti con capability `manage_options`. Mostra:
+
+- versione del plugin e coordinate del repository GitHub configurato;
+- stato di enrollment (registrato/non registrato, data e IP dell'enroll);
+- ultimo accesso autenticato registrato (timestamp e IP);
+- stato di `wp_health_check_trust_proxy` (sola lettura: va attivato solo
+  manualmente via `wp option update`, mai da qui, vedi [Tracciamento
+  accessi](#tracciamento-accessi));
+- un campo per **leggere e modificare** `wp_health_check_dashboard_origin`
+  (lasciarlo vuoto riautorizza qualunque origin, vedi [CORS](#cors));
+- un pulsante di **reset enrollment**, equivalente a `wp health-check reset`
+  (stessa funzione condivisa `wphc_reset_enrollment()`), con conferma prima
+  dell'esecuzione.
+
+I due form inviano a `admin-post.php` (pattern standard di WordPress per
+processare submission fuori dalla pagina che le genera), protetti da nonce
+(`check_admin_referer()`) e dallo stesso controllo `manage_options`, con
+redirect alla tab dopo il salvataggio (POST-redirect-GET). L'origin inserita
+viene validata (schema `http`/`https`, host presente, nessun path/query):
+un valore non valido non viene salvato e mostra un errore, senza toccare
+l'opzione esistente.
+
+A differenza della tab "Informazioni" (sola lettura, alimentata dal filtro
+core `debug_information` — la stessa fonte dati di `/detail/server`, vedi
+sopra), questa tab consente modifiche, quindi il controllo di accesso è
+`manage_options` e non la sola capability di visualizzare Site Health
+(`view_site_health_checks`).
 
 ## Sviluppo locale
 
