@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.2.0
+ * Version:     1.3.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.2.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.3.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -193,25 +193,31 @@ function wphc_build_enroll_signing_payload( $site_url, $token, $dashboard_origin
 // -----------------------------------------------------------------------
 
 /**
- * Invia gli header CORS SOLO se l'origin della richiesta combacia
- * esattamente con quella salvata in wp_health_check_dashboard_origin.
- * Non viene mai inviato il wildcard "*": senza una dashboard_origin
- * configurata (opzione vuota) nessun header CORS viene inviato, quindi
- * le chiamate browser da altre origin restano bloccate dal browser
- * stesso, per difesa in profondita' oltre all'autenticazione a token.
+ * Invia gli header CORS. Se wp_health_check_dashboard_origin e' configurata,
+ * SOLO quell'origin esatta viene autorizzata (comportamento originale). Se
+ * e' vuota (dashboard non ancora registrata via /enroll, o resettata con
+ * wp health-check reset), viene autorizzata qualunque origin che invia la
+ * richiesta: e' una scelta deliberata per non bloccare le chiamate in fase
+ * di setup/sviluppo prima che una dashboard_origin sia stata configurata.
+ * Non viene mai inviato il wildcard letterale "*": l'origin della richiesta
+ * viene sempre riflessa nell'header, cosi' il comportamento resta corretto
+ * anche se in futuro le richieste iniziassero a includere credenziali.
+ * L'autenticazione resta comunque affidata al bearer token o alla firma
+ * Ed25519 (vedi wphc_require_token()): CORS qui e' difesa in profondita'
+ * aggiuntiva, non il controllo di accesso primario.
  */
 function wphc_maybe_send_cors_headers() {
-	$configured_origin = get_option( 'wp_health_check_dashboard_origin' );
-	if ( empty( $configured_origin ) ) {
-		return;
-	}
-
 	$request_origin = isset( $_SERVER['HTTP_ORIGIN'] ) ? sanitize_text_field( wp_unslash( $_SERVER['HTTP_ORIGIN'] ) ) : '';
-	if ( '' === $request_origin || $request_origin !== $configured_origin ) {
+	if ( '' === $request_origin ) {
 		return;
 	}
 
-	header( 'Access-Control-Allow-Origin: ' . $configured_origin );
+	$configured_origin = get_option( 'wp_health_check_dashboard_origin' );
+	if ( ! empty( $configured_origin ) && $request_origin !== $configured_origin ) {
+		return;
+	}
+
+	header( 'Access-Control-Allow-Origin: ' . $request_origin );
 	header( 'Access-Control-Allow-Methods: GET, POST, OPTIONS' );
 	header( 'Access-Control-Allow-Headers: Authorization, Content-Type' );
 	// Vary: Origin evita che una cache intermedia (CDN/proxy) serva la

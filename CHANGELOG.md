@@ -7,6 +7,17 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-08
+
+### Changed
+
+- Con `wp_health_check_dashboard_origin` non configurata, gli header CORS ora
+  autorizzano qualunque origin (riflessa in `Access-Control-Allow-Origin`,
+  mai un wildcard letterale), invece di non inviare alcun header. Utile in
+  fase di setup/sviluppo prima del primo `/enroll`. Non appena
+  `dashboard_origin` viene impostata, torna ad essere l'unica origin
+  autorizzata, come prima.
+
 ## [1.2.0] - 2026-07-08
 
 ### Changed
@@ -63,7 +74,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mavidasnc/wp-health-check/releases/tag/v1.0.0

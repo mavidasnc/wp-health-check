@@ -579,15 +579,21 @@ Access-Control-Allow-Headers: Authorization, Content-Type
 Vary: Origin
 ```
 
+Se invece `wp_health_check_dashboard_origin` **non è impostata** (sito appena
+installato, prima del primo `/enroll`, oppure resettato con
+`wp health-check reset`), viene autorizzata **qualunque origin** presente
+nell'header `Origin` della richiesta (riflessa nell'`Access-Control-Allow-Origin`
+della risposta, mai un wildcard letterale `*`): è una scelta deliberata per non
+bloccare le chiamate durante il setup o lo sviluppo, prima che una dashboard sia
+stata registrata. Il controllo di accesso vero e proprio resta comunque il
+bearer token (`/health`, `/detail/*`, `/update`) o la firma Ed25519 (`/enroll`):
+CORS qui è difesa in profondità aggiuntiva, non il perimetro di sicurezza
+primario.
+
 Le richieste `OPTIONS` (preflight del browser) vengono intercettate a livello di
 `rest_pre_dispatch` per l'intero namespace `health-check/v1`, prima del routing
 normale: rispondono `200` con i soli header CORS, **senza autenticazione** — il
 preflight del browser non include mai `Authorization`.
-
-Se `wp_health_check_dashboard_origin` non è impostata, non viene inviato alcun
-header CORS: le chiamate da un browser su un'altra origin restano bloccate dal
-browser stesso, come difesa in profondità aggiuntiva rispetto
-all'autenticazione a token.
 
 ## Considerazioni e limiti di sicurezza
 
