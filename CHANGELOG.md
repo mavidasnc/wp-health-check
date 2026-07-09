@@ -7,6 +7,36 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-07-09
+
+### Added
+
+- Tab Site Health: pulsante di **self-update** del plugin (stesso flusso di
+  `POST /update` via la nuova funzione condivisa `wphc_perform_self_update()`),
+  con verifica dell'**ultima versione disponibile** su GitHub (cachata 1h,
+  `wphc_get_latest_version()`) ed evidenziazione se esiste un aggiornamento.
+- Tab Site Health: riga con gli **URL validi per l'enroll**
+  (`wphc_candidate_site_urls()`, "principale" evidenziato), per sapere con
+  quale URL il centro deve firmare la busta.
+- Nuova opzione `wp_health_check_last_enroll_error`: registra il motivo
+  dell'**ultimo enroll fallito** (codice, motivo, URL inviato, timestamp, IP),
+  mostrato nella tab e azzerato automaticamente al primo enroll riuscito.
+  Registra tutti i tipi di fallimento (corpo non valido, firma non valida,
+  URL mismatch).
+
+### Changed
+
+- La logica di self-update è stata estratta in `wphc_perform_self_update()`,
+  condivisa fra la rotta REST `POST /update` (contratto di risposta invariato)
+  e il pulsante nella tab Site Health.
+
+### Removed
+
+- Tab Site Health: rimossa la sezione per modificare
+  `wp_health_check_dashboard_origin` dalla UI (le chiamate alla flotta sono ora
+  server-to-server; l'opzione e la logica CORS restano nel plugin, popolate
+  dall'enroll). Rimosso l'helper orfano `wphc_is_valid_origin()`.
+
 ## [1.9.0] - 2026-07-09
 
 ### Changed
@@ -166,7 +196,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...v1.7.0

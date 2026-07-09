@@ -496,7 +496,9 @@ consapevolmente, mai per default.
 
 ## Self-update: flusso passo per passo
 
-Innescato solo da `POST /update`, mai da un cron lato sito. Ordine rigoroso, ogni
+Innescato da `POST /update` o dal pulsante "Aggiorna il plugin" nella [tab Site
+Health](#tab-site-health) (entrambi usano la funzione condivisa
+`wphc_perform_self_update()`), mai da un cron lato sito. Ordine rigoroso, ogni
 passo che fallisce interrompe il flusso **prima** di toccare il file di produzione:
 
 1. **Autenticazione** via token (già garantita dal `permission_callback`) e
@@ -757,31 +759,53 @@ Check"** (registrata via i filtri/azioni core `site_health_navigation_tabs` e
 `site_health_tab_content`, disponibili da WordPress 5.8), visibile solo agli
 utenti con capability `manage_options`. Mostra:
 
-- versione del plugin e coordinate del repository GitHub configurato;
+- **versione installata** e **ultima versione disponibile** su GitHub (check
+  cachato 1h in un transient; se esiste un aggiornamento viene evidenziato);
+- coordinate del repository GitHub configurato;
 - stato di enrollment (registrato/non registrato, data e IP dell'enroll);
+- l'**URL firmato registrato** (`wp_health_check_site_url`): la chiave a cui è
+  legato il token;
+- gli **URL validi per l'enroll** (`wphc_candidate_site_urls()`, con quello
+  "principale" evidenziato): l'elenco esatto degli URL con cui il sistema
+  centrale può firmare il `site_url` (confronto tollerante www/non-www, vedi
+  [`POST /enroll`](#post-enroll--bootstrap-firmato));
+- il **motivo dell'ultimo enroll fallito** (`wp_health_check_last_enroll_error`):
+  codice, motivo, URL inviato, timestamp e IP — azzerato automaticamente al
+  primo enroll riuscito, per diagnosticare rapidamente perché una busta viene
+  rifiutata e con quale URL;
 - ultimo accesso autenticato registrato (timestamp e IP);
 - stato di `wp_health_check_trust_proxy` (sola lettura: va attivato solo
   manualmente via `wp option update`, mai da qui, vedi [Tracciamento
-  accessi](#tracciamento-accessi));
-- un campo per **leggere e modificare** `wp_health_check_dashboard_origin`
-  (lasciarlo vuoto riautorizza qualunque origin, vedi [CORS](#cors));
-- un pulsante di **reset enrollment**, equivalente a `wp health-check reset`
-  (stessa funzione condivisa `wphc_reset_enrollment()`), con conferma prima
-  dell'esecuzione.
+  accessi](#tracciamento-accessi)).
 
-I due form inviano a `admin-post.php` (pattern standard di WordPress per
+Due pulsanti eseguono azioni:
+
+- **Aggiorna il plugin**: innesca il self-update dall'ultima release GitHub —
+  esattamente lo stesso flusso di `POST /update` (funzione condivisa
+  `wphc_perform_self_update()`: verifica integrità SHA-256, backup, scrittura
+  atomica, ripristino automatico in caso di errore). Non richiede enrollment
+  (è un'azione amministrativa). L'esito è mostrato come avviso (aggiornato alla
+  versione X / già aggiornato / errore con il motivo macchina).
+- **Reset enrollment**: equivalente a `wp health-check reset` (stessa funzione
+  condivisa `wphc_reset_enrollment()`), con conferma prima dell'esecuzione.
+
+Entrambi i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce
-(`check_admin_referer()`) e dallo stesso controllo `manage_options`, con
-redirect alla tab dopo il salvataggio (POST-redirect-GET). L'origin inserita
-viene validata (schema `http`/`https`, host presente, nessun path/query):
-un valore non valido non viene salvato e mostra un errore, senza toccare
-l'opzione esistente.
+(`check_admin_referer()`) e dal controllo `manage_options`, con redirect alla
+tab dopo l'azione (POST-redirect-GET).
+
+> **Nota (dalla `1.10.0`):** la sezione per modificare
+> `wp_health_check_dashboard_origin` dalla UI è stata rimossa, perché le
+> chiamate alla flotta avvengono ora server-to-server (nessun browser, quindi
+> CORS non rilevante lato dashboard). L'opzione e la logica CORS restano nel
+> plugin (popolate dall'enroll, vedi [CORS](#cors)); semplicemente non si
+> modificano più da questa pagina.
 
 A differenza della tab "Informazioni" (sola lettura, alimentata dal filtro
 core `debug_information` — la stessa fonte dati di `/detail/server`, vedi
-sopra), questa tab consente modifiche, quindi il controllo di accesso è
-`manage_options` e non la sola capability di visualizzare Site Health
-(`view_site_health_checks`).
+sopra), questa tab consente azioni (update, reset), quindi il controllo di
+accesso è `manage_options` e non la sola capability di visualizzare Site
+Health (`view_site_health_checks`).
 
 ## Sviluppo locale
 

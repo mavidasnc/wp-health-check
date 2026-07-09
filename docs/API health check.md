@@ -474,8 +474,9 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
 
 ## `POST /update`
 
-Self-update dell'agent da una release GitHub firmata. Innescato solo da questa
-chiamata, mai da un cron lato sito. Verifica versione → scrivibilità → download
+Self-update dell'agent da una release GitHub firmata. Innescato da questa
+chiamata o dal pulsante nella tab Site Health (stessa logica condivisa), mai da
+un cron lato sito. Verifica versione → scrivibilità → download
 → integrità (SHA-256 + coerenza versione) → backup → scrittura atomica → sanity
 check → invalidazione opcache. Ogni passo che fallisce interrompe il flusso
 prima di toccare il file di produzione.

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.9.0
+ * Version:     1.10.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.9.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.10.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -275,6 +275,7 @@ function wphc_reset_enrollment() {
 		'wp_health_check_enroll_issued_at',
 		'wp_health_check_last_request_at',
 		'wp_health_check_last_request_ip',
+		'wp_health_check_last_enroll_error',
 	);
 	foreach ( $options as $option_name ) {
 		delete_option( $option_name );
@@ -282,25 +283,32 @@ function wphc_reset_enrollment() {
 }
 
 /**
- * Verifica che una stringa sia un origin HTTP(S) valido: schema http/https,
- * host presente, nessun path/query/frammento (un origin non li contempla).
- * Usata per validare il valore inserito manualmente nella tab Site Health,
- * prima di salvarlo in wp_health_check_dashboard_origin.
+ * Registra l'esito di un tentativo di enroll FALLITO in
+ * wp_health_check_last_enroll_error, per poterlo mostrare nella tab Site
+ * Health e diagnosticare rapidamente il motivo (es. URL inviato sbagliato).
+ * Su enroll riuscito l'opzione va invece cancellata (vedi wphc_route_enroll).
  *
- * @param string $value Valore da validare.
- * @return bool True se e' un origin valido.
+ * NB: /enroll e' pubblica, quindi anche tentativi con firma non valida
+ * finiscono qui: il valore "received" e' sanitizzato in scrittura e va
+ * comunque escapizzato in output (l'URL e' input non autenticato in questo
+ * ramo). L'opzione e' visibile solo a manage_options.
+ *
+ * @param string $code     Codice macchina del fallimento (es. wphc_enroll_url_mismatch).
+ * @param string $reason   Descrizione umana del fallimento.
+ * @param string $received URL inviato nella busta (grezzo), o stringa vuota se non disponibile.
  */
-function wphc_is_valid_origin( $value ) {
-	$parts = wp_parse_url( $value );
-
-	if ( ! is_array( $parts ) || empty( $parts['scheme'] ) || empty( $parts['host'] ) ) {
-		return false;
-	}
-	if ( ! in_array( strtolower( $parts['scheme'] ), array( 'http', 'https' ), true ) ) {
-		return false;
-	}
-
-	return empty( $parts['path'] ) && empty( $parts['query'] ) && empty( $parts['fragment'] );
+function wphc_record_enroll_error( $code, $reason, $received = '' ) {
+	update_option(
+		'wp_health_check_last_enroll_error',
+		array(
+			'at'       => gmdate( 'c' ),
+			'code'     => $code,
+			'reason'   => $reason,
+			'received' => sanitize_text_field( $received ),
+			'ip'       => wphc_get_client_ip(),
+		),
+		false
+	);
 }
 
 // -----------------------------------------------------------------------
@@ -590,19 +598,23 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 
 	$body = json_decode( $request->get_body(), true );
 	if ( ! is_array( $body ) ) {
+		wphc_record_enroll_error( 'wphc_enroll_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), '' );
+
 		return new WP_Error( 'wphc_enroll_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
 	}
+
+	// URL inviato, se presente: usato solo per diagnostica nel log errori.
+	$reported_site_url = isset( $body['site_url'] ) ? (string) $body['site_url'] : '';
 
 	// 1. Presenza dei campi obbligatori (dashboard_origin e' l'unico
 	// campo opzionale/nullable del payload).
 	foreach ( array( 'site_url', 'token', 'issued_at', 'signature' ) as $field ) {
 		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
-			return new WP_Error(
-				'wphc_enroll_missing_field',
-				/* translators: %s: nome del campo mancante. */
-				sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field ),
-				array( 'status' => 400 )
-			);
+			/* translators: %s: nome del campo mancante. */
+			$reason = sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field );
+			wphc_record_enroll_error( 'wphc_enroll_missing_field', $reason, $reported_site_url );
+
+			return new WP_Error( 'wphc_enroll_missing_field', $reason, array( 'status' => 400 ) );
 		}
 	}
 
@@ -631,9 +643,12 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	}
 
 	if ( ! $signature_valid ) {
-		// Messaggio unico e generico: non distingue "firma non valida" da
-		// "chiave malformata" o altro, per non offrire informazioni utili
-		// a chi tenta richieste non autorizzate.
+		// Messaggio unico e generico verso il chiamante: non distingue
+		// "firma non valida" da "chiave malformata" o altro, per non offrire
+		// informazioni utili a chi tenta richieste non autorizzate. La
+		// diagnostica interna (tab admin) registra invece un motivo esplicito.
+		wphc_record_enroll_error( 'wphc_enroll_unauthorized', __( 'Firma non valida (busta non prodotta dal sistema centrale).', 'wp-health-check' ), $reported_site_url );
+
 		return new WP_Error( 'wphc_enroll_unauthorized', __( 'Richiesta di enroll non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
 	}
 
@@ -656,14 +671,17 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 			error_log( sprintf( 'wp-health-check: enroll URL mismatch — atteso: %1$s ricevuto: %2$s', $canonical_home, $received_site_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		}
 
+		$mismatch_message = sprintf(
+			/* translators: 1: URL canonico atteso, 2: URL ricevuto nella busta. */
+			__( 'URL atteso: %1$s — ricevuto: %2$s', 'wp-health-check' ),
+			$canonical_home,
+			$received_site_url
+		);
+		wphc_record_enroll_error( 'wphc_enroll_url_mismatch', $mismatch_message, $received_site_url );
+
 		return new WP_Error(
 			'wphc_enroll_url_mismatch',
-			sprintf(
-				/* translators: 1: URL canonico atteso, 2: URL ricevuto nella busta. */
-				__( 'URL atteso: %1$s — ricevuto: %2$s', 'wp-health-check' ),
-				$canonical_home,
-				$received_site_url
-			),
+			$mismatch_message,
 			array(
 				'status'   => 403,
 				'expected' => $canonical_home,
@@ -683,6 +701,8 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	// issued_at e' solo memorizzato come metadato operativo (non usato
 	// per alcuna logica di scadenza, che per progetto non esiste).
 	update_option( 'wp_health_check_enroll_issued_at', $issued_at, false );
+	// Enroll riuscito: azzera l'eventuale ultimo errore diagnostico.
+	delete_option( 'wp_health_check_last_enroll_error' );
 
 	// 5. Conferma: si restituisce il site_url firmato realmente registrato.
 	return rest_ensure_response(
@@ -1078,20 +1098,21 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
  * cosi' un errore a meta' strada non puo' mai lasciare il sito con un
  * mu-plugin corrotto o mancante.
  *
- * @param WP_REST_Request $request Richiesta REST corrente.
- * @return WP_REST_Response|WP_Error Esito dell'update.
+ * Logica CONDIVISA fra la rotta REST POST /update e il pulsante nella tab
+ * Site Health: restituisce un array normalizzato, che ciascun chiamante
+ * mappa nel proprio formato (WP_REST_Response/WP_Error, oppure messaggio
+ * di redirect admin). Non registra l'accesso ne' invia risposte HTTP:
+ * quelle sono responsabilita' del chiamante.
+ *
+ * @return array<string, mixed> Esito normalizzato. La chiave 'result' e' uno di:
+ *         'updated' (con 'from'/'to'), 'up_to_date' (con 'current'/'latest'),
+ *         'not_writable', 'integrity_check_failed', oppure 'error' (con
+ *         'code', 'message', 'http').
  */
-function wphc_route_update( WP_REST_Request $request ) {
-	unset( $request );
-
-	// 1. L'autenticazione e' gia' garantita dal permission_callback; qui
-	// si registra soltanto l'accesso, come richiesto per ogni chiamata
-	// dati autenticata con successo.
-	wphc_record_access();
-
+function wphc_perform_self_update() {
 	$current_version = WP_HEALTH_CHECK_VERSION;
 
-	// 2. Interroga la release piu' recente pubblicata su GitHub.
+	// 1. Interroga la release piu' recente pubblicata su GitHub.
 	$api_url = sprintf(
 		'https://api.github.com/repos/%s/%s/releases/latest',
 		rawurlencode( WP_HEALTH_CHECK_GH_OWNER ),
@@ -1111,31 +1132,43 @@ function wphc_route_update( WP_REST_Request $request ) {
 	);
 
 	if ( is_wp_error( $response ) ) {
-		return new WP_Error( 'wphc_update_network_error', __( 'Impossibile contattare GitHub.', 'wp-health-check' ), array( 'status' => 502 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_network_error',
+			'message' => __( 'Impossibile contattare GitHub.', 'wp-health-check' ),
+			'http'    => 502,
+		);
 	}
 	if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
-		return new WP_Error( 'wphc_update_github_error', __( 'GitHub ha risposto con un errore nel recuperare la release.', 'wp-health-check' ), array( 'status' => 502 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_github_error',
+			'message' => __( 'GitHub ha risposto con un errore nel recuperare la release.', 'wp-health-check' ),
+			'http'    => 502,
+		);
 	}
 
 	$release = json_decode( wp_remote_retrieve_body( $response ), true );
 	if ( ! is_array( $release ) || empty( $release['tag_name'] ) ) {
-		return new WP_Error( 'wphc_update_bad_release', __( 'Risposta di GitHub non valida.', 'wp-health-check' ), array( 'status' => 502 ) );
-	}
-
-	// 3. Normalizza il tag (rimuove un eventuale prefisso "v") e confronta.
-	$latest_tag = ltrim( (string) $release['tag_name'], 'v' );
-	if ( ! version_compare( $latest_tag, $current_version, '>' ) ) {
-		return rest_ensure_response(
-			array(
-				'updated' => false,
-				'reason'  => 'up_to_date',
-				'current' => $current_version,
-				'latest'  => $latest_tag,
-			)
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_bad_release',
+			'message' => __( 'Risposta di GitHub non valida.', 'wp-health-check' ),
+			'http'    => 502,
 		);
 	}
 
-	// 4. Preflight di scrittura: verifica PRIMA di scaricare qualunque
+	// 2. Normalizza il tag (rimuove un eventuale prefisso "v") e confronta.
+	$latest_tag = ltrim( (string) $release['tag_name'], 'v' );
+	if ( ! version_compare( $latest_tag, $current_version, '>' ) ) {
+		return array(
+			'result'  => 'up_to_date',
+			'current' => $current_version,
+			'latest'  => $latest_tag,
+		);
+	}
+
+	// 3. Preflight di scrittura: verifica PRIMA di scaricare qualunque
 	// cosa che la directory di destinazione sia scrivibile. Nome del
 	// file di test casuale per evitare collisioni fra aggiornamenti
 	// concorrenti eventualmente lanciati su piu' siti in parallelo.
@@ -1149,15 +1182,10 @@ function wphc_route_update( WP_REST_Request $request ) {
 	// credenziali FTP; l'operatore "@" silenzia solo il warning PHP,
 	// l'esito e' comunque sempre controllato esplicitamente sotto.
 	if ( false === @file_put_contents( $test_file, 'wphc' ) ) {
-		return rest_ensure_response(
-			array(
-				'updated' => false,
-				'reason'  => 'not_writable',
-			)
-		);
+		return array( 'result' => 'not_writable' );
 	}
 
-	// 5. Individua gli asset della release: il file del plugin e il suo
+	// 4. Individua gli asset della release: il file del plugin e il suo
 	// hash sha256 affiancato.
 	$asset_url     = null;
 	$sha_asset_url = null;
@@ -1177,18 +1205,28 @@ function wphc_route_update( WP_REST_Request $request ) {
 	if ( null === $asset_url ) {
 		@unlink( $test_file );
 
-		return new WP_Error( 'wphc_update_asset_missing', __( 'Asset wp-health-check.php non trovato nella release.', 'wp-health-check' ), array( 'status' => 502 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_asset_missing',
+			'message' => __( 'Asset wp-health-check.php non trovato nella release.', 'wp-health-check' ),
+			'http'    => 502,
+		);
 	}
 
 	$download = wp_remote_get( $asset_url, array( 'timeout' => 30 ) );
 	if ( is_wp_error( $download ) || 200 !== (int) wp_remote_retrieve_response_code( $download ) ) {
 		@unlink( $test_file );
 
-		return new WP_Error( 'wphc_update_download_failed', __( 'Impossibile scaricare il nuovo file del plugin.', 'wp-health-check' ), array( 'status' => 502 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_download_failed',
+			'message' => __( 'Impossibile scaricare il nuovo file del plugin.', 'wp-health-check' ),
+			'http'    => 502,
+		);
 	}
 	$new_contents = wp_remote_retrieve_body( $download );
 
-	// 6. Verifica di integrita', PRIMA di toccare qualunque file di
+	// 5. Verifica di integrita', PRIMA di toccare qualunque file di
 	// produzione: hash atteso (asset .sha256, oppure riga "sha256: <hash>"
 	// nel corpo della release), contenuto non vuoto, prefisso "<?php" e
 	// coerenza fra la versione dichiarata nel file e il tag della release.
@@ -1224,24 +1262,24 @@ function wphc_route_update( WP_REST_Request $request ) {
 	if ( ! $integrity_ok ) {
 		@unlink( $test_file );
 
-		return rest_ensure_response(
-			array(
-				'updated' => false,
-				'reason'  => 'integrity_check_failed',
-			)
-		);
+		return array( 'result' => 'integrity_check_failed' );
 	}
 
-	// 7. Backup del file corrente, prima di qualsiasi scrittura.
+	// 6. Backup del file corrente, prima di qualsiasi scrittura.
 	$plugin_file = __FILE__;
 	$backup_file = $plugin_file . '.bak';
 	if ( false === @copy( $plugin_file, $backup_file ) ) {
 		@unlink( $test_file );
 
-		return new WP_Error( 'wphc_update_backup_failed', __( 'Impossibile creare il backup prima di aggiornare.', 'wp-health-check' ), array( 'status' => 500 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_backup_failed',
+			'message' => __( 'Impossibile creare il backup prima di aggiornare.', 'wp-health-check' ),
+			'http'    => 500,
+		);
 	}
 
-	// 8. Scrittura atomica: il temporaneo NON ha estensione .php di
+	// 7. Scrittura atomica: il temporaneo NON ha estensione .php di
 	// proposito. Se il rename() sottostante fallisse e il temporaneo
 	// restasse orfano nella cartella, un file con estensione .php in
 	// mu-plugins verrebbe caricato automaticamente al giro successivo,
@@ -1254,42 +1292,150 @@ function wphc_route_update( WP_REST_Request $request ) {
 		@unlink( $tmp_file );
 		@unlink( $test_file );
 
-		return new WP_Error( 'wphc_update_write_failed', __( 'Scrittura del nuovo file fallita.', 'wp-health-check' ), array( 'status' => 500 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_write_failed',
+			'message' => __( 'Scrittura del nuovo file fallita.', 'wp-health-check' ),
+			'http'    => 500,
+		);
 	}
 
-	// 9. Sanity check post-scrittura: se qualcosa non torna, ripristina
-	// immediatamente dal backup del punto 7.
+	// 8. Sanity check post-scrittura: se qualcosa non torna, ripristina
+	// immediatamente dal backup del punto 6.
 	$written_contents = @file_get_contents( $plugin_file );
 	if ( false === $written_contents || '' === $written_contents || 0 !== strpos( $written_contents, '<?php' ) ) {
 		@copy( $backup_file, $plugin_file );
 		@unlink( $test_file );
 
-		return new WP_Error( 'wphc_update_sanity_failed', __( 'Verifica post-scrittura fallita: ripristinato il backup precedente.', 'wp-health-check' ), array( 'status' => 500 ) );
+		return array(
+			'result'  => 'error',
+			'code'    => 'wphc_update_sanity_failed',
+			'message' => __( 'Verifica post-scrittura fallita: ripristinato il backup precedente.', 'wp-health-check' ),
+			'http'    => 500,
+		);
 	}
 	// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
 
-	// 10. Invalida l'opcode cache per la nuova versione: senza questo
+	// 9. Invalida l'opcode cache per la nuova versione: senza questo
 	// passo, sui SAPI con opcache persistente (es. php-fpm) la vecchia
 	// versione compilata resterebbe in uso fino al riavvio del pool.
 	if ( function_exists( 'opcache_invalidate' ) ) {
 		opcache_invalidate( $plugin_file, true );
 	}
 
-	// 11. Rimuove il file di test di scrivibilita' del punto 4.
+	// 10. Rimuove il file di test di scrivibilita' del punto 3 e invalida
+	// la cache della "ultima versione" (ora e' quella installata).
 	@unlink( $test_file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+	delete_transient( 'wphc_latest_version_cache' );
 
 	if ( WP_DEBUG ) {
 		error_log( sprintf( 'wp-health-check: aggiornato da %1$s a %2$s', $current_version, $latest_tag ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	}
 
-	// 12. Esito positivo.
-	return rest_ensure_response(
+	return array(
+		'result' => 'updated',
+		'from'   => $current_version,
+		'to'     => $latest_tag,
+	);
+}
+
+/**
+ * Callback della rotta REST POST /update: registra l'accesso, esegue il
+ * self-update condiviso e mappa l'esito normalizzato nel formato REST
+ * storico (invariato rispetto alle versioni precedenti).
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error Esito dell'update.
+ */
+function wphc_route_update( WP_REST_Request $request ) {
+	unset( $request );
+
+	// L'autenticazione e' gia' garantita dal permission_callback; qui si
+	// registra soltanto l'accesso, come per ogni chiamata dati autenticata.
+	wphc_record_access();
+
+	$outcome = wphc_perform_self_update();
+
+	switch ( $outcome['result'] ) {
+		case 'error':
+			return new WP_Error( $outcome['code'], $outcome['message'], array( 'status' => $outcome['http'] ) );
+
+		case 'updated':
+			return rest_ensure_response(
+				array(
+					'updated' => true,
+					'from'    => $outcome['from'],
+					'to'      => $outcome['to'],
+				)
+			);
+
+		case 'up_to_date':
+			return rest_ensure_response(
+				array(
+					'updated' => false,
+					'reason'  => 'up_to_date',
+					'current' => $outcome['current'],
+					'latest'  => $outcome['latest'],
+				)
+			);
+
+		default: // esiti non riusciti ma non erronei: not_writable / integrity_check_failed.
+			return rest_ensure_response(
+				array(
+					'updated' => false,
+					'reason'  => $outcome['result'],
+				)
+			);
+	}
+}
+
+/**
+ * Restituisce l'ultima versione (tag senza "v") pubblicata su GitHub,
+ * cachata 1h in un transient per non interrogare l'API ad ogni render
+ * della tab Site Health. Solo lettura: non tocca il filesystem. Usata dal
+ * pannello admin per mostrare se esiste un aggiornamento.
+ *
+ * @param bool $force Se true, ignora la cache e reinterroga GitHub.
+ * @return string|null Ultima versione disponibile, o null se non determinabile.
+ */
+function wphc_get_latest_version( $force = false ) {
+	if ( ! $force ) {
+		$cached = get_transient( 'wphc_latest_version_cache' );
+		if ( false !== $cached ) {
+			return '' !== $cached ? $cached : null;
+		}
+	}
+
+	$api_url = sprintf(
+		'https://api.github.com/repos/%s/%s/releases/latest',
+		rawurlencode( WP_HEALTH_CHECK_GH_OWNER ),
+		rawurlencode( WP_HEALTH_CHECK_GH_REPO )
+	);
+
+	$response = wp_remote_get(
+		$api_url,
 		array(
-			'updated' => true,
-			'from'    => $current_version,
-			'to'      => $latest_tag,
+			'timeout' => 10,
+			'headers' => array(
+				'Accept'     => 'application/vnd.github+json',
+				'User-Agent' => 'wp-health-check-agent',
+			),
 		)
 	);
+
+	$latest = '';
+	if ( ! is_wp_error( $response ) && 200 === (int) wp_remote_retrieve_response_code( $response ) ) {
+		$release = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( is_array( $release ) && ! empty( $release['tag_name'] ) ) {
+			$latest = ltrim( (string) $release['tag_name'], 'v' );
+		}
+	}
+
+	// Cache breve anche in caso di fallimento (stringa vuota), per non
+	// martellare GitHub ad ogni apertura della tab se l'API e' irraggiungibile.
+	set_transient( 'wphc_latest_version_cache', $latest, HOUR_IN_SECONDS );
+
+	return '' !== $latest ? $latest : null;
 }
 
 // -----------------------------------------------------------------------
@@ -1298,11 +1444,10 @@ function wphc_route_update( WP_REST_Request $request ) {
 //
 // Aggiunge una tab dedicata in Strumenti -> Salute del sito (disponibile
 // da WordPress 5.8 via i filtri/azioni site_health_navigation_tabs e
-// site_health_tab_content), visibile solo a chi puo' manage_options: a
-// differenza della tab "Informazioni" (sola lettura, alimentata dal filtro
-// debug_information), qui si puo' anche MODIFICARE wp_health_check_dashboard_origin
-// e resettare l'enrollment, quindi il controllo di accesso e' piu' stretto
-// della sola capacita' di visualizzare la Salute del sito.
+// site_health_tab_content), visibile solo a chi puo' manage_options: qui si
+// puo' anche innescare il self-update e resettare l'enrollment, quindi il
+// controllo di accesso e' piu' stretto della sola capacita' di visualizzare
+// la Salute del sito.
 
 /**
  * Registra la tab "WP Health Check" nella pagina Salute del sito.
@@ -1322,9 +1467,9 @@ function wphc_register_site_health_tab( $tabs ) {
 add_filter( 'site_health_navigation_tabs', 'wphc_register_site_health_tab' );
 
 /**
- * Renderizza il contenuto della tab "WP Health Check": versione del plugin,
- * stato di enrollment, ultimo accesso, form per modificare
- * wp_health_check_dashboard_origin e pulsante di reset dell'enrollment.
+ * Renderizza il contenuto della tab "WP Health Check": versioni installata e
+ * disponibile, stato di enrollment, URL da usare per l'enroll, ultimo enroll
+ * fallito, ultimo accesso, pulsante di self-update e pulsante di reset.
  *
  * @param string $tab Slug della tab richiesta.
  */
@@ -1333,22 +1478,47 @@ function wphc_render_site_health_tab( $tab ) {
 		return;
 	}
 
-	$dashboard_origin = (string) get_option( 'wp_health_check_dashboard_origin', '' );
-	$is_enrolled      = ! empty( get_option( 'wp_health_check_token' ) );
-	$signed_site_url  = (string) get_option( 'wp_health_check_site_url', '' );
-	$enrolled_at      = get_option( 'wp_health_check_enrolled_at' );
-	$enrolled_ip      = get_option( 'wp_health_check_enrolled_ip' );
-	$last_request_at  = get_option( 'wp_health_check_last_request_at' );
-	$last_request_ip  = get_option( 'wp_health_check_last_request_ip' );
-	$trust_proxy      = (bool) get_option( 'wp_health_check_trust_proxy', false );
+	$is_enrolled       = ! empty( get_option( 'wp_health_check_token' ) );
+	$signed_site_url   = (string) get_option( 'wp_health_check_site_url', '' );
+	$enrolled_at       = get_option( 'wp_health_check_enrolled_at' );
+	$enrolled_ip       = get_option( 'wp_health_check_enrolled_ip' );
+	$last_request_at   = get_option( 'wp_health_check_last_request_at' );
+	$last_request_ip   = get_option( 'wp_health_check_last_request_ip' );
+	$trust_proxy       = (bool) get_option( 'wp_health_check_trust_proxy', false );
+	$last_enroll_error = get_option( 'wp_health_check_last_enroll_error' );
+
+	$candidates       = wphc_candidate_site_urls();
+	$canonical_home   = wphc_normalize_site_url();
+	$latest_version   = wphc_get_latest_version();
+	$update_available = ( null !== $latest_version ) && version_compare( $latest_version, WP_HEALTH_CHECK_VERSION, '>' );
 	?>
 	<div class="health-check-body health-check-wp-health-check-tab hide-if-no-js">
 		<h2><?php esc_html_e( 'WP Health Check — Fleet Agent', 'wp-health-check' ); ?></h2>
 
-		<?php if ( isset( $_GET['wphc_saved'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- solo un flag di stato per il messaggio, nessuna azione eseguita qui. ?>
-			<div class="notice notice-success"><p><?php esc_html_e( 'Origin della dashboard aggiornata.', 'wp-health-check' ); ?></p></div>
-		<?php elseif ( isset( $_GET['wphc_error'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
-			<div class="notice notice-error"><p><?php esc_html_e( 'Origin non valida: deve essere nella forma schema://host[:porta], senza percorso (es. https://dashboard.esempio.com).', 'wp-health-check' ); ?></p></div>
+		<?php if ( isset( $_GET['wphc_updated'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- flag di stato post-redirect, nessuna azione qui. ?>
+			<div class="notice notice-success"><p>
+				<?php
+				$to = isset( $_GET['to'] ) ? sanitize_text_field( wp_unslash( $_GET['to'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				printf(
+					/* translators: %s: versione a cui e' stato aggiornato il plugin. */
+					esc_html__( 'Plugin aggiornato alla versione %s.', 'wp-health-check' ),
+					'<code>' . esc_html( $to ) . '</code>'
+				);
+				?>
+			</p></div>
+		<?php elseif ( isset( $_GET['wphc_uptodate'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-info"><p><?php esc_html_e( 'Il plugin e\' gia\' aggiornato all\'ultima versione disponibile.', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_update_failed'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-error"><p>
+				<?php
+				$reason = isset( $_GET['reason'] ) ? sanitize_text_field( wp_unslash( $_GET['reason'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				printf(
+					/* translators: %s: motivo macchina del fallimento dell'aggiornamento. */
+					esc_html__( 'Aggiornamento non riuscito (%s). Nessuna modifica al file del plugin.', 'wp-health-check' ),
+					'<code>' . esc_html( $reason ) . '</code>'
+				);
+				?>
+			</p></div>
 		<?php elseif ( isset( $_GET['wphc_reset'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".', 'wp-health-check' ); ?></p></div>
 		<?php endif; ?>
@@ -1356,8 +1526,22 @@ function wphc_render_site_health_tab( $tab ) {
 		<table class="widefat striped" style="max-width: 800px;">
 			<tbody>
 				<tr>
-					<td><?php esc_html_e( 'Versione plugin', 'wp-health-check' ); ?></td>
+					<td><?php esc_html_e( 'Versione plugin installata', 'wp-health-check' ); ?></td>
 					<td><code><?php echo esc_html( WP_HEALTH_CHECK_VERSION ); ?></code></td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Ultima versione disponibile', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( null === $latest_version ) : ?>
+							<?php esc_html_e( 'non determinabile (GitHub irraggiungibile)', 'wp-health-check' ); ?>
+						<?php elseif ( $update_available ) : ?>
+							<code><?php echo esc_html( $latest_version ); ?></code>
+							<span class="dashicons dashicons-update" style="color:#d63638;"></span>
+							<strong><?php esc_html_e( 'aggiornamento disponibile', 'wp-health-check' ); ?></strong>
+						<?php else : ?>
+							<code><?php echo esc_html( $latest_version ); ?></code> — <?php esc_html_e( 'aggiornato', 'wp-health-check' ); ?>
+						<?php endif; ?>
+					</td>
 				</tr>
 				<tr>
 					<td><?php esc_html_e( 'Repository GitHub', 'wp-health-check' ); ?></td>
@@ -1397,6 +1581,50 @@ function wphc_render_site_health_tab( $tab ) {
 					</td>
 				</tr>
 				<tr>
+					<td><?php esc_html_e( 'URL validi per l\'enroll', 'wp-health-check' ); ?></td>
+					<td>
+						<ul style="margin:0;">
+							<?php foreach ( $candidates as $candidate ) : ?>
+								<li>
+									<code><?php echo esc_html( $candidate ); ?></code>
+									<?php if ( $candidate === $canonical_home ) : ?>
+										<em>(<?php esc_html_e( 'principale', 'wp-health-check' ); ?>)</em>
+									<?php endif; ?>
+								</li>
+							<?php endforeach; ?>
+						</ul>
+						<p class="description">
+							<?php esc_html_e( 'Il sistema centrale deve firmare il site_url usando UNO di questi URL (confronto tollerante www/non-www). Quello marcato "principale" e\' l\'URL canonico del sito.', 'wp-health-check' ); ?>
+						</p>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Ultimo enroll fallito', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( is_array( $last_enroll_error ) ) : ?>
+							<strong><?php echo esc_html( isset( $last_enroll_error['reason'] ) ? $last_enroll_error['reason'] : '' ); ?></strong><br />
+							<span class="description">
+								<?php echo esc_html( isset( $last_enroll_error['code'] ) ? $last_enroll_error['code'] : '' ); ?>
+								<?php if ( ! empty( $last_enroll_error['at'] ) ) : ?>
+									— <?php echo esc_html( $last_enroll_error['at'] ); ?>
+								<?php endif; ?>
+								<?php if ( ! empty( $last_enroll_error['ip'] ) ) : ?>
+									— <?php echo esc_html( $last_enroll_error['ip'] ); ?>
+								<?php endif; ?>
+							</span>
+							<?php if ( ! empty( $last_enroll_error['received'] ) ) : ?>
+								<br /><?php esc_html_e( 'URL inviato:', 'wp-health-check' ); ?>
+								<code><?php echo esc_html( $last_enroll_error['received'] ); ?></code>
+							<?php endif; ?>
+						<?php else : ?>
+							&mdash;
+						<?php endif; ?>
+						<p class="description">
+							<?php esc_html_e( 'Motivo dell\'ultimo tentativo di enroll fallito (azzerato automaticamente al primo enroll riuscito). Utile per capire perche\' un enroll viene rifiutato e con quale URL.', 'wp-health-check' ); ?>
+						</p>
+					</td>
+				</tr>
+				<tr>
 					<td><?php esc_html_e( 'Ultimo accesso registrato', 'wp-health-check' ); ?></td>
 					<td>
 						<?php if ( $last_request_at ) : ?>
@@ -1418,31 +1646,36 @@ function wphc_render_site_health_tab( $tab ) {
 			</tbody>
 		</table>
 
-		<h3><?php esc_html_e( 'Origin della dashboard', 'wp-health-check' ); ?></h3>
+		<h3><?php esc_html_e( 'Aggiornamento del plugin', 'wp-health-check' ); ?></h3>
 		<p class="description">
-			<?php esc_html_e( 'Origin autorizzata per le richieste CORS da browser (es. https://dashboard.esempio.com). Se lasciata vuota, viene autorizzata qualunque origin.', 'wp-health-check' ); ?>
-		</p>
-		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-			<input type="hidden" name="action" value="wphc_save_dashboard_origin" />
-			<?php wp_nonce_field( 'wphc_save_dashboard_origin' ); ?>
-			<input
-				type="url"
-				name="wphc_dashboard_origin"
-				value="<?php echo esc_attr( $dashboard_origin ); ?>"
-				class="regular-text"
-				placeholder="https://dashboard.esempio.com"
-			/>
-			<?php submit_button( __( 'Salva origin', 'wp-health-check' ), 'primary', 'submit', false ); ?>
-		</form>
-
-		<h3><?php esc_html_e( 'Reset enrollment', 'wp-health-check' ); ?></h3>
-		<p class="description">
-			<?php esc_html_e( 'Cancella token, origin della dashboard e tutti i metadati di enrollment. Il sito torna allo stato "non registrato" finche\' il sistema centrale non ripete l\'enroll. Equivalente a "wp health-check reset".', 'wp-health-check' ); ?>
+			<?php esc_html_e( 'Scarica e installa l\'ultima release firmata da GitHub (stesso flusso di POST /update: verifica integrita\' SHA-256, backup e ripristino automatico in caso di errore).', 'wp-health-check' ); ?>
 		</p>
 		<form
 			method="post"
 			action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
-			onsubmit="return confirm( <?php echo wp_json_encode( __( 'Confermi il reset dell\'enrollment? Il sito restera\' non registrato finche\' il sistema centrale non ripete l\'enroll.', 'wp-health-check' ) ); ?> );"
+			onsubmit="return confirm( <?php echo esc_attr( wp_json_encode( __( 'Confermi l\'aggiornamento del plugin all\'ultima release pubblicata su GitHub?', 'wp-health-check' ) ) ); ?> );"
+		>
+			<input type="hidden" name="action" value="wphc_self_update" />
+			<?php wp_nonce_field( 'wphc_self_update' ); ?>
+			<?php
+			if ( $update_available ) {
+				/* translators: %s: versione disponibile. */
+				$update_label = sprintf( __( 'Aggiorna alla versione %s', 'wp-health-check' ), $latest_version );
+				submit_button( $update_label, 'primary', 'submit', false );
+			} else {
+				submit_button( __( 'Verifica e aggiorna adesso', 'wp-health-check' ), 'secondary', 'submit', false );
+			}
+			?>
+		</form>
+
+		<h3><?php esc_html_e( 'Reset enrollment', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Cancella token, URL firmato e tutti i metadati di enrollment. Il sito torna allo stato "non registrato" finche\' il sistema centrale non ripete l\'enroll. Equivalente a "wp health-check reset".', 'wp-health-check' ); ?>
+		</p>
+		<form
+			method="post"
+			action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+			onsubmit="return confirm( <?php echo esc_attr( wp_json_encode( __( 'Confermi il reset dell\'enrollment? Il sito restera\' non registrato finche\' il sistema centrale non ripete l\'enroll.', 'wp-health-check' ) ) ); ?> );"
 		>
 			<input type="hidden" name="action" value="wphc_reset_enrollment" />
 			<?php wp_nonce_field( 'wphc_reset_enrollment' ); ?>
@@ -1454,31 +1687,46 @@ function wphc_render_site_health_tab( $tab ) {
 add_action( 'site_health_tab_content', 'wphc_render_site_health_tab' );
 
 /**
- * Handler di admin-post.php per il salvataggio di wp_health_check_dashboard_origin
- * dalla tab Site Health. Valida l'origin (o accetta la stringa vuota, che
- * riapre CORS a qualunque origin, vedi wphc_maybe_send_cors_headers()) e
- * reindirizza alla tab con un flag di esito (pattern POST-redirect-GET).
+ * Handler di admin-post.php per il pulsante di self-update nella tab Site
+ * Health: esegue lo stesso flusso condiviso di POST /update
+ * (wphc_perform_self_update()) e reindirizza alla tab con l'esito
+ * (pattern POST-redirect-GET). Non richiede enrollment: e' un'azione
+ * amministrativa, protetta da manage_options + nonce.
  */
-function wphc_handle_save_dashboard_origin() {
+function wphc_handle_self_update() {
 	if ( ! current_user_can( 'manage_options' ) ) {
 		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
 	}
-	check_admin_referer( 'wphc_save_dashboard_origin' );
+	check_admin_referer( 'wphc_self_update' );
 
-	$origin = isset( $_POST['wphc_dashboard_origin'] ) ? trim( sanitize_text_field( wp_unslash( $_POST['wphc_dashboard_origin'] ) ) ) : '';
-
+	$outcome       = wphc_perform_self_update();
 	$redirect_args = array( 'tab' => 'wp-health-check' );
-	if ( '' === $origin || wphc_is_valid_origin( $origin ) ) {
-		update_option( 'wp_health_check_dashboard_origin', $origin, false );
-		$redirect_args['wphc_saved'] = '1';
-	} else {
-		$redirect_args['wphc_error'] = '1';
+
+	switch ( $outcome['result'] ) {
+		case 'updated':
+			$redirect_args['wphc_updated'] = '1';
+			$redirect_args['to']           = $outcome['to'];
+			break;
+
+		case 'up_to_date':
+			$redirect_args['wphc_uptodate'] = '1';
+			break;
+
+		case 'error':
+			$redirect_args['wphc_update_failed'] = '1';
+			$redirect_args['reason']             = $outcome['code'];
+			break;
+
+		default: // esiti non riusciti ma non erronei: not_writable / integrity_check_failed.
+			$redirect_args['wphc_update_failed'] = '1';
+			$redirect_args['reason']             = $outcome['result'];
+			break;
 	}
 
 	wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'site-health.php' ) ) );
 	exit;
 }
-add_action( 'admin_post_wphc_save_dashboard_origin', 'wphc_handle_save_dashboard_origin' );
+add_action( 'admin_post_wphc_self_update', 'wphc_handle_self_update' );
 
 /**
  * Handler di admin-post.php per il pulsante di reset enrollment nella tab
