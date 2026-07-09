@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.11.0
+ * Version:     1.12.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.11.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.12.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -813,7 +813,16 @@ function wphc_route_health( WP_REST_Request $request ) {
 		// Ramo esplicitamente lento: SOLO su richiesta manuale (?fresh=1),
 		// mai nel polling automatico. Va oltre "letture da transient" e
 		// forza una verifica reale contro wordpress.org.
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		require_once ABSPATH . 'wp-admin/includes/update.php';
+		// Svuota le cache delle liste plugin/temi cosi' get_plugins()/
+		// wp_get_themes() riscansionano davvero la cartella: garantisce
+		// conteggi corretti anche dietro un object cache persistente che
+		// rende persistente (a torto) il gruppo "plugins"/"themes", scenario
+		// in cui altrimenti il totale resterebbe fermo a un valore vecchio.
+		// false = non tocca il transient update_plugins, aggiornato subito sotto.
+		wp_clean_plugins_cache( false );
+		wp_clean_themes_cache( false );
 		wp_version_check();
 		wp_update_plugins();
 		wp_update_themes();
@@ -942,7 +951,12 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 
 	if ( $fresh ) {
 		// Chiamata remota esplicita, solo su richiesta dell'utente della
-		// dashboard (drill-down), mai nel polling di /health.
+		// dashboard (drill-down), mai nel polling di /health. Prima svuota
+		// la cache della lista plugin, cosi' get_plugins() qui sotto
+		// riscansiona la cartella e il conteggio e' corretto anche dietro
+		// un object cache persistente mal configurato (false = non tocca il
+		// transient update_plugins, che wp_update_plugins() aggiorna subito).
+		wp_clean_plugins_cache( false );
 		wp_update_plugins();
 	}
 

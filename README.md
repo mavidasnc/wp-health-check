@@ -604,6 +604,16 @@ funzioni di controllo remoto del core (`wp_version_check()`, `wp_update_plugins(
 `wp_update_themes()`): è il ramo lento del plugin, da usare solo su richiesta
 esplicita dell'operatore nella dashboard (drill-down), mai nel polling automatico.
 
+Dalla `1.12.0`, `?fresh=1` (su `/health` e `/detail/plugins`) svuota anche le
+cache delle liste plugin/temi (`wp_clean_plugins_cache()` /
+`wp_clean_themes_cache()`) **prima** di ricontare, così `get_plugins()` e
+`wp_get_themes()` riscansionano davvero la cartella. È la garanzia che i
+conteggi (`plugins_total`, `count`, `themes_total`) siano corretti anche dietro
+un object cache persistente (Redis/Memcached) che renda persistente — a torto —
+il gruppo di cache `plugins`/`themes`, scenario in cui altrimenti il totale
+potrebbe restare fermo a un valore vecchio. Se un conteggio sembra sbagliato,
+interrogare la rotta con `?fresh=1` è il primo controllo da fare.
+
 **Perché `/health` non chiama mai `WP_Debug_Data::debug_data()`:** quella funzione
 introspeziona l'intero ambiente server (versioni PHP, estensioni, dimensioni
 directory, in alcuni casi persino test attivi su Imagick/Ghostscript) ed è

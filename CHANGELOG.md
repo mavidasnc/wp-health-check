@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-07-09
+
+### Fixed
+
+- Conteggi plugin/temi potenzialmente stale dietro un object cache persistente
+  mal configurato (che rende persistente il gruppo di cache `plugins`/`themes`):
+  `?fresh=1` su `/health` e `/detail/plugins` ora svuota le cache delle liste
+  (`wp_clean_plugins_cache( false )` / `wp_clean_themes_cache( false )`) prima
+  di ricontare, così `get_plugins()`/`wp_get_themes()` riscansionano la
+  cartella e `plugins_total` / `count` / `themes_total` risultano corretti.
+  La logica di conteggio in sé era già corretta; il problema era la freschezza
+  dei dati (cache dei payload: `/detail/plugins` 1h, `/health` 60s; più il
+  transient degli update mantenuto dal cron). Per dati autorevoli usare
+  sempre `?fresh=1`.
+
 ## [1.11.0] - 2026-07-09
 
 ### Added
@@ -210,7 +225,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...v1.9.0
