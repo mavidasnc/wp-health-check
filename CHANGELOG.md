@@ -7,6 +7,17 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-09
+
+### Added
+
+- Nuovi campi nel `summary` di `GET /health`: `php_memory_limit`, `server_ip`
+  (IP del server WordPress da `SERVER_ADDR`, `null` se non determinabile),
+  `themes_total` (numero di temi installati), `theme_name` (nome del tema
+  attivo) e `parent_theme_name` (nome del tema parent, `null` se il tema
+  attivo non è un child theme).
+- Campo `server_ip` anche nella sezione `server` di `GET /detail/server`.
+
 ## [1.7.0] - 2026-07-08
 
 ### Fixed
@@ -131,7 +142,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.4.0...v1.5.0

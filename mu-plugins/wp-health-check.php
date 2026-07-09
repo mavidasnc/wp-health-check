@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.7.0
+ * Version:     1.8.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.7.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.8.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -126,6 +126,22 @@ function wphc_get_client_ip() {
 	$remote_addr = isset( $_SERVER['REMOTE_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REMOTE_ADDR'] ) ) : '';
 
 	return filter_var( $remote_addr, FILTER_VALIDATE_IP ) ? $remote_addr : '';
+}
+
+/**
+ * Determina l'IP del server WordPress (la macchina che esegue PHP), letto
+ * da SERVER_ADDR. E' l'indirizzo su cui il web server ha accettato la
+ * connessione: dietro un reverse proxy / load balancer puo' essere l'IP
+ * interno del backend e non quello pubblico del sito, e su alcuni SAPI puo'
+ * non essere impostato affatto (in quel caso si restituisce stringa vuota).
+ * Non e' un dato di sicurezza, solo informativo per la dashboard.
+ *
+ * @return string IP valido del server, oppure stringa vuota se non determinabile.
+ */
+function wphc_get_server_ip() {
+	$server_addr = isset( $_SERVER['SERVER_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['SERVER_ADDR'] ) ) : '';
+
+	return filter_var( $server_addr, FILTER_VALIDATE_IP ) ? $server_addr : '';
 }
 
 /**
@@ -667,6 +683,19 @@ function wphc_route_health( WP_REST_Request $request ) {
 		? gmdate( 'c', (int) $update_plugins_transient->last_checked )
 		: null;
 
+	// Temi: conteggio totale + nome del tema attivo e dell'eventuale parent.
+	// wp_get_themes()/wp_get_theme() fanno una scansione della cartella temi
+	// analoga a get_plugins() gia' usata sopra (cache interna di WP): stesso
+	// ordine di costo, nessuna chiamata remota, coerente col contratto di
+	// questa rotta.
+	$all_themes        = wp_get_themes();
+	$active_theme      = wp_get_theme();
+	$active_theme_name = (string) $active_theme->get( 'Name' );
+	$parent_theme      = $active_theme->parent();
+	$parent_theme_name = ( $parent_theme instanceof WP_Theme ) ? (string) $parent_theme->get( 'Name' ) : null;
+
+	$server_ip = wphc_get_server_ip();
+
 	$payload = array(
 		'site'                => wphc_normalize_site_url(),
 		'generated_at'        => gmdate( 'c' ),
@@ -674,11 +703,16 @@ function wphc_route_health( WP_REST_Request $request ) {
 		'summary'             => array(
 			'wp_version'         => get_bloginfo( 'version' ),
 			'php_version'        => PHP_VERSION,
+			'php_memory_limit'   => (string) ini_get( 'memory_limit' ),
+			'server_ip'          => '' !== $server_ip ? $server_ip : null,
 			'plugin_version'     => WP_HEALTH_CHECK_VERSION,
 			'plugins_total'      => count( $all_plugins ),
 			'plugins_active'     => count( $active_plugins ),
 			'plugins_updates'    => $plugins_updates_count,
+			'themes_total'       => count( $all_themes ),
 			'themes_updates'     => $themes_updates_count,
+			'theme_name'         => $active_theme_name,
+			'parent_theme_name'  => $parent_theme_name,
 			'core_update'        => $core_update_available,
 			'mu_dir_writable'    => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at' => $updates_checked_at,
@@ -914,11 +948,14 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 	// letti da un umano (es. "On (32M)" per gli upload) e non sono
 	// pensati per essere ri-parsati programmaticamente; ini_get() da'
 	// invece lo stesso identico dato in forma stabile e diretta.
+	$server_ip = wphc_get_server_ip();
+
 	$payload = array(
 		'site'         => wphc_normalize_site_url(),
 		'generated_at' => gmdate( 'c' ),
 		'server'       => array(
 			'software'            => $software,
+			'server_ip'           => '' !== $server_ip ? $server_ip : null,
 			'php_version'         => PHP_VERSION,
 			'php_sapi'            => PHP_SAPI,
 			'php_memory_limit'    => (string) ini_get( 'memory_limit' ),

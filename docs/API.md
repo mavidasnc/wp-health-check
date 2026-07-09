@@ -1,7 +1,7 @@
 # WP Health Check — API Reference
 
 Reference tecnico delle rotte REST esposte dal fleet agent
-(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.7.0**.
+(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.8.0**.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -29,7 +29,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.7.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.8.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -118,7 +118,7 @@ origin della richiesta (mai il wildcard letterale `*`). Vedi la sezione
 
 > Negli esempi seguenti `esempio.com` è un segnaposto. I payload di risposta
 > sono strutturalmente reali (verificati su un sito di produzione con agent
-> 1.7.0); host, versioni e conteggi variano per sito.
+> 1.8.0); host, versioni e conteggi variano per sito.
 
 ---
 
@@ -179,7 +179,7 @@ curl -X POST 'https://esempio.com/wp-json/health-check/v1/enroll' \
 {
   "enrolled": true,
   "site": "https://esempio.com",
-  "agent_version": "1.7.0"
+  "agent_version": "1.8.0"
 }
 ```
 
@@ -216,15 +216,20 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 {
   "site": "https://esempio.com",
   "generated_at": "2026-07-09T08:00:00+00:00",
-  "fleet_agent_version": "1.7.0",
+  "fleet_agent_version": "1.8.0",
   "summary": {
     "wp_version": "7.0",
     "php_version": "8.3.30",
-    "plugin_version": "1.7.0",
+    "php_memory_limit": "2G",
+    "server_ip": "203.0.113.10",
+    "plugin_version": "1.8.0",
     "plugins_total": 21,
     "plugins_active": 14,
     "plugins_updates": 1,
+    "themes_total": 4,
     "themes_updates": 0,
+    "theme_name": "miziomon",
+    "parent_theme_name": "Blocksy",
     "core_update": false,
     "mu_dir_writable": true,
     "updates_checked_at": "2026-07-09T07:50:53+00:00"
@@ -248,11 +253,16 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 |---|---|---|
 | `summary.wp_version` | string | Versione di WordPress |
 | `summary.php_version` | string | Versione di PHP |
+| `summary.php_memory_limit` | string | `memory_limit` di PHP (`ini_get`) |
+| `summary.server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile |
 | `summary.plugin_version` | string | Versione di questo agent |
 | `summary.plugins_total` | int | Plugin installati (attivi + inattivi) |
 | `summary.plugins_active` | int | Plugin attivi |
 | `summary.plugins_updates` | int | Plugin con aggiornamento disponibile |
+| `summary.themes_total` | int | Temi installati |
 | `summary.themes_updates` | int | Temi con aggiornamento disponibile |
+| `summary.theme_name` | string | Nome del tema attivo |
+| `summary.parent_theme_name` | string \| null | Nome del tema parent, `null` se il tema attivo non è un child |
 | `summary.core_update` | bool | `true` se è disponibile un aggiornamento core |
 | `summary.mu_dir_writable` | bool | `true` se `WPMU_PLUGIN_DIR` è scrivibile (self-update possibile) |
 | `summary.updates_checked_at` | string \| null | Ultimo check aggiornamenti del cron (ISO 8601) |
@@ -390,6 +400,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
   "generated_at": "2026-07-09T08:04:38+00:00",
   "server": {
     "software": "LiteSpeed",
+    "server_ip": "203.0.113.10",
     "php_version": "8.3.30",
     "php_sapi": "litespeed",
     "php_memory_limit": "2G",
@@ -415,6 +426,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
 | Campo | Tipo | Note |
 |---|---|---|
 | `software` | string | Software del server (es. `LiteSpeed`, `nginx/1.24.0`) |
+| `server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile |
 | `php_version` | string | Versione PHP |
 | `php_sapi` | string | SAPI PHP (es. `fpm-fcgi`, `litespeed`) |
 | `php_memory_limit` | string | `memory_limit` (`ini_get`) |

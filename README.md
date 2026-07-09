@@ -292,11 +292,16 @@ Risposta:
   "summary": {
     "wp_version": "6.5.3",
     "php_version": "8.1.29",
+    "php_memory_limit": "256M",
+    "server_ip": "203.0.113.10",
     "plugin_version": "1.0.0",
     "plugins_total": 18,
     "plugins_active": 14,
     "plugins_updates": 2,
+    "themes_total": 3,
     "themes_updates": 0,
+    "theme_name": "Astra Child",
+    "parent_theme_name": "Astra",
     "core_update": false,
     "mu_dir_writable": true,
     "updates_checked_at": "2026-07-08T09:12:00+00:00"
@@ -391,6 +396,7 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/server' \
   "generated_at": "2026-07-08T10:00:00+00:00",
   "server": {
     "software": "nginx/1.24.0",
+    "server_ip": "203.0.113.10",
     "php_version": "8.1.29",
     "php_sapi": "fpm-fcgi",
     "php_memory_limit": "256M",
