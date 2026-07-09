@@ -1,7 +1,7 @@
 # WP Health Check — API Reference
 
 Reference tecnico delle rotte REST esposte dal fleet agent
-(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.8.0**.
+(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.9.0**.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -29,7 +29,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.8.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.9.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -118,7 +118,7 @@ origin della richiesta (mai il wildcard letterale `*`). Vedi la sezione
 
 > Negli esempi seguenti `esempio.com` è un segnaposto. I payload di risposta
 > sono strutturalmente reali (verificati su un sito di produzione con agent
-> 1.8.0); host, versioni e conteggi variano per sito.
+> 1.9.0); host, versioni e conteggi variano per sito.
 
 ---
 
@@ -173,15 +173,30 @@ curl -X POST 'https://esempio.com/wp-json/health-check/v1/enroll' \
   }'
 ```
 
+### Confronto URL tollerante
+
+Il `site_url` firmato non deve combaciare byte per byte con `home_url()`: il
+sito costruisce un **set di URL canonici candidati** — `home_url()`,
+`site_url()`, `network_home_url()`, `network_site_url()`, ciascuno anche nella
+variante con/senza `www.` — li normalizza tutti con la regola del centro e
+accetta l'enroll se il `site_url` firmato normalizzato è nel set. Questo evita
+403 spurii su siti WPML (dove `home_url()` varia per lingua), dietro reverse
+proxy o con varianti www/non-www. La verifica della firma resta **prima e
+obbligatoria**. Il sito memorizza esattamente il `site_url` firmato ricevuto e
+lo restituisce nel campo `site`.
+
 ### Risposta `200`
 
 ```json
 {
   "enrolled": true,
   "site": "https://esempio.com",
-  "agent_version": "1.8.0"
+  "agent_version": "1.9.0"
 }
 ```
+
+Il campo `site` è il `site_url` firmato realmente registrato (la chiave a cui è
+legato il token), non necessariamente `home_url()`.
 
 ### Errori
 
@@ -190,7 +205,21 @@ curl -X POST 'https://esempio.com/wp-json/health-check/v1/enroll' \
 | `400` | `wphc_enroll_invalid_body` | Corpo non JSON o non oggetto |
 | `400` | `wphc_enroll_missing_field` | Manca `site_url`, `token`, `issued_at` o `signature` |
 | `401` | `wphc_enroll_unauthorized` | Firma non valida (messaggio generico) |
-| `403` | `wphc_enroll_site_mismatch` | `site_url` del payload diverso dal sito corrente |
+| `403` | `wphc_enroll_url_mismatch` | `site_url` firmato non tra le varianti canoniche del sito |
+
+Il `403 wphc_enroll_url_mismatch` include nel corpo l'URL atteso, per diagnosi:
+
+```json
+{
+  "code": "wphc_enroll_url_mismatch",
+  "message": "URL atteso: https://esempio.com — ricevuto: https://altro-dominio.it",
+  "data": {
+    "status": 403,
+    "expected": "https://esempio.com",
+    "received": "https://altro-dominio.it"
+  }
+}
+```
 
 ---
 
@@ -216,13 +245,13 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 {
   "site": "https://esempio.com",
   "generated_at": "2026-07-09T08:00:00+00:00",
-  "fleet_agent_version": "1.8.0",
+  "fleet_agent_version": "1.9.0",
   "summary": {
     "wp_version": "7.0",
     "php_version": "8.3.30",
     "php_memory_limit": "2G",
     "server_ip": "203.0.113.10",
-    "plugin_version": "1.8.0",
+    "plugin_version": "1.9.0",
     "plugins_total": 21,
     "plugins_active": 14,
     "plugins_updates": 1,
@@ -531,7 +560,7 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 | `wphc_enroll_invalid_body` | `400` |
 | `wphc_enroll_missing_field` | `400` |
 | `wphc_enroll_unauthorized` | `401` |
-| `wphc_enroll_site_mismatch` | `403` |
+| `wphc_enroll_url_mismatch` | `403` |
 
 ### `/update`
 

@@ -7,6 +7,30 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-07-09
+
+### Changed
+
+- `POST /enroll`: il confronto tra il `site_url` firmato e l'URL del sito è ora
+  **tollerante**. Il sito costruisce un set di URL canonici candidati
+  (`home_url()`, `site_url()`, `network_home_url()`, `network_site_url()`,
+  ciascuno con/senza `www.`, tutti normalizzati) e accetta l'enroll se il
+  `site_url` firmato normalizzato è nel set. Risolve i 403 spurii su siti WPML
+  (dove `home_url()` varia per lingua), dietro reverse proxy o con varianti
+  www/non-www. La verifica della firma resta prima e obbligatoria.
+- Il codice di errore del mismatch URL passa da `wphc_enroll_site_mismatch` a
+  `wphc_enroll_url_mismatch` (`403`), che ora espone nel `message` l'URL atteso
+  e nei campi `data.expected` / `data.received` atteso e ricevuto.
+- Il campo `site` della risposta di `/enroll` è ora il `site_url` firmato
+  realmente registrato (la chiave a cui è legato il token), non più
+  `home_url()` normalizzato.
+
+### Added
+
+- Opzione `wp_health_check_site_url`: memorizza esattamente il `site_url`
+  firmato ricevuto in fase di enroll. Azzerata dal reset (WP-CLI e tab Site
+  Health) e mostrata come riga di sola lettura nella tab Site Health.
+
 ## [1.8.0] - 2026-07-09
 
 ### Added
@@ -142,7 +166,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.5.0...v1.6.0

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.8.0
+ * Version:     1.9.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.8.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.9.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -75,18 +75,21 @@ if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY' ) ) {
 // -----------------------------------------------------------------------
 
 /**
- * Calcola l'URL normalizzato del sito, usato sia come identificativo
- * "site" nelle risposte sia come materiale su cui il centro calcola
- * l'HMAC del token. Deve essere BYTE PER BYTE identico a quello che
- * ricalcola il centro, quindi la normalizzazione e' minima e deterministica:
- * schema e host in minuscolo, niente slash finale. Vedi README.md per
+ * Normalizza un URL qualsiasi con la STESSA regola del sistema centrale,
+ * cosi' che il confronto lato sito e il calcolo dell'HMAC del token lato
+ * centro operino byte per byte sullo stesso materiale: schema e host in
+ * minuscolo, porta inclusa solo se presente/non standard, path invariato
+ * senza slash finale, niente query ne' fragment. Vedi README.md per
  * l'esempio numerico completo URL -> token.
  *
- * @return string URL normalizzato (es. "https://esempio.com/blog").
+ * @param string $url URL grezzo da normalizzare.
+ * @return string URL normalizzato, oppure stringa vuota se non parsabile.
  */
-function wphc_normalize_site_url() {
-	$home  = home_url();
-	$parts = wp_parse_url( $home );
+function wphc_normalize_url( $url ) {
+	$parts = wp_parse_url( (string) $url );
+	if ( ! is_array( $parts ) ) {
+		return '';
+	}
 
 	$scheme = isset( $parts['scheme'] ) ? strtolower( $parts['scheme'] ) : 'https';
 	$host   = isset( $parts['host'] ) ? strtolower( $parts['host'] ) : '';
@@ -94,6 +97,58 @@ function wphc_normalize_site_url() {
 	$path   = isset( $parts['path'] ) ? $parts['path'] : '';
 
 	return untrailingslashit( $scheme . '://' . $host . $port . $path );
+}
+
+/**
+ * URL normalizzato del sito corrente, usato come identificativo "site"
+ * nelle risposte e come URL canonico "atteso" nei messaggi di mismatch.
+ * E' semplicemente wphc_normalize_url() applicato a home_url().
+ *
+ * @return string URL normalizzato (es. "https://esempio.com/blog").
+ */
+function wphc_normalize_site_url() {
+	return wphc_normalize_url( home_url() );
+}
+
+/**
+ * Costruisce l'insieme degli URL canonici plausibili di questo sito, usato
+ * per rendere tollerante il confronto in fase di enroll (siti WPML dove
+ * home_url() varia per lingua, reverse proxy, varianti www/non-www).
+ *
+ * Raccoglie home_url(), site_url(), network_home_url() e network_site_url()
+ * (site_url()/network_* non sono filtrate per lingua da WPML, quindi il set
+ * contiene sempre l'URL base canonico anche quando home_url() porta un
+ * prefisso di lingua), genera per ciascuna la variante con/senza "www." sul
+ * primo label dell'host, normalizza tutto e deduplica.
+ *
+ * @return string[] URL normalizzati candidati, senza duplicati.
+ */
+function wphc_candidate_site_urls() {
+	$raw        = array( home_url(), site_url(), network_home_url(), network_site_url() );
+	$candidates = array();
+
+	foreach ( $raw as $url ) {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['host'] ) ) {
+			continue;
+		}
+
+		$host     = strtolower( $parts['host'] );
+		$alt_host = ( 0 === strpos( $host, 'www.' ) ) ? substr( $host, 4 ) : 'www.' . $host;
+		$scheme   = isset( $parts['scheme'] ) ? $parts['scheme'] : 'https';
+		$port     = isset( $parts['port'] ) ? ':' . $parts['port'] : '';
+		$path     = isset( $parts['path'] ) ? $parts['path'] : '';
+
+		foreach ( array( $host, $alt_host ) as $variant_host ) {
+			$normalized = wphc_normalize_url( $scheme . '://' . $variant_host . $port . $path );
+			if ( '' !== $normalized ) {
+				// Chiave dell'array = dedup automatica delle varianti coincidenti.
+				$candidates[ $normalized ] = true;
+			}
+		}
+	}
+
+	return array_keys( $candidates );
 }
 
 /**
@@ -213,6 +268,7 @@ function wphc_build_enroll_signing_payload( $site_url, $token, $dashboard_origin
 function wphc_reset_enrollment() {
 	$options = array(
 		'wp_health_check_token',
+		'wp_health_check_site_url',
 		'wp_health_check_dashboard_origin',
 		'wp_health_check_enrolled_at',
 		'wp_health_check_enrolled_ip',
@@ -581,16 +637,46 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 		return new WP_Error( 'wphc_enroll_unauthorized', __( 'Richiesta di enroll non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
 	}
 
-	// 3. Il payload firmato deve riguardare ESATTAMENTE questo sito:
-	// impedisce di riusare una busta firmata valida ma destinata a un
-	// altro dominio della flotta contro un sito diverso.
-	$current_site_url = wphc_normalize_site_url();
-	if ( ! hash_equals( $current_site_url, $site_url ) ) {
-		return new WP_Error( 'wphc_enroll_site_mismatch', __( 'La busta di enroll non corrisponde a questo sito.', 'wp-health-check' ), array( 'status' => 403 ) );
+	// 3. Il payload firmato deve riguardare uno degli URL canonici di questo
+	// sito: impedisce di riusare una busta firmata valida ma destinata a un
+	// altro dominio della flotta contro un sito diverso. Il confronto e'
+	// TOLLERANTE (set di candidati home/site/network_* x www/non-www,
+	// tutti normalizzati) per non fallire su siti WPML, reverse proxy o
+	// varianti www/non-www dove l'URL locale differisce da quello canonico
+	// che il centro ha firmato. A questo punto la firma e' gia' valida:
+	// $site_url e' autenticato (e' cio' che il centro ha firmato), non input
+	// arbitrario. NB: il confronto non usa hash_equals perche' un URL non e'
+	// un segreto; l'autenticazione e' la firma Ed25519, gia' verificata.
+	$received_site_url   = $site_url;                       // grezzo: memorizzato e mostrato in diagnostica.
+	$received_normalized = wphc_normalize_url( $site_url );  // normalizzato: solo per il confronto.
+
+	if ( ! in_array( $received_normalized, wphc_candidate_site_urls(), true ) ) {
+		$canonical_home = wphc_normalize_site_url();
+		if ( WP_DEBUG ) {
+			error_log( sprintf( 'wp-health-check: enroll URL mismatch — atteso: %1$s ricevuto: %2$s', $canonical_home, $received_site_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+
+		return new WP_Error(
+			'wphc_enroll_url_mismatch',
+			sprintf(
+				/* translators: 1: URL canonico atteso, 2: URL ricevuto nella busta. */
+				__( 'URL atteso: %1$s — ricevuto: %2$s', 'wp-health-check' ),
+				$canonical_home,
+				$received_site_url
+			),
+			array(
+				'status'   => 403,
+				'expected' => $canonical_home,
+				'received' => $received_site_url,
+			)
+		);
 	}
 
-	// 4. Persistenza in wp_options (mai in wp-config.php).
+	// 4. Persistenza in wp_options (mai in wp-config.php). Si memorizza
+	// ESATTAMENTE il site_url firmato ricevuto (autenticato dalla firma):
+	// e' la chiave a cui il centro ha legato il token e che riusera' identica.
 	update_option( 'wp_health_check_token', $token, false );
+	update_option( 'wp_health_check_site_url', $received_site_url, false );
 	update_option( 'wp_health_check_dashboard_origin', $dashboard_origin, false );
 	update_option( 'wp_health_check_enrolled_at', gmdate( 'c' ), false );
 	update_option( 'wp_health_check_enrolled_ip', wphc_get_client_ip(), false );
@@ -598,11 +684,11 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	// per alcuna logica di scadenza, che per progetto non esiste).
 	update_option( 'wp_health_check_enroll_issued_at', $issued_at, false );
 
-	// 5. Conferma.
+	// 5. Conferma: si restituisce il site_url firmato realmente registrato.
 	return rest_ensure_response(
 		array(
 			'enrolled'      => true,
-			'site'          => $current_site_url,
+			'site'          => $received_site_url,
 			'agent_version' => WP_HEALTH_CHECK_VERSION,
 		)
 	);
@@ -1249,6 +1335,7 @@ function wphc_render_site_health_tab( $tab ) {
 
 	$dashboard_origin = (string) get_option( 'wp_health_check_dashboard_origin', '' );
 	$is_enrolled      = ! empty( get_option( 'wp_health_check_token' ) );
+	$signed_site_url  = (string) get_option( 'wp_health_check_site_url', '' );
 	$enrolled_at      = get_option( 'wp_health_check_enrolled_at' );
 	$enrolled_ip      = get_option( 'wp_health_check_enrolled_ip' );
 	$last_request_at  = get_option( 'wp_health_check_last_request_at' );
@@ -1294,6 +1381,19 @@ function wphc_render_site_health_tab( $tab ) {
 						<?php else : ?>
 							<?php esc_html_e( 'Non registrato (in attesa di /enroll)', 'wp-health-check' ); ?>
 						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'URL firmato registrato', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( '' !== $signed_site_url ) : ?>
+							<code><?php echo esc_html( $signed_site_url ); ?></code>
+						<?php else : ?>
+							&mdash;
+						<?php endif; ?>
+						<p class="description">
+							<?php esc_html_e( 'URL esatto che il sistema centrale ha firmato in fase di enroll: e\' la chiave a cui e\' legato il token. Utile a diagnosticare mismatch su siti WPML o con varianti www/non-www.', 'wp-health-check' ); ?>
+						</p>
 					</td>
 				</tr>
 				<tr>

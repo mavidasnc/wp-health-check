@@ -194,7 +194,7 @@ incorporata), non *fail open*.
 
 > Per un reference tecnico compatto di tutte le rotte (parametri, esempi di
 > richiesta/risposta verificati, tabelle dei campi e dei codici di errore) vedi
-> [docs/API.md](docs/API.md). Le sezioni qui sotto restano la spiegazione
+> [docs/API health check.md](docs/API%20health%20check.md). Le sezioni qui sotto restano la spiegazione
 > discorsiva con il razionale di ogni scelta.
 
 Namespace: `health-check/v1`. Tutte le rotte gestiscono il preflight `OPTIONS`
@@ -262,8 +262,23 @@ https://esempio.com/blog\nhJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI\n\n1735689
 |---|---|---|
 | Campo obbligatorio mancante | `400` | `WP_Error` |
 | Firma non valida | `401` | messaggio unico e generico (non distingue "firma errata" da altro) |
-| `site_url` del payload diverso da quello del sito corrente | `403` | impedisce il riuso di una busta destinata a un altro sito |
-| Successo | `200` | `{ "enrolled": true, "site": "...", "agent_version": "1.0.0" }` |
+| `site_url` firmato non tra le varianti canoniche del sito | `403` | `WP_Error` con codice `wphc_enroll_url_mismatch`; `message` riporta l'URL atteso, e `data.expected`/`data.received` lo espongono per la diagnosi |
+| Successo | `200` | `{ "enrolled": true, "site": "<site_url firmato>", "agent_version": "1.9.0" }` |
+
+**Confronto URL tollerante.** Il `site_url` firmato non deve combaciare byte per
+byte con `home_url()`: verrebbe rifiutato a torto su siti WPML (dove `home_url()`
+varia per lingua), dietro reverse proxy, o con varianti www/non-www. Il sito
+costruisce quindi un **set di URL canonici candidati** — `home_url()`,
+`site_url()`, `network_home_url()`, `network_site_url()`, ciascuno anche nella
+variante con/senza `www.` — li normalizza tutti con la stessa regola del centro,
+e accetta l'enroll se il `site_url` firmato (normalizzato) è presente nel set.
+`site_url()`/`network_*` non sono filtrate per lingua da WPML, quindi il set
+contiene sempre l'URL base canonico anche quando `home_url()` porta un prefisso
+di lingua. La verifica della firma resta **prima e obbligatoria** (`401` se
+fallisce): il confronto URL è puramente un controllo di destinazione, non di
+autenticazione. Il sito memorizza **esattamente** il `site_url` firmato ricevuto
+(in `wp_health_check_site_url`) e lo restituisce nel campo `site`: è la chiave a
+cui il centro ha legato il token e che riuserà identica.
 
 Un replay dello stesso enroll (stesso URL) produce sempre lo stesso `token`
 (derivazione deterministica): riscrive lo stesso valore, quindi è innocuo e **non è
