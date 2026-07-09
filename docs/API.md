@@ -1,0 +1,540 @@
+# WP Health Check — API Reference
+
+Reference tecnico delle rotte REST esposte dal fleet agent
+(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.7.0**.
+
+Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
+self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
+questo documento è la sola scheda operativa delle chiamate e delle risposte.
+
+## Indice
+
+1. [Informazioni generali](#informazioni-generali)
+2. [Autenticazione](#autenticazione)
+3. [Convenzioni comuni](#convenzioni-comuni)
+4. [`POST /enroll`](#post-enroll)
+5. [`GET /health`](#get-health)
+6. [`GET /detail/plugins`](#get-detailplugins)
+7. [`GET /detail/theme`](#get-detailtheme)
+8. [`GET /detail/server`](#get-detailserver)
+9. [`POST /update`](#post-update)
+10. [Riferimento codici di errore](#riferimento-codici-di-errore)
+
+---
+
+## Informazioni generali
+
+| | |
+|---|---|
+| **Base URL** | `https://<sito>/wp-json/health-check/v1` |
+| **Namespace REST** | `health-check/v1` |
+| **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
+| **Versione agent** | `1.7.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
+
+Sintesi delle rotte:
+
+| Metodo | Rotta | Auth | Query | Cache lato agent |
+|---|---|---|---|---|
+| `POST` | `/enroll` | Firma Ed25519 (nel body) | — | nessuna |
+| `GET` | `/health` | Bearer token | `?fresh=1` | transient 60s |
+| `GET` | `/detail/plugins` | Bearer token | `?fresh=1` | transient 1h |
+| `GET` | `/detail/theme` | Bearer token | `?fresh=1` | transient 1h |
+| `GET` | `/detail/server` | Bearer token | `?fresh=1` | transient 12h |
+| `POST` | `/update` | Bearer token | — | nessuna |
+
+---
+
+## Autenticazione
+
+Esistono **due meccanismi distinti**, uno per la sola rotta di bootstrap e uno
+per tutte le rotte dati.
+
+### `/enroll` — firma Ed25519
+
+La rotta di enroll non richiede alcun token (è il momento in cui il token viene
+consegnato). L'autenticazione è una **firma Ed25519** nel corpo della
+richiesta, prodotta dal sistema centrale con la propria chiave privata e
+verificata dal sito con la chiave pubblica incorporata nel plugin
+(`WP_HEALTH_CHECK_CENTRAL_PUBKEY`). Vedi il dettaglio in
+[`POST /enroll`](#post-enroll).
+
+### `/health`, `/detail/*`, `/update` — Bearer token
+
+Tutte le rotte dati richiedono l'header:
+
+```
+Authorization: Bearer <token>
+```
+
+Il token è quello consegnato in fase di enroll, conservato dal sito in
+`wp_health_check_token` e confrontato in tempo costante (`hash_equals`). Header
+mancante e token errato restituiscono **lo stesso** errore `401`, per non
+rivelare quale dei due casi si sia verificato.
+
+| Condizione | Status | `code` |
+|---|---|---|
+| Sito mai registrato (nessun token salvato) | `503` | `wphc_not_enrolled` |
+| Header `Authorization` assente o non `Bearer` | `401` | `wphc_unauthorized` |
+| Token errato | `401` | `wphc_unauthorized` |
+
+---
+
+## Convenzioni comuni
+
+**Campi ricorrenti nelle risposte 200:**
+
+- `site` — URL normalizzato del sito (schema/host minuscoli, senza slash
+  finale), es. `https://esempio.com`;
+- `generated_at` — timestamp ISO 8601 UTC di generazione della risposta.
+
+**Formato degli errori.** Ogni errore è un `WP_Error` serializzato da WordPress:
+
+```json
+{
+  "code": "wphc_unauthorized",
+  "message": "Non autorizzato.",
+  "data": { "status": 401 }
+}
+```
+
+Lo status HTTP della risposta coincide con `data.status`.
+
+**`?fresh=1`.** Su `/health` e su tutte le rotte `/detail/*` è l'unico modo per
+forzare un refresh: bypassa la cache a transient dell'agent ed esegue prima le
+funzioni di controllo remoto del core (`wp_version_check()`,
+`wp_update_plugins()`, `wp_update_themes()`). È il ramo lento, da usare solo su
+drill-down manuale della dashboard, mai nel polling automatico.
+
+**Cache.** Le risposte del namespace `health-check/v1` non vengono mai messe in
+cache HTTP/edge (l'agent invia `nocache_headers()` e definisce `DONOTCACHEPAGE`
+prima di ogni risposta). La cache indicata nelle tabelle è quella applicativa
+dell'agent, via transient, separata dalla cache HTTP.
+
+**CORS.** Se `wp_health_check_dashboard_origin` è configurata, viene
+autorizzata solo quell'origin esatta; se è vuota, viene riflessa qualunque
+origin della richiesta (mai il wildcard letterale `*`). Vedi la sezione
+[CORS del README](../README.md#cors).
+
+> Negli esempi seguenti `esempio.com` è un segnaposto. I payload di risposta
+> sono strutturalmente reali (verificati su un sito di produzione con agent
+> 1.7.0); host, versioni e conteggi variano per sito.
+
+---
+
+## `POST /enroll`
+
+Bootstrap firmato: consegna al sito il proprio token la prima volta, senza
+toccare `wp-config.php`. Idempotente — ripetere lo stesso enroll riscrive lo
+stesso valore (nessun controllo anti-replay necessario).
+
+**Auth:** firma Ed25519 nel body (nessun token).
+
+### Payload
+
+```json
+{
+  "site_url": "https://esempio.com",
+  "token": "hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI",
+  "dashboard_origin": "https://fleet.esempio.com",
+  "issued_at": 1735689600,
+  "signature": "<firma base64 standard>"
+}
+```
+
+| Campo | Tipo | Obbligatorio | Note |
+|---|---|---|---|
+| `site_url` | string | sì | URL normalizzato del sito target; deve combaciare byte per byte con quello del sito |
+| `token` | string | sì | Token opaco calcolato dal centro |
+| `dashboard_origin` | string \| null | no | Origin della dashboard per CORS; `null` = nessuna origin configurata |
+| `issued_at` | int | sì | Timestamp Unix di emissione |
+| `signature` | string | sì | Firma Ed25519 (base64) del messaggio canonico |
+
+La `signature` copre la concatenazione canonica, con `"\n"` come separatore:
+
+```
+site_url + "\n" + token + "\n" + dashboard_origin + "\n" + issued_at
+```
+
+Se `dashboard_origin` è `null`, il suo posto nella concatenazione è la **stringa
+vuota** (non la stringa letterale `"null"`).
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/enroll' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "site_url": "https://esempio.com",
+    "token": "hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI",
+    "dashboard_origin": "https://fleet.esempio.com",
+    "issued_at": 1735689600,
+    "signature": "nByXUXT7CjOZromTGSNyA5akd1/71ByYS454BwM2egSoM7upczL5AH+0i0LIk2/5Fx2hdbkjO3mWfmmmoRi6DA=="
+  }'
+```
+
+### Risposta `200`
+
+```json
+{
+  "enrolled": true,
+  "site": "https://esempio.com",
+  "agent_version": "1.7.0"
+}
+```
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `400` | `wphc_enroll_invalid_body` | Corpo non JSON o non oggetto |
+| `400` | `wphc_enroll_missing_field` | Manca `site_url`, `token`, `issued_at` o `signature` |
+| `401` | `wphc_enroll_unauthorized` | Firma non valida (messaggio generico) |
+| `403` | `wphc_enroll_site_mismatch` | `site_url` del payload diverso dal sito corrente |
+
+---
+
+## `GET /health`
+
+Sommario economico, pensato per il polling frequente. Non chiama mai
+`WP_Debug_Data::debug_data()` né forza check remoti (salvo `?fresh=1`). Legge i
+conteggi di aggiornamento direttamente dai transient del core, senza gating per
+capability utente (l'autenticazione è il bearer token, non una sessione).
+
+**Auth:** Bearer token. **Query:** `?fresh=1` opzionale. **Cache:** transient 60s.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/health' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-09T08:00:00+00:00",
+  "fleet_agent_version": "1.7.0",
+  "summary": {
+    "wp_version": "7.0",
+    "php_version": "8.3.30",
+    "plugin_version": "1.7.0",
+    "plugins_total": 21,
+    "plugins_active": 14,
+    "plugins_updates": 1,
+    "themes_updates": 0,
+    "core_update": false,
+    "mu_dir_writable": true,
+    "updates_checked_at": "2026-07-09T07:50:53+00:00"
+  },
+  "last_access": {
+    "at": "2026-07-09T07:59:00+00:00",
+    "ip": "203.0.113.7",
+    "enrolled_at": "2026-07-08T15:41:15+00:00"
+  },
+  "detail_routes": {
+    "plugins": "https://esempio.com/wp-json/health-check/v1/detail/plugins",
+    "theme": "https://esempio.com/wp-json/health-check/v1/detail/theme",
+    "server": "https://esempio.com/wp-json/health-check/v1/detail/server"
+  }
+}
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `summary.wp_version` | string | Versione di WordPress |
+| `summary.php_version` | string | Versione di PHP |
+| `summary.plugin_version` | string | Versione di questo agent |
+| `summary.plugins_total` | int | Plugin installati (attivi + inattivi) |
+| `summary.plugins_active` | int | Plugin attivi |
+| `summary.plugins_updates` | int | Plugin con aggiornamento disponibile |
+| `summary.themes_updates` | int | Temi con aggiornamento disponibile |
+| `summary.core_update` | bool | `true` se è disponibile un aggiornamento core |
+| `summary.mu_dir_writable` | bool | `true` se `WPMU_PLUGIN_DIR` è scrivibile (self-update possibile) |
+| `summary.updates_checked_at` | string \| null | Ultimo check aggiornamenti del cron (ISO 8601) |
+| `last_access.at` | string \| null | Timestamp dell'accesso **precedente** (segnale di audit) |
+| `last_access.ip` | string \| null | IP dell'accesso precedente |
+| `last_access.enrolled_at` | string \| null | Timestamp dell'enroll |
+| `detail_routes` | object | URL assoluti delle rotte di dettaglio |
+
+---
+
+## `GET /detail/plugins`
+
+Elenco completo dei plugin installati, con stato di aggiornamento per ciascuno.
+
+**Auth:** Bearer token. **Query:** `?fresh=1` opzionale. **Cache:** transient 1h.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/detail/plugins' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-09T08:04:37+00:00",
+  "count": 21,
+  "plugins": [
+    {
+      "name": "Phoenix Media Rename",
+      "slug": "phoenix-media-rename",
+      "version": "3.13.2",
+      "active": true,
+      "update_available": true,
+      "new_version": "3.13.3"
+    },
+    {
+      "name": "AI",
+      "slug": "ai",
+      "version": "1.1.0",
+      "active": true,
+      "update_available": false,
+      "new_version": null
+    }
+  ]
+}
+```
+
+### Campi (per elemento di `plugins`)
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `name` | string | Nome del plugin |
+| `slug` | string | Cartella del plugin, o nome file senza estensione per i plugin a file singolo |
+| `version` | string | Versione installata |
+| `active` | bool | `true` se attivo |
+| `update_available` | bool | `true` se esiste un aggiornamento |
+| `new_version` | string \| null | Versione disponibile, o `null` |
+
+---
+
+## `GET /detail/theme`
+
+Dettaglio del tema attivo e dell'eventuale tema parent (per i child theme).
+
+**Auth:** Bearer token. **Query:** `?fresh=1` opzionale. **Cache:** transient 1h.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/detail/theme' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-09T08:04:37+00:00",
+  "active_theme": {
+    "name": "miziomon",
+    "stylesheet": "miziomon",
+    "version": "1.0",
+    "update_available": false,
+    "new_version": null
+  },
+  "parent_theme": {
+    "name": "Blocksy",
+    "version": "2.1.48"
+  }
+}
+```
+
+`parent_theme` è `null` quando il tema attivo non è un child theme.
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `active_theme.name` | string | Nome del tema attivo |
+| `active_theme.stylesheet` | string | Slug (directory) del tema |
+| `active_theme.version` | string | Versione installata |
+| `active_theme.update_available` | bool | `true` se esiste un aggiornamento |
+| `active_theme.new_version` | string \| null | Versione disponibile, o `null` |
+| `parent_theme` | object \| null | `null` se non è un child theme |
+| `parent_theme.name` | string | Nome del tema parent |
+| `parent_theme.version` | string | Versione del tema parent |
+
+---
+
+## `GET /detail/server`
+
+Ambiente server / PHP / database. È la rotta più costosa (usa
+`WP_Debug_Data::debug_data()` con un allowlist esplicito di campi), isolata
+dietro la cache più lunga e mai chiamata dal polling di `/health`.
+
+**Auth:** Bearer token. **Query:** `?fresh=1` opzionale. **Cache:** transient 12h.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-09T08:04:38+00:00",
+  "server": {
+    "software": "LiteSpeed",
+    "php_version": "8.3.30",
+    "php_sapi": "litespeed",
+    "php_memory_limit": "2G",
+    "max_execution_time": "30",
+    "max_input_vars": "1000",
+    "upload_max_filesize": "8M",
+    "post_max_size": "8M",
+    "mysql_version": "10.11.16",
+    "https": true,
+    "extensions": {
+      "curl": true,
+      "imagick": true,
+      "gd": true,
+      "mbstring": true,
+      "intl": true
+    }
+  }
+}
+```
+
+### Campi (dentro `server`)
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `software` | string | Software del server (es. `LiteSpeed`, `nginx/1.24.0`) |
+| `php_version` | string | Versione PHP |
+| `php_sapi` | string | SAPI PHP (es. `fpm-fcgi`, `litespeed`) |
+| `php_memory_limit` | string | `memory_limit` (`ini_get`) |
+| `max_execution_time` | string | `max_execution_time` |
+| `max_input_vars` | string | `max_input_vars` |
+| `upload_max_filesize` | string | `upload_max_filesize` |
+| `post_max_size` | string | `post_max_size` |
+| `mysql_version` | string | Versione MySQL/MariaDB |
+| `https` | bool | `true` se la richiesta è servita in HTTPS |
+| `extensions` | object | Presenza (`bool`) delle estensioni `curl`, `imagick`, `gd`, `mbstring`, `intl` |
+
+> I campi marcati `private` da `WP_Debug_Data` (utente e host del database) non
+> compaiono mai: il payload è costruito con un allowlist esplicito.
+
+---
+
+## `POST /update`
+
+Self-update dell'agent da una release GitHub firmata. Innescato solo da questa
+chiamata, mai da un cron lato sito. Verifica versione → scrivibilità → download
+→ integrità (SHA-256 + coerenza versione) → backup → scrittura atomica → sanity
+check → invalidazione opcache. Ogni passo che fallisce interrompe il flusso
+prima di toccare il file di produzione.
+
+**Auth:** Bearer token. **Query:** —. **Cache:** nessuna.
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/update' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposte `200`
+
+Aggiornamento eseguito:
+
+```json
+{ "updated": true, "from": "1.6.0", "to": "1.7.0" }
+```
+
+Già aggiornato:
+
+```json
+{ "updated": false, "reason": "up_to_date", "current": "1.7.0", "latest": "1.7.0" }
+```
+
+Directory non scrivibile:
+
+```json
+{ "updated": false, "reason": "not_writable" }
+```
+
+Verifica di integrità fallita (hash, prefisso `<?php`, o versione incoerente):
+
+```json
+{ "updated": false, "reason": "integrity_check_failed" }
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `updated` | bool | `true` solo se il file è stato effettivamente sostituito |
+| `from` | string | Versione precedente (solo se `updated: true`) |
+| `to` | string | Nuova versione (solo se `updated: true`) |
+| `reason` | string | Motivo del mancato update (`up_to_date`, `not_writable`, `integrity_check_failed`) |
+| `current` / `latest` | string | Versioni a confronto (solo con `reason: up_to_date`) |
+
+### Errori
+
+Tutti gli errori di rete/release restituiscono un `WP_Error`:
+
+| Status | `code` | Caso |
+|---|---|---|
+| `502` | `wphc_update_network_error` | Impossibile contattare GitHub |
+| `502` | `wphc_update_github_error` | GitHub ha risposto con status ≠ 200 |
+| `502` | `wphc_update_bad_release` | Risposta GitHub non valida (manca `tag_name`) |
+| `502` | `wphc_update_asset_missing` | Asset `wp-health-check.php` assente nella release |
+| `502` | `wphc_update_download_failed` | Download del nuovo file fallito |
+| `500` | `wphc_update_backup_failed` | Backup del file corrente fallito |
+| `500` | `wphc_update_write_failed` | Scrittura del nuovo file fallita |
+| `500` | `wphc_update_sanity_failed` | Sanity check post-scrittura fallito (backup ripristinato) |
+
+---
+
+## Riferimento codici di errore
+
+Tutti i `code` restituiti dall'API, raggruppati per rotta.
+
+### Autenticazione (rotte dati)
+
+| `code` | Status | Rotte |
+|---|---|---|
+| `wphc_not_enrolled` | `503` | `/health`, `/detail/*`, `/update` |
+| `wphc_unauthorized` | `401` | `/health`, `/detail/*`, `/update` |
+
+### `/enroll`
+
+| `code` | Status |
+|---|---|
+| `wphc_enroll_invalid_body` | `400` |
+| `wphc_enroll_missing_field` | `400` |
+| `wphc_enroll_unauthorized` | `401` |
+| `wphc_enroll_site_mismatch` | `403` |
+
+### `/update`
+
+| `code` | Status |
+|---|---|
+| `wphc_update_network_error` | `502` |
+| `wphc_update_github_error` | `502` |
+| `wphc_update_bad_release` | `502` |
+| `wphc_update_asset_missing` | `502` |
+| `wphc_update_download_failed` | `502` |
+| `wphc_update_backup_failed` | `500` |
+| `wphc_update_write_failed` | `500` |
+| `wphc_update_sanity_failed` | `500` |
+
+> Nota: `/update` distingue **errori** (`WP_Error`, status 5xx) da **esiti
+> non riusciti ma non erronei** (`200` con `reason`): `up_to_date`,
+> `not_writable`, `integrity_check_failed` non sono codici di errore ma stati
+> di risposta `200`.

@@ -192,6 +192,11 @@ incorporata), non *fail open*.
 
 ## Rotte REST
 
+> Per un reference tecnico compatto di tutte le rotte (parametri, esempi di
+> richiesta/risposta verificati, tabelle dei campi e dei codici di errore) vedi
+> [docs/API.md](docs/API.md). Le sezioni qui sotto restano la spiegazione
+> discorsiva con il razionale di ogni scelta.
+
 Namespace: `health-check/v1`. Tutte le rotte gestiscono il preflight `OPTIONS`
 senza autenticazione, restituendo solo gli header CORS (vedi [CORS](#cors)).
 
