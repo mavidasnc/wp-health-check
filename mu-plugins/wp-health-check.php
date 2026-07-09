@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.12.0
+ * Version:     1.13.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.12.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.13.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -810,22 +810,27 @@ function wphc_route_health( WP_REST_Request $request ) {
 	$fresh = wphc_request_wants_fresh( $request );
 
 	if ( $fresh ) {
-		// Ramo esplicitamente lento: SOLO su richiesta manuale (?fresh=1),
-		// mai nel polling automatico. Va oltre "letture da transient" e
-		// forza una verifica reale contro wordpress.org.
+		// ?fresh=1 BYPASSA le cache locali (payload wphc + liste plugin/temi)
+		// e rilegge lo stato di aggiornamento CORRENTE del sito, cioe' quello
+		// che vede anche l'amministratore. Svuota le cache delle liste cosi'
+		// get_plugins()/wp_get_themes() riscansionano la cartella (totali
+		// corretti anche dietro object cache persistente). false = NON tocca
+		// i transient update_plugins/update_themes.
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		require_once ABSPATH . 'wp-admin/includes/update.php';
-		// Svuota le cache delle liste plugin/temi cosi' get_plugins()/
-		// wp_get_themes() riscansionano davvero la cartella: garantisce
-		// conteggi corretti anche dietro un object cache persistente che
-		// rende persistente (a torto) il gruppo "plugins"/"themes", scenario
-		// in cui altrimenti il totale resterebbe fermo a un valore vecchio.
-		// false = non tocca il transient update_plugins, aggiornato subito sotto.
 		wp_clean_plugins_cache( false );
 		wp_clean_themes_cache( false );
-		wp_version_check();
-		wp_update_plugins();
-		wp_update_themes();
+
+		// IMPORTANTE: qui NON si chiama wp_update_plugins()/wp_update_themes()/
+		// wp_version_check(). In una richiesta REST i plugin/temi PREMIUM (che
+		// si aggiornano da server propri, non da wordpress.org) non caricano i
+		// loro update-checker: una wp_update_plugins() in questo contesto
+		// ricostruirebbe il transient update_plugins SENZA i loro aggiornamenti
+		// e SOVRASCRIVEREBBE quello completo mantenuto dal cron (che gira
+		// caricando tutti i plugin), riportando conteggi errati (es. 0 invece
+		// di 11) e corrompendo anche il dato mostrato all'amministratore. Si
+		// leggono quindi i transient gia' mantenuti dal cron. La freschezza del
+		// controllo update e' comunque esposta in "updates_checked_at".
 	} else {
 		$cached = get_transient( 'wphc_health_cache' );
 		if ( false !== $cached ) {
@@ -950,14 +955,15 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 	require_once ABSPATH . 'wp-admin/includes/update.php';
 
 	if ( $fresh ) {
-		// Chiamata remota esplicita, solo su richiesta dell'utente della
-		// dashboard (drill-down), mai nel polling di /health. Prima svuota
-		// la cache della lista plugin, cosi' get_plugins() qui sotto
-		// riscansiona la cartella e il conteggio e' corretto anche dietro
-		// un object cache persistente mal configurato (false = non tocca il
-		// transient update_plugins, che wp_update_plugins() aggiorna subito).
+		// ?fresh=1 svuota la cache della lista plugin, cosi' get_plugins()
+		// qui sotto riscansiona la cartella e il conteggio e' corretto anche
+		// dietro un object cache persistente mal configurato. false = non
+		// tocca il transient update_plugins. NON si chiama wp_update_plugins():
+		// in contesto REST ricostruirebbe il transient senza gli aggiornamenti
+		// dei plugin premium (che si aggiornano da server propri e non caricano
+		// il loro update-checker qui), sovrascrivendo quello completo del cron
+		// e riportando conteggi/versioni errati. Si legge il transient del cron.
 		wp_clean_plugins_cache( false );
-		wp_update_plugins();
 	}
 
 	$all_plugins    = get_plugins();
@@ -1022,7 +1028,12 @@ function wphc_route_detail_theme( WP_REST_Request $request ) {
 	require_once ABSPATH . 'wp-admin/includes/update.php';
 
 	if ( $fresh ) {
-		wp_update_themes();
+		// ?fresh=1 svuota la cache delle liste temi (riscansione), ma NON
+		// chiama wp_update_themes(): in contesto REST i temi premium non
+		// caricano il loro update-checker, quindi una wp_update_themes() qui
+		// sovrascriverebbe il transient update_themes del cron perdendo i loro
+		// aggiornamenti. Si legge il transient gia' mantenuto dal cron.
+		wp_clean_themes_cache( false );
 	}
 
 	$active_theme  = wp_get_theme();
@@ -1605,6 +1616,8 @@ function wphc_render_site_health_tab( $tab ) {
 				);
 				?>
 			</p></div>
+		<?php elseif ( isset( $_GET['wphc_cleared'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success"><p><?php esc_html_e( 'Cache dell\'agent svuotate e aggiornamenti ricontrollati.', 'wp-health-check' ); ?></p></div>
 		<?php elseif ( isset( $_GET['wphc_reset'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".', 'wp-health-check' ); ?></p></div>
 		<?php endif; ?>
@@ -1754,6 +1767,16 @@ function wphc_render_site_health_tab( $tab ) {
 			?>
 		</form>
 
+		<h3><?php esc_html_e( 'Svuota cache e ricontrolla aggiornamenti', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Cancella le cache dell\'agent (transient wphc_*: health, dettaglio plugin/tema/server, ultima versione) e forza un ricontrollo COMPLETO degli aggiornamenti di core, plugin e temi. A differenza di ?fresh=1 (che gira via REST), qui siamo in contesto amministrativo: anche i plugin/temi premium vengono ricontrollati correttamente. Usalo se i conteggi o le versioni degli aggiornamenti sembrano sbagliati.', 'wp-health-check' ); ?>
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="wphc_clear_caches" />
+			<?php wp_nonce_field( 'wphc_clear_caches' ); ?>
+			<?php submit_button( __( 'Svuota cache e ricontrolla', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+		</form>
+
 		<h3><?php esc_html_e( 'Reset enrollment', 'wp-health-check' ); ?></h3>
 		<p class="description">
 			<?php esc_html_e( 'Cancella token, URL firmato e tutti i metadati di enrollment. Il sito torna allo stato "non registrato" finche\' il sistema centrale non ripete l\'enroll. Equivalente a "wp health-check reset".', 'wp-health-check' ); ?>
@@ -1813,6 +1836,50 @@ function wphc_handle_self_update() {
 	exit;
 }
 add_action( 'admin_post_wphc_self_update', 'wphc_handle_self_update' );
+
+/**
+ * Handler di admin-post.php per il pulsante "Svuota cache e ricontrolla":
+ * cancella le cache dell'agent (transient wphc_*) e forza un ricontrollo
+ * COMPLETO degli aggiornamenti di core/plugin/temi. Gira in contesto
+ * amministrativo (admin-post), dove gli update-checker dei plugin/temi
+ * premium sono attivi: a differenza di ?fresh=1 via REST, qui
+ * wp_update_plugins()/wp_update_themes() ricostruiscono transient COMPLETI.
+ */
+function wphc_handle_clear_caches() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_clear_caches' );
+
+	// 1. Cache dei payload dell'agent.
+	delete_transient( 'wphc_health_cache' );
+	delete_transient( 'wphc_detail_plugins_cache' );
+	delete_transient( 'wphc_detail_theme_cache' );
+	delete_transient( 'wphc_detail_server_cache' );
+	delete_transient( 'wphc_latest_version_cache' );
+
+	// 2. Ricontrollo completo degli aggiornamenti. wp_clean_*_cache( true )
+	// svuota sia la lista sia il transient degli update, cosi' wp_update_*()
+	// ricostruisce da zero (in contesto admin, quindi con i premium inclusi).
+	require_once ABSPATH . 'wp-admin/includes/update.php';
+	wp_clean_plugins_cache( true );
+	wp_clean_themes_cache( true );
+	wp_version_check();
+	wp_update_plugins();
+	wp_update_themes();
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'          => 'wp-health-check',
+				'wphc_cleared' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_clear_caches', 'wphc_handle_clear_caches' );
 
 /**
  * Handler di admin-post.php per il pulsante di reset enrollment nella tab

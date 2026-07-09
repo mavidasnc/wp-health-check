@@ -100,11 +100,14 @@ rivelare quale dei due casi si sia verificato.
 
 Lo status HTTP della risposta coincide con `data.status`.
 
-**`?fresh=1`.** Su `/health` e su tutte le rotte `/detail/*` è l'unico modo per
-forzare un refresh: bypassa la cache a transient dell'agent ed esegue prima le
-funzioni di controllo remoto del core (`wp_version_check()`,
-`wp_update_plugins()`, `wp_update_themes()`). È il ramo lento, da usare solo su
-drill-down manuale della dashboard, mai nel polling automatico.
+**`?fresh=1`.** Su `/health` e su tutte le rotte `/detail/*` bypassa le cache
+locali dell'agent (payload wphc + cache delle liste plugin/temi) e rilegge lo
+stato corrente del sito. **Non** forza un controllo remoto degli aggiornamenti:
+i conteggi/versioni di update vengono sempre letti dai transient mantenuti dal
+cron di WordPress (`update_plugins`/`update_themes`/`update_core`), gli stessi
+della bacheca — perché forzare `wp_update_plugins()` da REST è inaffidabile per i
+plugin/temi premium e sovrascriverebbe il transient completo del cron con uno
+incompleto. Freschezza dell'ultimo check in `summary.updates_checked_at`.
 
 **Cache.** Le risposte del namespace `health-check/v1` non vengono mai messe in
 cache HTTP/edge (l'agent invia `nocache_headers()` e definisce `DONOTCACHEPAGE`
@@ -226,9 +229,9 @@ Il `403 wphc_enroll_url_mismatch` include nel corpo l'URL atteso, per diagnosi:
 ## `GET /health`
 
 Sommario economico, pensato per il polling frequente. Non chiama mai
-`WP_Debug_Data::debug_data()` né forza check remoti (salvo `?fresh=1`). Legge i
-conteggi di aggiornamento direttamente dai transient del core, senza gating per
-capability utente (l'autenticazione è il bearer token, non una sessione).
+`WP_Debug_Data::debug_data()` né forza check remoti. Legge i conteggi di
+aggiornamento direttamente dai transient del cron, senza gating per capability
+utente (l'autenticazione è il bearer token, non una sessione).
 
 **Auth:** Bearer token. **Query:** `?fresh=1` opzionale. **Cache:** transient 60s.
 

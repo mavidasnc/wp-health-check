@@ -599,20 +599,30 @@ Ogni release del repository deve fornire:
 | `GET /detail/server` | transient `wphc_detail_server_cache` | 12h | Config server cambia raramente; è la chiamata più onerosa. |
 
 `?fresh=1` (su `/health` e su tutte le rotte `/detail/*`) è l'**unico** modo per
-forzare un refresh. Sulle rotte che riportano aggiornamenti, esegue prima le
-funzioni di controllo remoto del core (`wp_version_check()`, `wp_update_plugins()`,
-`wp_update_themes()`): è il ramo lento del plugin, da usare solo su richiesta
-esplicita dell'operatore nella dashboard (drill-down), mai nel polling automatico.
+bypassare le cache locali del plugin. Svuota la cache del payload wphc e le cache
+delle liste plugin/temi (`wp_clean_plugins_cache( false )` /
+`wp_clean_themes_cache( false )`) **prima** di ricontare, così `get_plugins()` e
+`wp_get_themes()` riscansionano davvero la cartella: garantisce conteggi
+(`plugins_total`, `count`, `themes_total`) corretti anche dietro un object cache
+persistente (Redis/Memcached) che renda persistente — a torto — il gruppo di
+cache `plugins`/`themes`. Se un conteggio sembra sbagliato, interrogare la rotta
+con `?fresh=1` è il primo controllo da fare.
 
-Dalla `1.12.0`, `?fresh=1` (su `/health` e `/detail/plugins`) svuota anche le
-cache delle liste plugin/temi (`wp_clean_plugins_cache()` /
-`wp_clean_themes_cache()`) **prima** di ricontare, così `get_plugins()` e
-`wp_get_themes()` riscansionano davvero la cartella. È la garanzia che i
-conteggi (`plugins_total`, `count`, `themes_total`) siano corretti anche dietro
-un object cache persistente (Redis/Memcached) che renda persistente — a torto —
-il gruppo di cache `plugins`/`themes`, scenario in cui altrimenti il totale
-potrebbe restare fermo a un valore vecchio. Se un conteggio sembra sbagliato,
-interrogare la rotta con `?fresh=1` è il primo controllo da fare.
+**`?fresh=1` NON forza un controllo remoto degli aggiornamenti** (dalla `1.13.0`).
+I conteggi e le versioni di aggiornamento (`plugins_updates`, `themes_updates`,
+`new_version`, `core_update`) sono sempre letti dai **transient mantenuti dal
+cron di WordPress** (`update_plugins`, `update_themes`, `update_core`), gli stessi
+che alimentano la schermata Plugin dell'amministratore. Il motivo è importante:
+chiamare `wp_update_plugins()`/`wp_update_themes()` da una richiesta REST è
+inaffidabile per i **plugin/temi premium**, che si aggiornano da server propri e
+in contesto REST non caricano i loro update-checker; peggio, quella chiamata
+**sovrascriverebbe** il transient completo mantenuto dal cron con uno incompleto,
+riportando conteggi errati (es. `plugins_updates: 0` con 11 aggiornamenti reali) e
+corrompendo anche il dato mostrato in bacheca. Il cron gira invece caricando
+tutti i plugin, quindi il suo transient include anche i premium. La freschezza
+dell'ultimo controllo è esposta in `summary.updates_checked_at`: se è troppo
+vecchia, il problema è il WP-Cron del sito, da risolvere lì (non forzando check
+dal plugin).
 
 **Perché `/health` non chiama mai `WP_Debug_Data::debug_data()`:** quella funzione
 introspeziona l'intero ambiente server (versioni PHP, estensioni, dimensioni
@@ -802,7 +812,7 @@ utenti con capability `manage_options`. Mostra:
   manualmente via `wp option update`, mai da qui, vedi [Tracciamento
   accessi](#tracciamento-accessi)).
 
-Due pulsanti eseguono azioni:
+Tre pulsanti eseguono azioni:
 
 - **Aggiorna il plugin**: innesca il self-update dall'ultima release GitHub —
   esattamente lo stesso flusso di `POST /update` (funzione condivisa
@@ -810,10 +820,17 @@ Due pulsanti eseguono azioni:
   atomica, ripristino automatico in caso di errore). Non richiede enrollment
   (è un'azione amministrativa). L'esito è mostrato come avviso (aggiornato alla
   versione X / già aggiornato / errore con il motivo macchina).
+- **Svuota cache e ricontrolla aggiornamenti** (dalla `1.13.0`): cancella le
+  cache dell'agent (i transient `wphc_*`) e forza un ricontrollo **completo**
+  degli aggiornamenti di core/plugin/temi. Gira in contesto amministrativo,
+  dove gli update-checker dei plugin/temi **premium** sono attivi, quindi
+  ricostruisce transient di update completi — cosa che `?fresh=1` via REST non
+  può fare (vedi [Caching](#caching-per-rotta)). È lo strumento da usare quando
+  i conteggi o le versioni degli aggiornamenti sembrano sbagliati.
 - **Reset enrollment**: equivalente a `wp health-check reset` (stessa funzione
   condivisa `wphc_reset_enrollment()`), con conferma prima dell'esecuzione.
 
-Entrambi i form inviano a `admin-post.php` (pattern standard di WordPress per
+Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce
 (`check_admin_referer()`) e dal controllo `manage_options`, con redirect alla
 tab dopo l'azione (POST-redirect-GET).

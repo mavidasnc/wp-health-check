@@ -7,6 +7,34 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-07-09
+
+### Added
+
+- Tab Site Health: pulsante "Svuota cache e ricontrolla aggiornamenti". Cancella
+  le cache dell'agent (transient `wphc_*`) e forza un ricontrollo COMPLETO degli
+  aggiornamenti di core/plugin/temi. Gira in contesto amministrativo, dove gli
+  update-checker dei plugin/temi premium sono attivi, quindi ricostruisce
+  transient di update completi (a differenza di `?fresh=1` via REST).
+
+### Fixed
+
+- `plugins_updates` (e `themes_updates`, `new_version`) potevano risultare 0 /
+  errati con `?fresh=1` in presenza di plugin/temi **premium**. Causa: `?fresh=1`
+  chiamava `wp_update_plugins()`/`wp_update_themes()`/`wp_version_check()` in
+  contesto REST, dove i plugin/temi premium (che si aggiornano da server propri,
+  non da wordpress.org) non caricano i loro update-checker; quella chiamata
+  ricostruiva il transient degli update SENZA i loro aggiornamenti e
+  **sovrascriveva** quello completo mantenuto dal cron, riportando conteggi
+  errati (es. `plugins_updates: 0` con 11 aggiornamenti reali) e corrompendo
+  anche il dato mostrato in bacheca.
+- `?fresh=1` non forza più alcun controllo remoto: bypassa solo le cache locali
+  (payload wphc + liste plugin/temi via `wp_clean_plugins_cache( false )` /
+  `wp_clean_themes_cache( false )`, per totali corretti) e legge i transient
+  degli update mantenuti dal cron (`update_plugins`/`update_themes`/
+  `update_core`), gli stessi della bacheca. La freschezza dell'ultimo check
+  resta esposta in `summary.updates_checked_at`.
+
 ## [1.12.0] - 2026-07-09
 
 ### Fixed
@@ -225,7 +253,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...v1.10.0
