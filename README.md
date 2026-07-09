@@ -286,6 +286,20 @@ implementato alcun controllo anti-replay**. Come irrobustimento **opzionale e no
 implementato**, si potrebbe imporre una finestra di freschezza su `issued_at` (es.
 300 secondi): è igiene dell'handshake, non necessaria per la sicurezza del token.
 
+**Diagnostica dell'URL mismatch (dalla `1.11.0`).** Quando l'enroll fallisce con
+`wphc_enroll_url_mismatch`, oltre a registrare il dettaglio in
+`wp_health_check_last_enroll_error` (visibile nella [tab Site
+Health](#tab-site-health)), il plugin **invia un'email** a
+`WP_HEALTH_CHECK_ALERT_EMAIL` (costante di flotta, default
+`maurizio@mavida.com`; stringa vuota per disabilitare) con URL ricevuto, URL
+atteso, IP, timestamp e l'elenco completo degli URL validi per l'enroll — così
+l'operatore vede subito con quale URL firmare. L'email è **limitata a un invio
+all'ora** per sito (transient anti-flood); l'invio usa `wp_mail()` del core.
+Questo ramo è raggiungibile solo con **firma valida** (la firma è verificata
+prima, `401` altrimenti), quindi l'alert non è un vettore aperto ad attaccanti
+anonimi. L'email **non** viene inviata per gli altri fallimenti (firma non
+valida, campo mancante): quelli restano solo in `wp_health_check_last_enroll_error`.
+
 ### `GET /health` — sommario economico
 
 Protetta dal token. Pensata per polling frequente: **non chiama mai**

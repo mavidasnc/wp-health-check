@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.10.0
+ * Version:     1.11.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.10.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.11.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -68,6 +68,16 @@ if ( ! defined( 'WP_HEALTH_CHECK_GH_REPO' ) ) {
  */
 if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY' ) ) {
 	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY', 'uXzoP9VTpihQ1ipNUMCwITN9wKmJV/VFuYxms5Tt0CE=' );
+}
+
+/*
+ * Indirizzo email dell'operatore della flotta, avvisato quando un enroll
+ * fallisce per URL mismatch (vedi wphc_send_enroll_mismatch_alert). Non e'
+ * un segreto: e' l'indirizzo a cui recapitare gli alert diagnostici.
+ * Stringa vuota = nessun invio.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
+	define( 'WP_HEALTH_CHECK_ALERT_EMAIL', 'maurizio@mavida.com' );
 }
 
 // -----------------------------------------------------------------------
@@ -309,6 +319,64 @@ function wphc_record_enroll_error( $code, $reason, $received = '' ) {
 		),
 		false
 	);
+}
+
+/**
+ * Invia a WP_HEALTH_CHECK_ALERT_EMAIL un avviso quando un enroll fallisce per
+ * URL mismatch, con il dettaglio utile a correggere la configurazione: URL
+ * inviato, URL atteso e l'elenco completo degli URL validi con cui firmare.
+ *
+ * Rate-limit: al massimo un'email all'ora per sito (transient), per evitare
+ * un flood se il sistema centrale ritenta l'enroll di frequente. Questo ramo
+ * e' comunque raggiungibile SOLO con una firma Ed25519 valida (la firma e'
+ * verificata prima, vedi wphc_route_enroll): non e' quindi un vettore aperto
+ * ad attaccanti anonimi. L'invio usa wp_mail() del core, nessuna dipendenza
+ * esterna.
+ *
+ * @param string   $expected   URL canonico atteso dal sito (home normalizzato).
+ * @param string   $received   URL inviato nella busta di enroll (grezzo).
+ * @param string[] $candidates Elenco degli URL validi per l'enroll su questo sito.
+ */
+function wphc_send_enroll_mismatch_alert( $expected, $received, $candidates ) {
+	// is_email() e' false anche per la stringa vuota: copre sia il caso
+	// "nessun destinatario configurato" sia quello "indirizzo non valido".
+	$to = WP_HEALTH_CHECK_ALERT_EMAIL;
+	if ( ! is_email( $to ) ) {
+		return;
+	}
+
+	// Throttle: non piu' di un avviso all'ora per non trasformare i retry
+	// dell'enroll in un flood di email.
+	if ( false !== get_transient( 'wphc_enroll_alert_sent' ) ) {
+		return;
+	}
+
+	$site_home = home_url();
+
+	/* translators: %s: URL del sito che ha rifiutato l'enroll. */
+	$subject = sprintf( __( '[WP Health Check] Enroll fallito (URL mismatch) su %s', 'wp-health-check' ), $site_home );
+
+	$lines   = array();
+	$lines[] = __( 'Un tentativo di enroll e\' stato rifiutato: il site_url firmato dal sistema centrale non coincide con nessuno degli URL canonici del sito.', 'wp-health-check' );
+	$lines[] = '';
+	$lines[] = __( 'Sito:', 'wp-health-check' ) . ' ' . $site_home;
+	$lines[] = __( 'URL ricevuto:', 'wp-health-check' ) . ' ' . $received;
+	$lines[] = __( 'URL atteso (principale):', 'wp-health-check' ) . ' ' . $expected;
+	$lines[] = __( 'IP chiamante:', 'wp-health-check' ) . ' ' . wphc_get_client_ip();
+	$lines[] = __( 'Quando (UTC):', 'wp-health-check' ) . ' ' . gmdate( 'c' );
+	$lines[] = '';
+	$lines[] = __( 'URL validi per l\'enroll (il centro deve firmare uno di questi):', 'wp-health-check' );
+	foreach ( $candidates as $candidate ) {
+		$lines[] = '  - ' . $candidate;
+	}
+	$lines[] = '';
+	$lines[] = __( 'Suggerimento: verificare www/non-www, http/https ed eventuali riscritture del dominio (es. plugin multilingua). Se il plugin e\' aggiornato, il confronto tollera automaticamente le varianti www/non-www.', 'wp-health-check' );
+
+	$sent = wp_mail( $to, $subject, implode( "\n", $lines ) );
+
+	if ( $sent ) {
+		set_transient( 'wphc_enroll_alert_sent', gmdate( 'c' ), HOUR_IN_SECONDS );
+	}
 }
 
 // -----------------------------------------------------------------------
@@ -664,8 +732,9 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	// un segreto; l'autenticazione e' la firma Ed25519, gia' verificata.
 	$received_site_url   = $site_url;                       // grezzo: memorizzato e mostrato in diagnostica.
 	$received_normalized = wphc_normalize_url( $site_url );  // normalizzato: solo per il confronto.
+	$candidates          = wphc_candidate_site_urls();
 
-	if ( ! in_array( $received_normalized, wphc_candidate_site_urls(), true ) ) {
+	if ( ! in_array( $received_normalized, $candidates, true ) ) {
 		$canonical_home = wphc_normalize_site_url();
 		if ( WP_DEBUG ) {
 			error_log( sprintf( 'wp-health-check: enroll URL mismatch — atteso: %1$s ricevuto: %2$s', $canonical_home, $received_site_url ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
@@ -677,7 +746,10 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 			$canonical_home,
 			$received_site_url
 		);
+		// Registra il dettaglio sul sito (tab Site Health) e avvisa via email
+		// l'operatore della flotta: entrambi utili a correggere l'URL usato.
 		wphc_record_enroll_error( 'wphc_enroll_url_mismatch', $mismatch_message, $received_site_url );
+		wphc_send_enroll_mismatch_alert( $canonical_home, $received_site_url, $candidates );
 
 		return new WP_Error(
 			'wphc_enroll_url_mismatch',

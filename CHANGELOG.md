@@ -7,6 +7,20 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-07-09
+
+### Added
+
+- Quando un enroll fallisce per URL mismatch (`wphc_enroll_url_mismatch`), oltre
+  a registrare il dettaglio in `wp_health_check_last_enroll_error`, il plugin
+  invia un'email di alert a `WP_HEALTH_CHECK_ALERT_EMAIL` (nuova costante di
+  flotta, default `maurizio@mavida.com`; stringa vuota per disabilitare) con
+  URL ricevuto, URL atteso, IP, timestamp e l'elenco completo degli URL validi
+  per l'enroll. Rate-limit di un invio all'ora per sito (transient anti-flood).
+  L'email riguarda solo il mismatch URL, non gli altri fallimenti; il ramo è
+  raggiungibile solo con firma Ed25519 valida. Usa `wp_mail()` del core, nessuna
+  dipendenza esterna.
+
 ## [1.10.0] - 2026-07-09
 
 ### Added
@@ -196,7 +210,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.7.0...v1.8.0
