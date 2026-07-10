@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.13.0
+ * Version:     1.14.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.13.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.14.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -1588,6 +1588,23 @@ function wphc_render_site_health_tab( $tab ) {
 	$canonical_home   = wphc_normalize_site_url();
 	$latest_version   = wphc_get_latest_version();
 	$update_available = ( null !== $latest_version ) && version_compare( $latest_version, WP_HEALTH_CHECK_VERSION, '>' );
+
+	// Conteggi plugin/temi. Siamo in contesto amministrativo: i transient
+	// degli update sono quelli completi mantenuti dal cron/admin (premium
+	// inclusi), quindi questi numeri rispecchiano la schermata Plugin/Temi.
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+	$all_plugins     = get_plugins();
+	$plugins_total   = count( $all_plugins );
+	$plugins_active  = count( (array) get_option( 'active_plugins', array() ) );
+	$upd_plugins_t   = get_site_transient( 'update_plugins' );
+	$plugins_updates = ( is_object( $upd_plugins_t ) && ! empty( $upd_plugins_t->response ) ) ? count( $upd_plugins_t->response ) : 0;
+
+	$all_themes        = wp_get_themes();
+	$themes_total      = count( $all_themes );
+	$active_theme_name = (string) wp_get_theme()->get( 'Name' );
+	$upd_themes_t      = get_site_transient( 'update_themes' );
+	$themes_updates    = ( is_object( $upd_themes_t ) && ! empty( $upd_themes_t->response ) ) ? count( $upd_themes_t->response ) : 0;
 	?>
 	<div class="health-check-body health-check-wp-health-check-tab hide-if-no-js">
 		<h2><?php esc_html_e( 'WP Health Check — Fleet Agent', 'wp-health-check' ); ?></h2>
@@ -1745,6 +1762,137 @@ function wphc_render_site_health_tab( $tab ) {
 			</tbody>
 		</table>
 
+		<h3><?php esc_html_e( 'Riepilogo plugin e temi', 'wp-health-check' ); ?></h3>
+		<table class="widefat striped" style="max-width: 800px;">
+			<thead>
+				<tr>
+					<th></th>
+					<th><?php esc_html_e( 'Totali', 'wp-health-check' ); ?></th>
+					<th><?php esc_html_e( 'Attivi', 'wp-health-check' ); ?></th>
+					<th><?php esc_html_e( 'Da aggiornare', 'wp-health-check' ); ?></th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<td><strong><?php esc_html_e( 'Plugin', 'wp-health-check' ); ?></strong></td>
+					<td><?php echo (int) $plugins_total; ?></td>
+					<td><?php echo (int) $plugins_active; ?></td>
+					<td>
+						<?php echo (int) $plugins_updates; ?>
+						<?php if ( $plugins_updates > 0 ) : ?>
+							<span class="dashicons dashicons-update" style="color:#d63638;"></span>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><strong><?php esc_html_e( 'Temi', 'wp-health-check' ); ?></strong></td>
+					<td><?php echo (int) $themes_total; ?></td>
+					<td>1</td>
+					<td>
+						<?php echo (int) $themes_updates; ?>
+						<?php if ( $themes_updates > 0 ) : ?>
+							<span class="dashicons dashicons-update" style="color:#d63638;"></span>
+						<?php endif; ?>
+					</td>
+				</tr>
+			</tbody>
+		</table>
+		<p class="description">
+			<?php
+			/* translators: %s: nome del tema attivo. */
+			printf( esc_html__( 'Tema attivo: %s. Conteggi degli aggiornamenti letti dai transient del cron (come la bacheca); usa il pulsante "Svuota cache e ricontrolla" se sembrano non aggiornati.', 'wp-health-check' ), '<strong>' . esc_html( $active_theme_name ) . '</strong>' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			?>
+		</p>
+
+		<h3><?php esc_html_e( 'Test degli endpoint', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Esegue una chiamata reale all\'endpoint (loopback lato server, con il bearer token e un cache-buster _cb casuale ad ogni chiamata) e mostra la risposta in una finestra. Il token non viene mai esposto nel browser.', 'wp-health-check' ); ?>
+		</p>
+		<div id="wphc-endpoint-tester" data-nonce="<?php echo esc_attr( wp_create_nonce( 'wphc_test_endpoint' ) ); ?>">
+			<button type="button" class="button wphc-test-btn" data-endpoint="health">GET /health</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="health_fresh">GET /health?fresh=1</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_plugins">GET /detail/plugins</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_plugins_fresh">GET /detail/plugins?fresh=1</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_theme">GET /detail/theme</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_theme_fresh">GET /detail/theme?fresh=1</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_server">GET /detail/server</button>
+			<button type="button" class="button wphc-test-btn" data-endpoint="detail_server_fresh">GET /detail/server?fresh=1</button>
+		</div>
+
+		<div id="wphc-modal" class="wphc-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="wphc-modal-title">
+			<div class="wphc-modal-box">
+				<div class="wphc-modal-head">
+					<strong id="wphc-modal-title"></strong>
+					<button type="button" class="button-link wphc-modal-close" aria-label="<?php esc_attr_e( 'Chiudi', 'wp-health-check' ); ?>">&times;</button>
+				</div>
+				<p id="wphc-modal-meta" class="description" style="margin:.5em 0;word-break:break-all;"></p>
+				<pre id="wphc-modal-body"></pre>
+			</div>
+		</div>
+
+		<style>
+			.wphc-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;box-sizing:border-box;}
+			.wphc-modal-box{background:#fff;max-width:840px;width:100%;max-height:88vh;overflow:auto;border-radius:4px;padding:14px 20px 20px;box-shadow:0 4px 24px rgba(0,0,0,.3);}
+			.wphc-modal-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dcdcde;padding-bottom:8px;margin-bottom:6px;}
+			.wphc-modal-close{font-size:22px;line-height:1;text-decoration:none;color:#646970;}
+			#wphc-modal-body{background:#1d2327;color:#f0f0f1;padding:12px;border-radius:3px;overflow:auto;max-height:60vh;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;margin:0;}
+			#wphc-endpoint-tester .button{margin:0 6px 6px 0;}
+			.wphc-status-ok{color:#008a20;font-weight:600;}
+			.wphc-status-bad{color:#d63638;font-weight:600;}
+		</style>
+
+		<script>
+			( function () {
+				var wrap = document.getElementById( 'wphc-endpoint-tester' );
+				if ( ! wrap ) { return; }
+				var nonce   = wrap.dataset.nonce;
+				var modal   = document.getElementById( 'wphc-modal' );
+				var titleEl = document.getElementById( 'wphc-modal-title' );
+				var metaEl  = document.getElementById( 'wphc-modal-meta' );
+				var bodyEl  = document.getElementById( 'wphc-modal-body' );
+
+				function openModal( title ) {
+					titleEl.textContent = title;
+					metaEl.textContent  = 'Chiamata in corso…';
+					bodyEl.textContent  = '';
+					modal.style.display = 'flex';
+				}
+				function closeModal() { modal.style.display = 'none'; }
+				function prettify( txt ) {
+					try { return JSON.stringify( JSON.parse( txt ), null, 2 ); } catch ( e ) { return txt; }
+				}
+				function escapeHtml( s ) { var d = document.createElement( 'div' ); d.textContent = s; return d.innerHTML; }
+
+				wrap.querySelectorAll( '.wphc-test-btn' ).forEach( function ( btn ) {
+					btn.addEventListener( 'click', function () {
+						openModal( btn.textContent.trim() );
+						var fd = new FormData();
+						fd.append( 'action', 'wphc_test_endpoint' );
+						fd.append( 'endpoint', btn.getAttribute( 'data-endpoint' ) );
+						fd.append( '_ajax_nonce', nonce );
+						fetch( ajaxurl, { method: 'POST', body: fd, credentials: 'same-origin' } )
+							.then( function ( r ) { return r.json(); } )
+							.then( function ( res ) {
+								if ( res && res.success ) {
+									var d = res.data;
+									var cls = ( d.status >= 200 && d.status < 300 ) ? 'wphc-status-ok' : 'wphc-status-bad';
+									metaEl.innerHTML = 'HTTP <span class="' + cls + '">' + d.status + '</span> · ' + d.took_ms + ' ms<br>' + escapeHtml( d.url );
+									bodyEl.textContent = prettify( d.body );
+								} else {
+									metaEl.textContent = 'Errore';
+									bodyEl.textContent = JSON.stringify( res );
+								}
+							} )
+							.catch( function ( e ) { metaEl.textContent = 'Errore di rete'; bodyEl.textContent = String( e ); } );
+					} );
+				} );
+
+				modal.addEventListener( 'click', function ( e ) { if ( e.target === modal ) { closeModal(); } } );
+				document.querySelector( '.wphc-modal-close' ).addEventListener( 'click', closeModal );
+				document.addEventListener( 'keydown', function ( e ) { if ( 'Escape' === e.key ) { closeModal(); } } );
+			}() );
+		</script>
+
 		<h3><?php esc_html_e( 'Aggiornamento del plugin', 'wp-health-check' ); ?></h3>
 		<p class="description">
 			<?php esc_html_e( 'Scarica e installa l\'ultima release firmata da GitHub (stesso flusso di POST /update: verifica integrita\' SHA-256, backup e ripristino automatico in caso di errore).', 'wp-health-check' ); ?>
@@ -1794,6 +1942,108 @@ function wphc_render_site_health_tab( $tab ) {
 	<?php
 }
 add_action( 'site_health_tab_content', 'wphc_render_site_health_tab' );
+
+/**
+ * Handler AJAX (admin) del tester di endpoint della tab Site Health. Fa una
+ * richiesta loopback all'endpoint REST richiesto, aggiungendo il bearer token
+ * (lato server: non viene mai esposto al browser) e un cache-buster "_cb"
+ * casuale, e restituisce status/corpo/latenza da mostrare nella modale. Solo
+ * endpoint GET dati in whitelist: nessun effetto collaterale.
+ */
+function wphc_ajax_test_endpoint() {
+	check_ajax_referer( 'wphc_test_endpoint' );
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+	}
+
+	$key = isset( $_POST['endpoint'] ) ? sanitize_key( wp_unslash( $_POST['endpoint'] ) ) : '';
+	$map = array(
+		'health'               => array(
+			'path'  => 'health',
+			'fresh' => false,
+		),
+		'health_fresh'         => array(
+			'path'  => 'health',
+			'fresh' => true,
+		),
+		'detail_plugins'       => array(
+			'path'  => 'detail/plugins',
+			'fresh' => false,
+		),
+		'detail_plugins_fresh' => array(
+			'path'  => 'detail/plugins',
+			'fresh' => true,
+		),
+		'detail_theme'         => array(
+			'path'  => 'detail/theme',
+			'fresh' => false,
+		),
+		'detail_theme_fresh'   => array(
+			'path'  => 'detail/theme',
+			'fresh' => true,
+		),
+		'detail_server'        => array(
+			'path'  => 'detail/server',
+			'fresh' => false,
+		),
+		'detail_server_fresh'  => array(
+			'path'  => 'detail/server',
+			'fresh' => true,
+		),
+	);
+	if ( ! isset( $map[ $key ] ) ) {
+		wp_send_json_error( array( 'message' => __( 'Endpoint non valido.', 'wp-health-check' ) ), 400 );
+	}
+
+	$endpoint = $map[ $key ];
+
+	// Cache-buster casuale ad ogni chiamata + eventuale fresh=1.
+	$query_args = array( '_cb' => wp_generate_password( 16, false, false ) );
+	if ( $endpoint['fresh'] ) {
+		$query_args['fresh'] = '1';
+	}
+	$url = add_query_arg( $query_args, rest_url( 'health-check/v1/' . $endpoint['path'] ) );
+
+	// Il token resta lato server: viaggia solo nell'header della richiesta
+	// loopback, mai verso il browser.
+	$headers = array();
+	$token   = (string) get_option( 'wp_health_check_token', '' );
+	if ( '' !== $token ) {
+		$headers['Authorization'] = 'Bearer ' . $token;
+	}
+
+	$start    = microtime( true );
+	$response = wp_remote_get(
+		$url,
+		array(
+			'timeout' => 20,
+			'headers' => $headers,
+		)
+	);
+	$took_ms  = (int) round( ( microtime( true ) - $start ) * 1000 );
+
+	if ( is_wp_error( $response ) ) {
+		wp_send_json_success(
+			array(
+				'url'     => $url,
+				'status'  => 0,
+				'took_ms' => $took_ms,
+				/* translators: %s: messaggio di errore della richiesta loopback. */
+				'body'    => sprintf( __( 'Errore loopback: %s', 'wp-health-check' ), $response->get_error_message() ),
+			)
+		);
+	}
+
+	wp_send_json_success(
+		array(
+			'url'     => $url,
+			'status'  => (int) wp_remote_retrieve_response_code( $response ),
+			'took_ms' => $took_ms,
+			'body'    => wp_remote_retrieve_body( $response ),
+		)
+	);
+}
+add_action( 'wp_ajax_wphc_test_endpoint', 'wphc_ajax_test_endpoint' );
 
 /**
  * Handler di admin-post.php per il pulsante di self-update nella tab Site

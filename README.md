@@ -835,6 +835,23 @@ processare submission fuori dalla pagina che le genera), protetti da nonce
 (`check_admin_referer()`) e dal controllo `manage_options`, con redirect alla
 tab dopo l'azione (POST-redirect-GET).
 
+Dalla `1.14.0`, sotto la tabella principale ci sono due sezioni in più:
+
+- **Riepilogo plugin e temi**: una tabella con plugin e temi — totali, attivi e
+  da aggiornare. I conteggi sono calcolati in contesto amministrativo (leggendo
+  `get_plugins()`, `active_plugins` e i transient degli update mantenuti dal
+  cron), quindi rispecchiano esattamente la schermata Plugin/Temi della bacheca.
+- **Test degli endpoint**: un pulsante per ciascun endpoint dati GET (`/health`,
+  `/detail/plugins`, `/detail/theme`, `/detail/server`, con le rispettive
+  varianti `?fresh=1`) che esegue una chiamata reale e mostra la risposta (HTTP
+  status, latenza, JSON formattato) in una finestra modale. La chiamata avviene
+  via **loopback lato server** (handler AJAX `wphc_test_endpoint`, `manage_options`
+  + nonce): il server chiama il proprio endpoint aggiungendo il bearer token e un
+  cache-buster `_cb=<random>` casuale ad ogni click. Il token resta lato server e
+  non viene mai esposto nel browser. `POST /update` e `POST /enroll` non sono nel
+  tester (il primo ha il suo pulsante dedicato con effetti collaterali, il secondo
+  richiede una busta firmata dal centro).
+
 > **Nota (dalla `1.10.0`):** la sezione per modificare
 > `wp_health_check_dashboard_origin` dalla UI è stata rimossa, perché le
 > chiamate alla flotta avvengono ora server-to-server (nessun browser, quindi

@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-07-10
+
+### Added
+
+- Tab Site Health: sezione **"Riepilogo plugin e temi"** sotto la tabella
+  principale — plugin e temi con totali, attivi e da aggiornare, letti in
+  contesto amministrativo (rispecchiano la bacheca).
+- Tab Site Health: sezione **"Test degli endpoint"** — un pulsante per ciascun
+  endpoint dati GET (`/health`, `/detail/*`, con varianti `?fresh=1`) che esegue
+  una chiamata reale e ne mostra il risultato (HTTP status, latenza, JSON
+  formattato) in una modale. La chiamata avviene via loopback lato server
+  (handler AJAX `wphc_test_endpoint`, `manage_options` + nonce), con bearer token
+  aggiunto server-side (mai esposto nel browser) e cache-buster `_cb=<random>`
+  casuale ad ogni chiamata.
+
 ## [1.13.0] - 2026-07-09
 
 ### Added
@@ -253,7 +268,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...v1.12.0
 [1.11.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.10.0...v1.11.0
