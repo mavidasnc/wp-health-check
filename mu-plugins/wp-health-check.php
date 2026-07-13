@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.14.0
+ * Version:     1.15.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.14.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.15.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -640,6 +640,20 @@ function wphc_register_routes() {
 			'methods'             => WP_REST_Server::CREATABLE,
 			'callback'            => 'wphc_route_update',
 			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	// Rotta diagnostica: gated su manage_options (autenticazione WordPress,
+	// quindi chiamabile con una application password), NON sul bearer token.
+	// E' uno strumento per l'operatore: aiuta a capire discrepanze fra i
+	// conteggi update visti in admin e via REST.
+	register_rest_route(
+		'health-check/v1',
+		'/debug',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_debug',
+			'permission_callback' => 'wphc_debug_permission',
 		)
 	);
 }
@@ -1533,6 +1547,131 @@ function wphc_get_latest_version( $force = false ) {
 	set_transient( 'wphc_latest_version_cache', $latest, HOUR_IN_SECONDS );
 
 	return '' !== $latest ? $latest : null;
+}
+
+// -----------------------------------------------------------------------
+// ROTTA DIAGNOSTICA: GET /debug
+// -----------------------------------------------------------------------
+
+/**
+ * Permission callback della rotta /debug: solo manage_options (autenticazione
+ * WordPress, non bearer token). Chiamabile con una application password.
+ *
+ * @return bool True se l'utente corrente puo' gestire le opzioni.
+ */
+function wphc_debug_permission() {
+	return current_user_can( 'manage_options' );
+}
+
+/**
+ * Restituisce l'elenco leggibile dei callback registrati su un hook, con la
+ * loro priorita'. Serve a scoprire quali plugin modificano un filtro (es. il
+ * transient degli aggiornamenti plugin).
+ *
+ * @param string $hook Nome dell'hook/filtro.
+ * @return string[] Elenco "priorita': callback".
+ */
+function wphc_debug_hook_callbacks( $hook ) {
+	global $wp_filter;
+	$out = array();
+	if ( ! isset( $wp_filter[ $hook ] ) || ! is_object( $wp_filter[ $hook ] ) ) {
+		return $out;
+	}
+	foreach ( $wp_filter[ $hook ]->callbacks as $priority => $callbacks ) {
+		foreach ( $callbacks as $cb ) {
+			$fn   = $cb['function'];
+			$name = 'sconosciuto';
+			if ( is_string( $fn ) ) {
+				$name = $fn;
+			} elseif ( is_array( $fn ) && isset( $fn[0], $fn[1] ) ) {
+				$cls  = is_object( $fn[0] ) ? get_class( $fn[0] ) : (string) $fn[0];
+				$name = $cls . '::' . $fn[1];
+			} elseif ( $fn instanceof Closure ) {
+				$name = 'Closure';
+			}
+			$out[] = $priority . ': ' . $name;
+		}
+	}
+	return $out;
+}
+
+/**
+ * Rotta diagnostica /debug: aiuta a capire perche' il conteggio degli
+ * aggiornamenti plugin visto in admin puo' differire da quello visto via REST
+ * (/health). Confronta il transient update_plugins FILTRATO (cio' che
+ * /health legge) con quello GREZZO memorizzato (senza i filtri di terze
+ * parti) ed elenca i callback registrati sui relativi filtri. Sola lettura.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response Dati diagnostici.
+ */
+function wphc_route_debug( WP_REST_Request $request ) {
+	unset( $request );
+
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+	require_once ABSPATH . 'wp-admin/includes/update.php';
+
+	// 1. Transient FILTRATO: e' esattamente cio' che legge /health.
+	$filtered       = get_site_transient( 'update_plugins' );
+	$filtered_slugs = ( is_object( $filtered ) && ! empty( $filtered->response ) ) ? array_keys( (array) $filtered->response ) : array();
+
+	// 2. Transient GREZZO memorizzato: si rimuovono temporaneamente i filtri
+	// di terze parti su questo transient, si rilegge e si ripristinano. Cosi'
+	// si vede cosa il cron ha davvero PERSISTITO, al netto delle iniezioni/
+	// rimozioni a runtime dipendenti dal contesto (admin vs REST).
+	// phpcs:disable WordPress.WP.GlobalVariablesOverride.Prohibited -- muting/ripristino temporaneo e controllato dei filtri per una lettura diagnostica grezza.
+	global $wp_filter;
+	$hooks_to_mute = array( 'site_transient_update_plugins', 'pre_site_transient_update_plugins' );
+	$saved         = array();
+	foreach ( $hooks_to_mute as $h ) {
+		if ( isset( $wp_filter[ $h ] ) ) {
+			$saved[ $h ] = $wp_filter[ $h ];
+			unset( $wp_filter[ $h ] );
+		}
+	}
+	$raw = get_site_transient( 'update_plugins' );
+	foreach ( $saved as $h => $obj ) {
+		$wp_filter[ $h ] = $obj;
+	}
+	// phpcs:enable WordPress.WP.GlobalVariablesOverride.Prohibited
+	$raw_slugs = ( is_object( $raw ) && ! empty( $raw->response ) ) ? array_keys( (array) $raw->response ) : array();
+
+	// 3. Cosa vede get_plugin_updates() (usata da /detail/plugins).
+	$plugin_updates = get_plugin_updates();
+
+	return rest_ensure_response(
+		array(
+			'context'                   => array(
+				'is_admin'           => is_admin(),
+				'rest_request'       => defined( 'REST_REQUEST' ) && REST_REQUEST,
+				'doing_cron'         => defined( 'DOING_CRON' ) && DOING_CRON,
+				'user_id'            => get_current_user_id(),
+				'can_update_plugins' => current_user_can( 'update_plugins' ),
+				'is_multisite'       => is_multisite(),
+				'home_url'           => home_url(),
+				'site_url'           => site_url(),
+			),
+			'update_plugins_filtered'   => array(
+				'exists'         => is_object( $filtered ),
+				'last_checked'   => ( is_object( $filtered ) && ! empty( $filtered->last_checked ) ) ? gmdate( 'c', (int) $filtered->last_checked ) : null,
+				'response_count' => count( $filtered_slugs ),
+				'response_slugs' => $filtered_slugs,
+			),
+			'update_plugins_raw_stored' => array(
+				'response_count' => count( $raw_slugs ),
+				'response_slugs' => $raw_slugs,
+			),
+			'get_plugin_updates'        => array(
+				'count' => count( $plugin_updates ),
+				'slugs' => array_keys( $plugin_updates ),
+			),
+			'filters'                   => array(
+				'site_transient_update_plugins'         => wphc_debug_hook_callbacks( 'site_transient_update_plugins' ),
+				'pre_set_site_transient_update_plugins' => wphc_debug_hook_callbacks( 'pre_set_site_transient_update_plugins' ),
+				'pre_site_transient_update_plugins'     => wphc_debug_hook_callbacks( 'pre_site_transient_update_plugins' ),
+			),
+		)
+	);
 }
 
 // -----------------------------------------------------------------------

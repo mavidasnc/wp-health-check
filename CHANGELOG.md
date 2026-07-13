@@ -7,6 +7,20 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-07-13
+
+### Added
+
+- Rotta diagnostica `GET /health-check/v1/debug` (gated su `manage_options`,
+  quindi chiamabile con una application password, non col bearer token).
+  Confronta il transient `update_plugins` FILTRATO (cio' che legge `/health`)
+  con quello GREZZO memorizzato (senza i filtri di terze parti) ed elenca i
+  callback registrati sui filtri `site_transient_update_plugins` /
+  `pre_set_site_transient_update_plugins`. Serve a diagnosticare discrepanze
+  fra il numero di aggiornamenti plugin visto in admin e quello via REST
+  (tipicamente causate da plugin che modificano quei filtri in modo diverso a
+  seconda del contesto admin/REST).
+
 ## [1.14.0] - 2026-07-10
 
 ### Added
@@ -268,7 +282,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.11.0...v1.12.0
