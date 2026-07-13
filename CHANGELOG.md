@@ -7,6 +7,30 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-07-13
+
+### Fixed
+
+- `plugins_updates`/`themes_updates`/`core_update` (in `/health`) e
+  `update_available`/`new_version` (in `/detail/plugins` e `/detail/theme`)
+  potevano risultare 0/false in contesto REST anche con aggiornamenti reali,
+  su siti che disabilitano i controlli update fuori dall'admin registrando
+  `add_filter( 'pre_site_transient_update_plugins', '__return_null' )` (e
+  analoghi per temi/core). Quel filtro cortocircuita
+  `get_site_transient( 'update_plugins' )` facendogli restituire `null` in
+  frontend/REST, mentre in admin non e' attivo (da qui la discrepanza:
+  admin mostrava 1, `/health` 0). Ora le rotte dati neutralizzano
+  temporaneamente SOLO gli short-circuit `pre_site_transient_update_*` prima
+  di leggere i transient (ripristinandoli subito dopo), mantenendo attive le
+  iniezioni legittime dei plugin premium (es. ACF, Gravity Forms) sui filtri
+  di lettura. Diagnosticato con la rotta `/debug` introdotta nella 1.15.0.
+
+### Added
+
+- `GET /debug`: nuovo campo `health_plugins_updates` con il conteggio che
+  `/health` riporta dopo il fix (per verificare la correzione senza il bearer
+  token).
+
 ## [1.15.0] - 2026-07-13
 
 ### Added
@@ -282,7 +306,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.12.0...v1.13.0

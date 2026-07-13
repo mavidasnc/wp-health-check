@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.15.0
+ * Version:     1.16.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.15.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.16.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -801,6 +801,52 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 }
 
 // -----------------------------------------------------------------------
+// LETTURA ROBUSTA DEI TRANSIENT DI UPDATE
+// -----------------------------------------------------------------------
+
+/**
+ * Neutralizza temporaneamente gli short-circuit "pre_site_transient_update_*".
+ * Alcuni plugin/ottimizzazioni registrano FUORI dall'admin filtri come
+ * add_filter( 'pre_site_transient_update_plugins', '__return_null' ) per
+ * disabilitare i controlli di aggiornamento su frontend/REST: quel filtro fa
+ * si' che get_site_transient( 'update_plugins' ) restituisca null (cortocircuito
+ * del core), quindi in contesto REST i conteggi update risulterebbero 0 anche
+ * con aggiornamenti realmente presenti, a differenza di quanto vede
+ * l'amministratore (dove quei filtri di norma non sono attivi).
+ *
+ * Rimuove solo i filtri "pre_" (il cortocircuito): NON tocca i filtri di
+ * lettura "site_transient_update_*", cosi' le iniezioni legittime dei plugin
+ * premium (es. ACF, Gravity Forms) restano attive. Va sempre seguita da
+ * wphc_restore_update_shortcircuit() con il valore restituito.
+ *
+ * @return array<string, mixed> Filtri rimossi, da ripristinare.
+ */
+function wphc_mute_update_shortcircuit() {
+	global $wp_filter;
+	$hooks = array( 'pre_site_transient_update_plugins', 'pre_site_transient_update_themes', 'pre_site_transient_update_core' );
+	$saved = array();
+	foreach ( $hooks as $hook ) {
+		if ( isset( $wp_filter[ $hook ] ) ) {
+			$saved[ $hook ] = $wp_filter[ $hook ];
+			unset( $wp_filter[ $hook ] ); // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- rimozione temporanea e controllata, ripristinata subito da wphc_restore_update_shortcircuit().
+		}
+	}
+	return $saved;
+}
+
+/**
+ * Ripristina gli short-circuit rimossi da wphc_mute_update_shortcircuit().
+ *
+ * @param array<string, mixed> $saved Valore restituito da wphc_mute_update_shortcircuit().
+ */
+function wphc_restore_update_shortcircuit( $saved ) {
+	global $wp_filter;
+	foreach ( $saved as $hook => $obj ) {
+		$wp_filter[ $hook ] = $obj; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- ripristino del valore salvato da wphc_mute_update_shortcircuit().
+	}
+}
+
+// -----------------------------------------------------------------------
 // CALLBACK: GET /health
 // -----------------------------------------------------------------------
 
@@ -869,7 +915,12 @@ function wphc_route_health( WP_REST_Request $request ) {
 	// riportava plugins_updates: 0 per lo stesso sito. Si leggono quindi
 	// direttamente gli stessi transient di update gia' mantenuti dal cron,
 	// con la stessa logica di conteggio di wp_get_update_data() ma senza
-	// il controllo di capability.
+	// il controllo di capability. I transient vengono letti neutralizzando
+	// gli short-circuit "pre_site_transient_update_*" che alcuni siti
+	// registrano fuori dall'admin (vedi wphc_mute_update_shortcircuit): senza
+	// questo, in contesto REST i conteggi risulterebbero 0 anche con
+	// aggiornamenti reali.
+	$muted_updates            = wphc_mute_update_shortcircuit();
 	$update_plugins_transient = get_site_transient( 'update_plugins' );
 	$plugins_updates_count    = ( is_object( $update_plugins_transient ) && ! empty( $update_plugins_transient->response ) )
 		? count( $update_plugins_transient->response )
@@ -880,7 +931,9 @@ function wphc_route_health( WP_REST_Request $request ) {
 		? count( $update_themes_transient->response )
 		: 0;
 
-	$core_updates          = get_core_updates( array( 'dismissed' => false ) );
+	$core_updates = get_core_updates( array( 'dismissed' => false ) );
+	wphc_restore_update_shortcircuit( $muted_updates );
+
 	$core_update_available = is_array( $core_updates )
 		&& isset( $core_updates[0]->response )
 		&& ! in_array( $core_updates[0]->response, array( 'development', 'latest' ), true );
@@ -980,8 +1033,14 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 		wp_clean_plugins_cache( false );
 	}
 
-	$all_plugins    = get_plugins();
+	$all_plugins = get_plugins();
+	// get_plugin_updates() legge internamente get_site_transient('update_plugins'):
+	// si neutralizza lo short-circuit "pre_" attorno alla chiamata, altrimenti
+	// in contesto REST tornerebbe vuoto su siti che disabilitano i controlli
+	// update fuori dall'admin (vedi wphc_mute_update_shortcircuit).
+	$muted_updates  = wphc_mute_update_shortcircuit();
 	$plugin_updates = get_plugin_updates();
+	wphc_restore_update_shortcircuit( $muted_updates );
 	$active_plugins = (array) get_option( 'active_plugins', array() );
 
 	$items = array();
@@ -1050,9 +1109,13 @@ function wphc_route_detail_theme( WP_REST_Request $request ) {
 		wp_clean_themes_cache( false );
 	}
 
-	$active_theme  = wp_get_theme();
+	$active_theme = wp_get_theme();
+	// Come per i plugin: neutralizza lo short-circuit "pre_" attorno a
+	// get_theme_updates() (che legge get_site_transient('update_themes')).
+	$muted_updates = wphc_mute_update_shortcircuit();
 	$theme_updates = get_theme_updates();
-	$stylesheet    = $active_theme->get_stylesheet();
+	wphc_restore_update_shortcircuit( $muted_updates );
+	$stylesheet = $active_theme->get_stylesheet();
 
 	// ->update e' dichiarato "false" negli stub (il suo valore di default nel
 	// core), ma get_theme_updates() lo sovrascrive dinamicamente con un array
@@ -1636,8 +1699,13 @@ function wphc_route_debug( WP_REST_Request $request ) {
 	// phpcs:enable WordPress.WP.GlobalVariablesOverride.Prohibited
 	$raw_slugs = ( is_object( $raw ) && ! empty( $raw->response ) ) ? array_keys( (array) $raw->response ) : array();
 
-	// 3. Cosa vede get_plugin_updates() (usata da /detail/plugins).
+	// 3. Cosa vede get_plugin_updates() (usata da /detail/plugins), con lo
+	// stesso trattamento del fix (short-circuit "pre_" neutralizzato).
+	$muted_fix      = wphc_mute_update_shortcircuit();
 	$plugin_updates = get_plugin_updates();
+	$health_tp      = get_site_transient( 'update_plugins' );
+	wphc_restore_update_shortcircuit( $muted_fix );
+	$health_plugins_updates = ( is_object( $health_tp ) && ! empty( $health_tp->response ) ) ? count( (array) $health_tp->response ) : 0;
 
 	return rest_ensure_response(
 		array(
@@ -1665,6 +1733,10 @@ function wphc_route_debug( WP_REST_Request $request ) {
 				'count' => count( $plugin_updates ),
 				'slugs' => array_keys( $plugin_updates ),
 			),
+			// Conteggio che /health riporta ORA (dalla 1.16.0), con lo
+			// short-circuit "pre_site_transient_update_*" neutralizzato: deve
+			// coincidere con quello visto in admin.
+			'health_plugins_updates'    => $health_plugins_updates,
 			'filters'                   => array(
 				'site_transient_update_plugins'         => wphc_debug_hook_callbacks( 'site_transient_update_plugins' ),
 				'pre_set_site_transient_update_plugins' => wphc_debug_hook_callbacks( 'pre_set_site_transient_update_plugins' ),

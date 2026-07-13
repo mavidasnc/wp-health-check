@@ -624,6 +624,21 @@ dell'ultimo controllo è esposta in `summary.updates_checked_at`: se è troppo
 vecchia, il problema è il WP-Cron del sito, da risolvere lì (non forzando check
 dal plugin).
 
+**Short-circuit del transient di update (dalla `1.16.0`).** Alcuni siti
+disabilitano i controlli di aggiornamento su frontend/REST con
+`add_filter( 'pre_site_transient_update_plugins', '__return_null' )` (e analoghi
+per temi/core), spesso per "performance". Quel filtro fa restituire `null` a
+`get_site_transient( 'update_plugins' )` fuori dall'admin: senza contromisure,
+`/health` e `/detail/*` riporterebbero 0 aggiornamenti anche con update reali,
+mentre l'amministratore ne vede correttamente (in admin quei filtri non sono
+attivi). Le rotte dati neutralizzano quindi **temporaneamente** solo gli
+short-circuit `pre_site_transient_update_*` prima di leggere i transient e li
+ripristinano subito dopo (vedi `wphc_mute_update_shortcircuit()`), lasciando
+attive le iniezioni legittime dei plugin premium sui filtri di lettura. La rotta
+diagnostica `GET /health-check/v1/debug` (gated `manage_options`) aiuta a
+individuare questo e altri casi, confrontando il transient filtrato con quello
+grezzo memorizzato ed elencando i callback registrati sui filtri.
+
 **Perché `/health` non chiama mai `WP_Debug_Data::debug_data()`:** quella funzione
 introspeziona l'intero ambiente server (versioni PHP, estensioni, dimensioni
 directory, in alcuni casi persino test attivi su Imagick/Ghostscript) ed è
