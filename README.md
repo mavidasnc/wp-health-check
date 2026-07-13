@@ -764,6 +764,29 @@ predisposta in questa versione).
    in stato "non registrato": ogni rotta dati risponde `503 wphc_not_enrolled`
    finché non si completa l'enroll.
 
+### Installazione assistita (plugin installer)
+
+In alternativa alla copia manuale via SFTP, la cartella
+[`installer/`](installer/) contiene un piccolo **plugin normale**
+(`wp-health-check-installer`) che automatizza il primo deploy. Si carica da
+**Plugin → Aggiungi nuovo → Carica plugin** con lo ZIP
+`wp-health-check-installer.zip` (allegato alle release GitHub) e, **all'attivazione**:
+
+- se `mu-plugins/wp-health-check.php` esiste già → non fa nulla e lo segnala con
+  una notice;
+- altrimenti verifica/crea la cartella `mu-plugins`, controlla i permessi di
+  scrittura, **scarica l'ultima release** di `wp-health-check.php` da GitHub (con
+  verifica SHA-256) e la installa;
+- in caso di problema lascia una notice con il **motivo preciso** (permessi,
+  download, integrità, scrittura).
+
+Usa funzioni filesystem native (nessuna richiesta di credenziali FTP in
+attivazione). Dopo l'installazione l'installer può essere disattivato ed
+eliminato: il mu-plugin resta attivo e si auto-aggiorna. Nota: se serve una
+chiave pubblica del centro diversa da quella incorporata nella release, dopo
+l'installazione va comunque impostata (o si distribuisce una release del
+mu-plugin con la chiave già incorporata).
+
 ### Procedura di enroll
 
 Dal sistema centrale, calcolare `url_normalizzato` e `token` per il sito (vedi

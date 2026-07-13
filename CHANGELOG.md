@@ -7,6 +7,16 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Added
+
+- `installer/`: plugin normale "WP Health Check Installer" (+ ZIP) che
+  automatizza il primo deploy del mu-plugin. All'attivazione: se
+  `mu-plugins/wp-health-check.php` esiste già non fa nulla (notice), altrimenti
+  verifica/crea `mu-plugins`, controlla i permessi, scarica l'ultima release da
+  GitHub (con verifica SHA-256) e la installa; in caso di errore lascia una
+  notice con il motivo. Non fa parte del mu-plugin (`wp-health-check.php`), è un
+  aiuto all'installazione.
+
 ## [1.16.0] - 2026-07-13
 
 ### Fixed
