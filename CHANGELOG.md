@@ -17,6 +17,23 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
   notice con il motivo. Non fa parte del mu-plugin (`wp-health-check.php`), è un
   aiuto all'installazione.
 
+## [1.17.0] - 2026-07-13
+
+### Added
+
+- `GET /detail/theme`: nuovo array `themes` con l'elenco completo dei temi
+  installati sul sito (non solo l'attivo). Ogni voce espone `name`,
+  `stylesheet`, `version`, `active`, `parent` (stylesheet del parent per i
+  child theme, altrimenti `null`), `update_available` e `new_version`. I campi
+  `active_theme`/`parent_theme` restano invariati per retrocompatibilità. Lo
+  stato aggiornamenti riusa i dati già letti dalla rotta, senza accessi
+  aggiuntivi ai transient.
+- `GET /health` → `summary`: nuovi booleani `has_gdpr` (consent manager GDPR
+  attivo: iubenda o Cookiebot) e `has_builder` (page builder attivo: plugin
+  Elementor o tema attivo/parent DIVI), calcolati dai plugin/temi attivi. Gli
+  slug riconosciuti vivono in un unico punto (`wphc_detect_site_signals()`),
+  così è facile aggiungerne altri senza toccare il resto del plugin.
+
 ## [1.16.0] - 2026-07-13
 
 ### Fixed

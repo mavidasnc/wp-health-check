@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.16.0
+ * Version:     1.17.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.16.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.17.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -377,6 +377,68 @@ function wphc_send_enroll_mismatch_alert( $expected, $received, $candidates ) {
 	if ( $sent ) {
 		set_transient( 'wphc_enroll_alert_sent', gmdate( 'c' ), HOUR_IN_SECONDS );
 	}
+}
+
+/**
+ * Rileva due segnali booleani sul sito, calcolati dai plugin/temi
+ * effettivamente attivi: presenza di un consent manager GDPR (has_gdpr) e
+ * presenza di un page builder (has_builder). L'API centrale li persiste e li
+ * espone; qui li si calcola perche' il plugin ha accesso diretto a WordPress.
+ *
+ * PUNTO UNICO DEGLI SLUG: gli elenchi degli slug riconosciuti vivono solo
+ * dentro questa funzione, cosi' aggiungerne altri (nuovi consent manager o
+ * builder) non richiede toccare altre parti del plugin ne' l'API centrale.
+ * Gli slug plugin sono la cartella (primo segmento di "cartella/file.php") e
+ * vanno verificati contro le versioni realmente installate (Cookiebot in
+ * particolare ha avuto slug diversi nel tempo).
+ *
+ * @return array{has_gdpr: bool, has_builder: bool} Segnali rilevati.
+ */
+function wphc_detect_site_signals() {
+	// Slug (cartella) dei consent manager GDPR riconosciuti.
+	$gdpr_plugin_slugs = array(
+		'iubenda-cookie-law-solution',
+		'cookiebot',
+		'cookiebot-manager',
+	);
+
+	// Slug (cartella) dei page builder riconosciuti come plugin.
+	$builder_plugin_slugs = array(
+		'elementor',
+	);
+
+	// Slug (stylesheet/template) dei temi builder riconosciuti.
+	$builder_theme_slugs = array(
+		'divi',
+	);
+
+	$active_plugins = (array) get_option( 'active_plugins', array() );
+	$plugin_slugs   = array_map(
+		function ( $plugin_file ) {
+			// "elementor/elementor.php" -> "elementor"; per un plugin a file
+			// singolo nella radice ("foo.php") il primo segmento e' il file.
+			return explode( '/', $plugin_file )[0];
+		},
+		$active_plugins
+	);
+
+	$active_theme = wp_get_theme();
+	$theme_slugs  = array_filter(
+		array(
+			strtolower( $active_theme->get_stylesheet() ),
+			strtolower( $active_theme->get_template() ),
+		)
+	);
+
+	$has_gdpr = (bool) array_intersect( $plugin_slugs, $gdpr_plugin_slugs );
+
+	$has_builder = (bool) array_intersect( $plugin_slugs, $builder_plugin_slugs )
+		|| (bool) array_intersect( $theme_slugs, $builder_theme_slugs );
+
+	return array(
+		'has_gdpr'    => $has_gdpr,
+		'has_builder' => $has_builder,
+	);
 }
 
 // -----------------------------------------------------------------------
@@ -955,6 +1017,11 @@ function wphc_route_health( WP_REST_Request $request ) {
 
 	$server_ip = wphc_get_server_ip();
 
+	// Segnali booleani (consent manager GDPR, page builder) calcolati dai
+	// plugin/temi attivi. Operazioni O(1) su liste gia' disponibili: coerente
+	// col contratto "economico" di /health.
+	$signals = wphc_detect_site_signals();
+
 	$payload = array(
 		'site'                => wphc_normalize_site_url(),
 		'generated_at'        => gmdate( 'c' ),
@@ -973,6 +1040,8 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'theme_name'         => $active_theme_name,
 			'parent_theme_name'  => $parent_theme_name,
 			'core_update'        => $core_update_available,
+			'has_gdpr'           => $signals['has_gdpr'],
+			'has_builder'        => $signals['has_builder'],
 			'mu_dir_writable'    => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at' => $updates_checked_at,
 		),
@@ -1143,11 +1212,41 @@ function wphc_route_detail_theme( WP_REST_Request $request ) {
 		);
 	}
 
+	// Elenco completo dei temi installati (non solo l'attivo): richiesto dalla
+	// dashboard per mostrare tutti i temi presenti sul sito. wp_get_themes()
+	// fa una scansione della cartella temi con cache interna di WP, nessuna
+	// chiamata remota. Lo stato aggiornamenti riusa $theme_updates gia' letto
+	// sopra (stessa neutralizzazione dello short-circuit "pre_"), quindi non
+	// comporta ulteriori accessi ai transient.
+	$all_themes        = wp_get_themes();
+	$active_stylesheet = $stylesheet;
+	$themes            = array();
+	foreach ( $all_themes as $theme_stylesheet => $theme ) {
+		/** @var array<string,string>|false $item_update */ // phpcs:ignore Generic.Commenting.DocComment.MissingShort
+		$item_update      = isset( $theme_updates[ $theme_stylesheet ] ) ? $theme_updates[ $theme_stylesheet ]->update : false;
+		$item_has_update  = is_array( $item_update ) && isset( $item_update['new_version'] );
+		$item_new_version = $item_has_update ? $item_update['new_version'] : null;
+
+		$themes[] = array(
+			'name'             => $theme->get( 'Name' ),
+			'stylesheet'       => (string) $theme_stylesheet,
+			'version'          => $theme->get( 'Version' ),
+			'active'           => ( (string) $theme_stylesheet === $active_stylesheet ),
+			// get_template() restituisce lo stylesheet del parent per un child
+			// theme, oppure quello del tema stesso se non e' un child: si
+			// espone il parent solo nel primo caso, altrimenti null.
+			'parent'           => $theme->parent() ? $theme->get_template() : null,
+			'update_available' => $item_has_update,
+			'new_version'      => $item_new_version,
+		);
+	}
+
 	$payload = array(
 		'site'         => wphc_normalize_site_url(),
 		'generated_at' => gmdate( 'c' ),
 		'active_theme' => $active_theme_payload,
 		'parent_theme' => $parent_theme_payload,
+		'themes'       => $themes,
 	);
 
 	set_transient( 'wphc_detail_theme_cache', $payload, HOUR_IN_SECONDS );

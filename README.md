@@ -332,6 +332,8 @@ Risposta:
     "theme_name": "Astra Child",
     "parent_theme_name": "Astra",
     "core_update": false,
+    "has_gdpr": true,
+    "has_builder": false,
     "mu_dir_writable": true,
     "updates_checked_at": "2026-07-08T09:12:00+00:00"
   },
@@ -406,9 +408,33 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/theme' \
   "parent_theme": {
     "name": "Astra",
     "version": "4.6.1"
-  }
+  },
+  "themes": [
+    {
+      "name": "Astra Child",
+      "stylesheet": "astra-child",
+      "version": "1.2.0",
+      "active": true,
+      "parent": "astra",
+      "update_available": false,
+      "new_version": null
+    },
+    {
+      "name": "Astra",
+      "stylesheet": "astra",
+      "version": "4.6.1",
+      "active": false,
+      "parent": null,
+      "update_available": true,
+      "new_version": "4.6.5"
+    }
+  ]
 }
 ```
+
+L'array `themes` elenca **tutti** i temi installati sul sito (non solo l'attivo).
+`parent` è lo `stylesheet` del tema parent per i child theme, altrimenti `null`.
+I campi `active_theme`/`parent_theme` restano invariati per retrocompatibilità.
 
 ### `GET /detail/server` — ambiente server/PHP/database
 
