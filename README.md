@@ -18,13 +18,14 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 6. [Rotte REST](#rotte-rest)
 7. [Tracciamento accessi](#tracciamento-accessi)
 8. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
-9. [Requisiti lato GitHub](#requisiti-lato-github)
-10. [Caching per-rotta](#caching-per-rotta)
-11. [CORS](#cors)
-12. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
-13. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
-14. [Tab Site Health](#tab-site-health)
-15. [Sviluppo locale](#sviluppo-locale)
+9. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
+10. [Requisiti lato GitHub](#requisiti-lato-github)
+11. [Caching per-rotta](#caching-per-rotta)
+12. [CORS](#cors)
+13. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
+14. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
+15. [Tab Site Health](#tab-site-health)
+16. [Sviluppo locale](#sviluppo-locale)
 
 ---
 
@@ -37,7 +38,10 @@ che permettono a un sistema centrale esterno di:
 - interrogare un sommario di salute economico e ad alta frequenza (`/health`);
 - interrogare dettagli più costosi, on demand (`/detail/plugins`, `/detail/theme`,
   `/detail/server`);
-- aggiornare il plugin stesso da una release GitHub firmata (`/update`).
+- aggiornare il plugin stesso da una release GitHub firmata (`/update`);
+- aggiornare, dietro consenso esplicito per sito, un singolo plugin/tema/il core del
+  sito da wordpress.org (`/update/plugin`, `/update/theme`, `/update/core`), con
+  storico consultabile via `/update/log`.
 
 Il file viene installato **una volta sola**, a mano, via SFTP/SSH, in
 `wp-content/mu-plugins/wp-health-check.php`. Da quel momento è identico su tutti i
@@ -509,6 +513,57 @@ Risposte possibili:
 { "updated": true, "from": "1.0.0", "to": "1.1.0" }
 ```
 
+### `POST /update/plugin`, `POST /update/theme`, `POST /update/core` — aggiornamento software di terze parti
+
+Vedi la sezione dedicata [Aggiornamento di plugin, temi e core via
+API](#aggiornamento-di-plugin-temi-e-core-via-api) per il flusso completo. In
+sintesi: protette dal token **e** da un kill-switch per sito (spento di
+default), aggiornano un singolo plugin/tema/il core esclusivamente da
+wordpress.org, mai da una sorgente o versione indicata dal chiamante.
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/plugin' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI' \
+  -H 'Content-Type: application/json' \
+  -d '{ "plugin": "akismet/akismet.php" }'
+```
+
+```json
+{ "updated": true, "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet", "from": "5.3.2", "to": "5.3.4", "log_id": 1287 }
+```
+
+`POST /update/theme` è identica con `{ "theme": "<stylesheet>" }` al posto di
+`plugin`. `POST /update/core` non richiede alcun campo nel payload: la
+versione target è sempre quella che WordPress stesso ha determinato
+disponibile. Tutte e tre accettano `?check=1` per un dry-run (verifica se
+l'elemento è aggiornabile, senza eseguire nulla).
+
+### `GET /update/log` — storico degli aggiornamenti
+
+Sola lettura, paginata, **sempre accessibile anche a kill-switch spento**
+(protetta solo dal bearer token, come le altre rotte dati).
+
+```bash
+curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&limit=50' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{
+  "site": "https://esempio.com/blog",
+  "count": 1,
+  "total": 137,
+  "entries": [
+    {
+      "id": 1287, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:00+00:00",
+      "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
+      "version_from": "5.3.2", "version_to": "5.3.4",
+      "phase": "requested", "message": null, "ip": "203.0.113.7"
+    }
+  ]
+}
+```
+
 ## Tracciamento accessi
 
 A ogni richiesta dati autenticata con successo (`/health`, `/detail/*`, `/update`)
@@ -601,6 +656,130 @@ core. È una scelta di progetto, non una svista: il file deve restare
 autoconsistente e funzionare anche quando `WP_Filesystem` non è inizializzato o
 richiederebbe credenziali FTP (scenario comune per un mu-plugin, che gira prima di
 molte inizializzazioni dell'admin).
+
+## Aggiornamento di plugin, temi e core via API
+
+Dalla `1.18.0`, oltre al self-update dell'agent, il sistema centrale può
+innescare l'aggiornamento di **software di terze parti del sito**: un singolo
+plugin, un singolo tema, o il core di WordPress. È una funzionalità
+distinta e separata dal self-update: usa le primitive del core
+(`Plugin_Upgrader`, `Theme_Upgrader`, `Core_Upgrader`) invece delle funzioni
+filesystem native, perché aggiornare un plugin/tema significa scaricare uno
+ZIP, scompattarlo e sostituire un'intera cartella (non un singolo file), con
+tutte le routine di maintenance-mode e rollback che il core già sa gestire.
+
+Nasce da un'analisi di fattibilità e sicurezza dedicata (vedi
+[docs/plugin-update-via-api-analisi.md](docs/plugin-update-via-api-analisi.md)
+e [docs/plugin-update-via-api-specifiche.md](docs/plugin-update-via-api-specifiche.md))
+e implementa la sua **Opzione C**: una chiamata REST per singolo elemento,
+sincrona, con la dashboard che orchestra e fa polling — evita i timeout e la
+maintenance mode orfana di un ipotetico aggiornamento "bulk" in un'unica
+richiesta.
+
+### Il vincolo di sicurezza non negoziabile
+
+La richiesta indica **solo quale elemento** aggiornare, **mai da dove né a
+quale versione**: nessun campo `package_url`, nessun campo `version` nel
+payload. La sorgente del pacchetto è esclusivamente `->update->package` (o
+`->download` per il core, vedi sotto), letta dal transient di update che il
+core stesso popola interrogando `api.wordpress.org`. Senza questo vincolo, un
+token compromesso diventerebbe un vettore di esecuzione di codice remoto
+(installazione di uno ZIP arbitrario); con questo vincolo, il rischio
+incrementale è paragonabile a quello di un amministratore che clicca
+"Aggiorna" in bacheca.
+
+Due controlli aggiuntivi, entrambi indipendenti dal payload:
+
+- **Allowlist dell'host del pacchetto** (`wphc_is_package_host_allowed()`):
+  solo `downloads.wordpress.org` e `api.wordpress.org`. Copre di fatto i
+  plugin/temi **premium** (che si aggiornano da server propri): vengono
+  sempre rifiutati con `not_updatable`, in v1 non sono aggiornabili via API.
+- **`sslverify` sempre attivo** (default della WP HTTP API di WordPress): mai
+  disabilitato.
+
+### Kill-switch per sito
+
+Interruttore master `wp_health_check_updates_enabled`, **spento di default**
+(scelta fail-safe: la feature va abilitata consapevolmente per ciascun sito),
+gestito da un unico checkbox nella [tab Site Health](#tab-site-health). A
+interruttore spento, `POST /update/plugin`, `/update/theme` e `/update/core`
+rispondono `403 disabled` **prima** di qualunque altra elaborazione;
+`GET /update/log` resta invece sempre leggibile (è sola lettura).
+
+### Flusso comune (plugin e temi)
+
+1. Registrazione accesso, kill-switch, requisito **WordPress ≥ 6.3** (per la
+   garanzia di rollback via *temp-backup* nativo introdotto in quella
+   versione — sotto 6.3 la rotta risponde `unsupported_wp_version`, scelta
+   fail-safe: niente update senza rete di sicurezza), lock anti-concorrenza
+   (`wp_health_check_update_lock`, TTL 300s, rilascio garantito anche via
+   `register_shutdown_function`), preflight filesystem (`get_filesystem_method()
+   === 'direct'`, altrimenti `fs_method_unavailable` — mai raccolte
+   credenziali FTP/SSH) e pulizia difensiva di un eventuale `.maintenance`
+   orfano (`wphc_update_preflight()`).
+2. Rilettura affidabile del transient di update (stesso
+   `wphc_mute_update_shortcircuit()`/`wphc_restore_update_shortcircuit()` già
+   usati da `/health`), verifica che l'elemento abbia davvero un update
+   disponibile (altrimenti `up_to_date`) e allowlist dell'host del pacchetto
+   (altrimenti `not_updatable`).
+3. Riga di log `requested` (vedi [schema sotto](#tabella-di-log-degli-aggiornamenti)).
+4. Upgrade con skin silenziosa (`Automatic_Upgrader_Skin`, nessun output
+   HTML: la richiesta è REST, non una pagina admin) e temp-backup nativo
+   attivo di default (WP 6.3+).
+5. Sanity check: si rilegge la versione effettivamente installata dopo il
+   tentativo. Se coincide con la versione attesa → `completed`. Se l'elemento
+   è tornato alla versione di partenza → il temp-backup nativo ha già
+   ripristinato con successo → `rolled_back`. Altrimenti lo stato è incerto
+   (elemento mancante o a una versione imprevista) → `failed`, da verificare
+   manualmente sul sito.
+6. Invalidazione opcache dei file dell'elemento, invalidazione delle cache
+   liste/transient (incluse quelle di `/health` e `/detail/*`), riga di log
+   finale, rilascio del lock.
+
+### Core: specificità e avvertenze
+
+Il core **non** usa il temp-backup di plugin/temi: `Core_Upgrader` ha un
+proprio percorso di ripristino, una garanzia **diversa e più debole** — per
+questo il requisito WP 6.3 non si applica a questo ramo (non ci sarebbe
+comunque un temp-backup da richiedere). L'aggiornamento core è l'operazione
+più lenta e rischiosa delle tre, e il primo candidato a un'eventuale futura
+esecuzione asincrona se i timeout si rivelassero un problema in produzione.
+
+Dopo la sostituzione dei file, il flusso invoca esplicitamente `wp_upgrade()`
+per completare le routine di migrazione del database: in un contesto
+headless (nessuna sessione admin che visiterebbe
+`wp-admin/upgrade.php`) queste non partirebbero altrimenti da sole.
+
+Nota tecnica: a differenza di plugin/temi, gli update object del core non
+hanno un campo `->package`; il campo equivalente è `->download` (che, per un
+update standard, coincide con `->packages->full`, il pacchetto che
+`Core_Upgrader::upgrade()` scarica davvero nel percorso che questo plugin
+percorre).
+
+### Tabella di log degli aggiornamenti
+
+Ogni operazione produce **due righe** nella tabella custom
+`{$wpdb->prefix}wphc_update_log` (`id`, `correlation_id`, `created_at`,
+`type`, `target`, `name`, `version_from`, `version_to`, `phase`, `message`,
+`ip`), legate dallo stesso `correlation_id`: una **prima** di toccare
+qualunque file (`phase = requested`, prova che un aggiornamento è stato
+avviato anche se PHP muore a metà), una al termine (`completed` / `failed` /
+`rolled_back`). La tabella non ha un hook di attivazione dedicato (i
+mu-plugin non ne hanno): viene creata/allineata con `dbDelta()` al primo
+caricamento in cui `wp_health_check_db_version` non combacia con lo schema
+atteso. Le righe più vecchie di 90 giorni (`WP_HEALTH_CHECK_LOG_RETENTION_DAYS`)
+vengono rimosse con un prune opportunistico (al massimo una volta al giorno,
+gate via transient), senza dipendere da un cron dedicato. Il reset
+enrollment (WP-CLI o tab Site Health) **non** cancella questo storico — solo
+il lock anti-concorrenza — perché è audit del sito, non stato di enrollment.
+
+`GET /health` espone tre campi derivati da questa funzionalità nel blocco
+`summary`, tutti O(1) (coerenti col contratto economico della rotta):
+`updates_via_api_enabled` (stato del kill-switch), `last_update` (oggetto
+`{type, target, phase, at}` dell'ultima riga di log, letto da un'opzione
+autoloaded aggiornata ad ogni update, non da una query alla tabella) e
+`maintenance_stuck` (`true` se esiste un `.maintenance` più vecchio di 10
+minuti: segnala un upgrade interrotto).
 
 ## Requisiti lato GitHub
 
@@ -743,6 +922,13 @@ di installare plugin arbitrari, solo di far scaricare la release *attualmente
 pubblicata* sul repository GitHub configurato, che è comunque verificata via
 firma/sha256 (vedi sotto). Il raggio d'azione resta quindi limitato al perimetro
 di ciò che queste rotte espongono.
+
+Dalla `1.18.0` questo perimetro include anche l'aggiornamento di plugin/temi/core
+già installati (vedi [sezione dedicata](#aggiornamento-di-plugin-temi-e-core-via-api)),
+ma **solo** su siti dove il kill-switch è stato acceso esplicitamente e **solo**
+verso la versione che wordpress.org ha già pubblicato per quell'elemento — mai
+un'installazione ex novo di software non presente sul sito, mai una sorgente o
+versione indicata dal token compromesso stesso.
 
 **Trasmissione del token nell'enroll.** Il token viaggia in chiaro (via HTTPS) nel
 payload di `/enroll`: è protetto in transito da TLS, non da un ulteriore livello di
@@ -893,6 +1079,12 @@ Tre pulsanti eseguono azioni:
   i conteggi o le versioni degli aggiornamenti sembrano sbagliati.
 - **Reset enrollment**: equivalente a `wp health-check reset` (stessa funzione
   condivisa `wphc_reset_enrollment()`), con conferma prima dell'esecuzione.
+
+Un checkbox separato (dalla `1.18.0`), **"Consenti aggiornamenti (plugin, temi,
+core) via API"**, governa il kill-switch `wp_health_check_updates_enabled` (vedi
+[Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)):
+spento di default, va abilitato consapevolmente per sito prima che le rotte
+`/update/plugin`, `/update/theme` e `/update/core` accettino richieste.
 
 Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce

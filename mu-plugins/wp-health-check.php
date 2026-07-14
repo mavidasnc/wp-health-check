@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.17.0
+ * Version:     1.18.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.17.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.18.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -78,6 +78,26 @@ if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY' ) ) {
  */
 if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
 	define( 'WP_HEALTH_CHECK_ALERT_EMAIL', 'maurizio@mavida.com' );
+}
+
+/**
+ * Versione dello schema della tabella di log degli update
+ * ({$wpdb->prefix}wphc_update_log). Incrementarla forza dbDelta() a
+ * rieseguire e allineare lo schema al prossimo caricamento (vedi
+ * wphc_maybe_install_update_log_schema()).
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_DB_VERSION' ) ) {
+	define( 'WP_HEALTH_CHECK_DB_VERSION', '1' );
+}
+
+/** Giorni di conservazione delle righe della tabella di log update (§6.5). */
+if ( ! defined( 'WP_HEALTH_CHECK_LOG_RETENTION_DAYS' ) ) {
+	define( 'WP_HEALTH_CHECK_LOG_RETENTION_DAYS', 90 );
+}
+
+/** TTL in secondi del lock anti-concorrenza per le rotte di update (§7.1). */
+if ( ! defined( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL' ) ) {
+	define( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL', 300 );
 }
 
 // -----------------------------------------------------------------------
@@ -290,6 +310,12 @@ function wphc_reset_enrollment() {
 	foreach ( $options as $option_name ) {
 		delete_option( $option_name );
 	}
+
+	// Solo il lock anti-concorrenza (stato transitorio legato al sito): lo
+	// storico della tabella wphc_update_log e il kill-switch
+	// wp_health_check_updates_enabled sono config/audit del sito, non
+	// dell'enrollment, e sopravvivono volutamente a un reset.
+	delete_transient( 'wp_health_check_update_lock' );
 }
 
 /**
@@ -705,6 +731,52 @@ function wphc_register_routes() {
 		)
 	);
 
+	// Aggiornamento di software di terze parti (plugin/temi/core), distinto
+	// dal self-update dell'agent sopra: vedi wphc_perform_item_update() e
+	// wphc_perform_core_update() per il flusso completo.
+	register_rest_route(
+		'health-check/v1',
+		'/update/plugin',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_update_plugin',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	register_rest_route(
+		'health-check/v1',
+		'/update/theme',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_update_theme',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	register_rest_route(
+		'health-check/v1',
+		'/update/core',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_update_core',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	// Sola lettura: resta accessibile anche a kill-switch spento (vedi
+	// wphc_route_update_log), utile per diagnosticare la flotta a feature
+	// disattivata.
+	register_rest_route(
+		'health-check/v1',
+		'/update/log',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_update_log',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
 	// Rotta diagnostica: gated su manage_options (autenticazione WordPress,
 	// quindi chiamabile con una application password), NON sul bearer token.
 	// E' uno strumento per l'operatore: aiuta a capire discrepanze fra i
@@ -1022,28 +1094,38 @@ function wphc_route_health( WP_REST_Request $request ) {
 	// col contratto "economico" di /health.
 	$signals = wphc_detect_site_signals();
 
+	// Aggiornamento plugin/temi/core via API (vedi sezione dedicata piu'
+	// sotto nel file): tre letture O(1) (due opzioni, un file_exists),
+	// coerenti col contratto economico di questa rotta.
+	$maintenance_file  = wphc_maintenance_file_path();
+	$maintenance_stuck = file_exists( $maintenance_file ) && ( time() - (int) filemtime( $maintenance_file ) ) > 600;
+	$last_update       = get_option( 'wp_health_check_last_update' );
+
 	$payload = array(
 		'site'                => wphc_normalize_site_url(),
 		'generated_at'        => gmdate( 'c' ),
 		'fleet_agent_version' => WP_HEALTH_CHECK_VERSION,
 		'summary'             => array(
-			'wp_version'         => get_bloginfo( 'version' ),
-			'php_version'        => PHP_VERSION,
-			'php_memory_limit'   => (string) ini_get( 'memory_limit' ),
-			'server_ip'          => '' !== $server_ip ? $server_ip : null,
-			'plugin_version'     => WP_HEALTH_CHECK_VERSION,
-			'plugins_total'      => count( $all_plugins ),
-			'plugins_active'     => count( $active_plugins ),
-			'plugins_updates'    => $plugins_updates_count,
-			'themes_total'       => count( $all_themes ),
-			'themes_updates'     => $themes_updates_count,
-			'theme_name'         => $active_theme_name,
-			'parent_theme_name'  => $parent_theme_name,
-			'core_update'        => $core_update_available,
-			'has_gdpr'           => $signals['has_gdpr'],
-			'has_builder'        => $signals['has_builder'],
-			'mu_dir_writable'    => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
-			'updates_checked_at' => $updates_checked_at,
+			'wp_version'              => get_bloginfo( 'version' ),
+			'php_version'             => PHP_VERSION,
+			'php_memory_limit'        => (string) ini_get( 'memory_limit' ),
+			'server_ip'               => '' !== $server_ip ? $server_ip : null,
+			'plugin_version'          => WP_HEALTH_CHECK_VERSION,
+			'plugins_total'           => count( $all_plugins ),
+			'plugins_active'          => count( $active_plugins ),
+			'plugins_updates'         => $plugins_updates_count,
+			'themes_total'            => count( $all_themes ),
+			'themes_updates'          => $themes_updates_count,
+			'theme_name'              => $active_theme_name,
+			'parent_theme_name'       => $parent_theme_name,
+			'core_update'             => $core_update_available,
+			'has_gdpr'                => $signals['has_gdpr'],
+			'has_builder'             => $signals['has_builder'],
+			'mu_dir_writable'         => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
+			'updates_checked_at'      => $updates_checked_at,
+			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', false ),
+			'last_update'             => $last_update ? $last_update : null,
+			'maintenance_stuck'       => $maintenance_stuck,
 		),
 		'last_access'         => array(
 			'at'          => $previous_access['at'],
@@ -1712,6 +1794,805 @@ function wphc_get_latest_version( $force = false ) {
 }
 
 // -----------------------------------------------------------------------
+// AGGIORNAMENTO PLUGIN/TEMI/CORE VIA API (software di terze parti)
+// -----------------------------------------------------------------------
+//
+// Distinto dal self-update dell'agent sopra: qui si aggiornano plugin,
+// temi e il core del sito appoggiandosi alle primitive del core WordPress
+// (Plugin_Upgrader / Theme_Upgrader / Core_Upgrader), che gia' sanno
+// scaricare, scompattare, sostituire cartelle ed eseguire il rollback via
+// temp-backup nativo (WP 6.3+). Vedi docs/plugin-update-via-api-specifiche.md
+// per il contratto REST completo.
+//
+// Vincolo di sicurezza non negoziabile: la richiesta indica solo QUALE
+// elemento aggiornare, MAI da dove ne' a quale versione. La sorgente del
+// pacchetto e' sempre e solo quella che il core ha gia' determinato nel
+// proprio transient di update (mai un valore preso dal payload).
+
+/**
+ * Nome (con prefisso multisite-aware) della tabella di log degli update
+ * plugin/temi/core. Centralizzato qui perche' usato sia dallo schema sia
+ * dalle query di lettura/scrittura.
+ *
+ * @return string Nome completo della tabella.
+ */
+function wphc_update_log_table() {
+	global $wpdb;
+	return $wpdb->prefix . 'wphc_update_log';
+}
+
+/**
+ * Crea/allinea la tabella di log degli update con dbDelta(), solo quando
+ * lo schema installato (wp_health_check_db_version) non combacia con
+ * quello atteso. I mu-plugin non hanno hook di attivazione: questo e' il
+ * sostituto, gated da un'opzione autoloaded cosi' il controllo resta O(1)
+ * a ogni richiesta salvo la prima dopo un deploy o un bump di schema.
+ */
+function wphc_maybe_install_update_log_schema() {
+	if ( get_option( 'wp_health_check_db_version' ) === WP_HEALTH_CHECK_DB_VERSION ) {
+		return;
+	}
+
+	global $wpdb;
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+
+	$table_name      = wphc_update_log_table();
+	$charset_collate = $wpdb->get_charset_collate();
+
+	// phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table_name e' costruito da $wpdb->prefix (non input utente); sintassi standard dbDelta() da Codex.
+	$sql = "CREATE TABLE {$table_name} (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		correlation_id CHAR(16) NOT NULL,
+		created_at DATETIME NOT NULL,
+		type VARCHAR(10) NOT NULL,
+		target VARCHAR(191) NOT NULL,
+		name VARCHAR(191) NOT NULL,
+		version_from VARCHAR(32) DEFAULT NULL,
+		version_to VARCHAR(32) DEFAULT NULL,
+		phase VARCHAR(16) NOT NULL,
+		message VARCHAR(255) DEFAULT NULL,
+		ip VARCHAR(45) DEFAULT NULL,
+		PRIMARY KEY  (id),
+		KEY correlation_id (correlation_id),
+		KEY type_created_at (type, created_at)
+	) {$charset_collate};";
+
+	dbDelta( $sql );
+
+	update_option( 'wp_health_check_db_version', WP_HEALTH_CHECK_DB_VERSION );
+}
+add_action( 'init', 'wphc_maybe_install_update_log_schema' );
+
+/**
+ * Inserisce una riga nella tabella di log update: il pattern richiesto e'
+ * a DUE righe per operazione, stesso correlation_id. Una PRIMA di toccare
+ * qualunque file (phase 'requested': resta come prova che un aggiornamento
+ * e' stato avviato anche se PHP muore a meta'), una al termine
+ * ('completed' / 'failed' / 'rolled_back').
+ *
+ * @param string      $correlation_id Lega le righe della stessa operazione.
+ * @param string      $type           'plugin' | 'theme' | 'core'.
+ * @param string      $target         Plugin file, stylesheet, oppure 'core'.
+ * @param string      $name           Nome leggibile dell'elemento.
+ * @param string|null $version_from   Versione installata prima dell'update.
+ * @param string|null $version_to     Versione target/attesa (dal transient del core).
+ * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back'.
+ * @param string|null $message        Dettaglio in caso di errore/rollback.
+ * @return int ID della riga inserita (0 se l'insert fallisce).
+ */
+function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null ) {
+	global $wpdb;
+
+	$wpdb->insert(
+		wphc_update_log_table(),
+		array(
+			'correlation_id' => $correlation_id,
+			'created_at'     => gmdate( 'Y-m-d H:i:s' ),
+			'type'           => $type,
+			'target'         => $target,
+			'name'           => $name,
+			'version_from'   => $version_from,
+			'version_to'     => $version_to,
+			'phase'          => $phase,
+			'message'        => $message,
+			'ip'             => wphc_get_client_ip(),
+		),
+		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )
+	);
+
+	return (int) $wpdb->insert_id;
+}
+
+/**
+ * Prune opportunistico delle righe di log piu' vecchie della retention
+ * (WP_HEALTH_CHECK_LOG_RETENTION_DAYS), al massimo una volta al giorno
+ * (gate via transient): evita una crescita illimitata della tabella senza
+ * dipendere da un cron dedicato.
+ */
+function wphc_maybe_prune_update_log() {
+	if ( false !== get_transient( 'wp_health_check_log_pruned_at' ) ) {
+		return;
+	}
+
+	global $wpdb;
+	$table     = wphc_update_log_table();
+	$threshold = gmdate( 'Y-m-d H:i:s', time() - ( WP_HEALTH_CHECK_LOG_RETENTION_DAYS * DAY_IN_SECONDS ) );
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- tabella custom non cacheata dall'object cache di WP; $table e' un nome fisso ($wpdb->prefix), non input; $threshold e' comunque passato via prepare().
+	$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE created_at < %s", $threshold ) );
+
+	set_transient( 'wp_health_check_log_pruned_at', time(), DAY_IN_SECONDS );
+}
+
+/**
+ * Aggiorna wp_health_check_last_update (opzione autoloaded) con l'esito
+ * dell'ultima operazione di update. Usata da /health (§9 della specifica)
+ * per esporre "last_update" senza una query alla tabella di log nel path
+ * di polling frequente, che deve restare O(1) (vedi wphc_route_health()).
+ *
+ * @param string $type   'plugin' | 'theme' | 'core'.
+ * @param string $target Plugin file, stylesheet, oppure 'core'.
+ * @param string $phase  'completed' | 'failed' | 'rolled_back'.
+ */
+function wphc_record_last_update( $type, $target, $phase ) {
+	update_option(
+		'wp_health_check_last_update',
+		array(
+			'type'   => $type,
+			'target' => $target,
+			'phase'  => $phase,
+			'at'     => gmdate( 'c' ),
+		)
+	);
+}
+
+/**
+ * Rilascia il lock anti-concorrenza acquisito da wphc_update_preflight().
+ * Registrata anche come register_shutdown_function: cosi' il lock si
+ * libera comunque anche se PHP muore (timeout, fatal) a meta' di un
+ * update, invece di restare bloccato su 409 locked fino allo scadere
+ * naturale del TTL del transient.
+ */
+function wphc_release_update_lock() {
+	delete_transient( 'wp_health_check_update_lock' );
+}
+
+/**
+ * Percorso del file .maintenance nella root del sito: il core lo crea
+ * durante l'upgrade di plugin/temi/core per servire la pagina "in
+ * manutenzione" e lo rimuove al termine.
+ *
+ * @return string Percorso assoluto.
+ */
+function wphc_maintenance_file_path() {
+	return trailingslashit( ABSPATH ) . '.maintenance';
+}
+
+/**
+ * Rimuove un file .maintenance orfano (piu' vecchio di $max_age_seconds):
+ * puo' restare se PHP e' morto a meta' di un upgrade precedente (timeout,
+ * OOM). Va eseguita PRIMA di ogni nuovo tentativo di update, altrimenti il
+ * core la troverebbe gia' presente e servirebbe la pagina di manutenzione
+ * anche durante il nuovo tentativo.
+ *
+ * @param int $max_age_seconds Eta' massima tollerata prima di considerarla orfana.
+ */
+function wphc_clear_stale_maintenance( $max_age_seconds = 600 ) {
+	$file = wphc_maintenance_file_path();
+	if ( file_exists( $file ) && ( time() - (int) filemtime( $file ) ) > $max_age_seconds ) {
+		wp_delete_file( $file );
+	}
+}
+
+/**
+ * Verifica che l'host del pacchetto di update sia nell'allowlist
+ * wordpress.org: unico controllo che impedisce a un plugin/tema premium
+ * (con update-checker proprio, package su host terzi) di essere scaricato
+ * ed eseguito da questa rotta. Copre anche il caso di un transient
+ * avvelenato da un filtro di terze parti.
+ *
+ * @param string $package_url URL del pacchetto da scaricare.
+ * @return bool True se l'host e' ammesso.
+ */
+function wphc_is_package_host_allowed( $package_url ) {
+	$host = wp_parse_url( (string) $package_url, PHP_URL_HOST );
+	return in_array( $host, array( 'downloads.wordpress.org', 'api.wordpress.org' ), true );
+}
+
+/**
+ * Genera un identificativo di correlazione a 16 caratteri esadecimali, per
+ * legare la riga 'requested' e la riga finale della stessa operazione di
+ * update nella tabella di log.
+ *
+ * @return string Correlation id, 16 caratteri hex.
+ */
+function wphc_generate_correlation_id() {
+	return bin2hex( random_bytes( 8 ) );
+}
+
+/**
+ * True se la richiesta chiede una simulazione (?check=1): non esegue
+ * alcun update, verifica solo se l'elemento e' aggiornabile (dry-run,
+ * migliora la UX della dashboard che puo' sapere in anticipo cosa e'
+ * aggiornabile senza eseguire nulla).
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return bool
+ */
+function wphc_request_wants_check( WP_REST_Request $request ) {
+	return (bool) $request->get_param( 'check' );
+}
+
+/**
+ * Preambolo comune a tutte le rotte di update di terze parti: accesso,
+ * kill-switch, requisito versione WP (solo plugin/temi, per la garanzia di
+ * rollback via temp-backup nativo), lock anti-concorrenza, preflight
+ * filesystem, pulizia .maintenance orfano, prune opportunistico del log.
+ * Va chiamato PRIMA di qualsiasi include pesante o lettura di transient di
+ * update.
+ *
+ * In caso di successo acquisisce il lock: il chiamante e' responsabile di
+ * rilasciarlo con wphc_release_update_lock() su OGNI uscita successiva
+ * (il rilascio e' comunque garantito anche in caso di crash, vedi sopra).
+ *
+ * @param bool $requires_wp63 True per plugin/temi (richiede WP >= 6.3); false per il core.
+ * @return true|array True se si puo' procedere, altrimenti array-esito con
+ *                     chiavi 'result' e 'http' da restituire cosi' com'e'.
+ */
+function wphc_update_preflight( $requires_wp63 ) {
+	wphc_record_access();
+
+	if ( ! get_option( 'wp_health_check_updates_enabled', false ) ) {
+		return array(
+			'result' => 'disabled',
+			'http'   => 403,
+		);
+	}
+
+	if ( $requires_wp63 && version_compare( get_bloginfo( 'version' ), '6.3', '<' ) ) {
+		// Scelta fail-safe: sotto WP 6.3 non esiste il temp-backup nativo,
+		// quindi non si tenta l'update senza una rete di sicurezza equivalente.
+		return array(
+			'result' => 'unsupported_wp_version',
+			'http'   => 200,
+		);
+	}
+
+	if ( false !== get_transient( 'wp_health_check_update_lock' ) ) {
+		return array(
+			'result' => 'locked',
+			'http'   => 409,
+		);
+	}
+	set_transient( 'wp_health_check_update_lock', 1, WP_HEALTH_CHECK_UPDATE_LOCK_TTL );
+	register_shutdown_function( 'wphc_release_update_lock' );
+
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	if ( 'direct' !== get_filesystem_method() ) {
+		wphc_release_update_lock();
+		return array(
+			'result' => 'fs_method_unavailable',
+			'http'   => 200,
+		);
+	}
+
+	wphc_clear_stale_maintenance();
+	wphc_maybe_prune_update_log();
+
+	return true;
+}
+
+/**
+ * Invalida l'opcache dei file PHP dell'elemento appena aggiornato: sui
+ * SAPI con opcache persistente (es. php-fpm) i vecchi file compilati
+ * resterebbero altrimenti in uso fino al riavvio del pool, anche dopo che
+ * il filesystem e' gia' stato sostituito.
+ *
+ * @param string $type   'plugin' | 'theme'.
+ * @param string $target Plugin file oppure stylesheet.
+ */
+function wphc_maybe_invalidate_item_opcache( $type, $target ) {
+	if ( ! function_exists( 'opcache_invalidate' ) ) {
+		return;
+	}
+
+	if ( 'plugin' === $type ) {
+		$file = WP_PLUGIN_DIR . '/' . $target;
+		if ( file_exists( $file ) ) {
+			opcache_invalidate( $file, true );
+		}
+		return;
+	}
+
+	$theme = wp_get_theme( $target );
+	if ( $theme->exists() ) {
+		$functions_php = trailingslashit( $theme->get_stylesheet_directory() ) . 'functions.php';
+		if ( file_exists( $functions_php ) ) {
+			opcache_invalidate( $functions_php, true );
+		}
+	}
+}
+
+/**
+ * Esegue (o simula, se $dry_run) l'aggiornamento di un singolo plugin o
+ * tema tramite le primitive del core (Plugin_Upgrader / Theme_Upgrader),
+ * con temp-backup/rollback nativo (WP 6.3+, garantito dal preflight in
+ * wphc_update_preflight()). Condivisa da wphc_route_update_plugin() e
+ * wphc_route_update_theme(): plugin e temi seguono esattamente lo stesso
+ * flusso, cambia solo quale classe/funzioni del core si usano e la forma
+ * (oggetto per i plugin, array per i temi) dell'entry nel transient di
+ * update — una particolarita' del core, non un refuso qui.
+ *
+ * @param string $type    'plugin' | 'theme'.
+ * @param string $target  Plugin file (chiave di get_plugins()) oppure stylesheet.
+ * @param bool   $dry_run True per un controllo senza eseguire l'update (?check=1).
+ * @return array Esito normalizzato, vedi wphc_map_item_update_outcome() per il mapping REST.
+ */
+function wphc_perform_item_update( $type, $target, $dry_run = false ) {
+	$preflight = wphc_update_preflight( true );
+	if ( true !== $preflight ) {
+		return $preflight;
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+	require_once ABSPATH . 'wp-admin/includes/theme.php';
+	require_once ABSPATH . 'wp-admin/includes/update.php';
+	require_once ABSPATH . 'wp-admin/includes/misc.php';
+	require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+
+	if ( 'plugin' === $type ) {
+		require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
+
+		$all_plugins = get_plugins();
+		if ( ! isset( $all_plugins[ $target ] ) ) {
+			wphc_release_update_lock();
+			return array(
+				'result' => 'not_found',
+				'http'   => 200,
+			);
+		}
+		$name         = $all_plugins[ $target ]['Name'];
+		$version_from = $all_plugins[ $target ]['Version'];
+
+		wp_clean_plugins_cache( false );
+		$muted     = wphc_mute_update_shortcircuit();
+		$transient = get_site_transient( 'update_plugins' );
+		wphc_restore_update_shortcircuit( $muted );
+
+		// Le entry di update_plugins->response sono OGGETTI (a differenza
+		// dei temi, vedi ramo sotto: e' cosi' che il core popola i due
+		// transient, non una scelta di questo file).
+		$update     = ( is_object( $transient ) && isset( $transient->response[ $target ] ) ) ? $transient->response[ $target ] : null;
+		$package    = ( null !== $update && isset( $update->package ) ) ? (string) $update->package : '';
+		$version_to = ( null !== $update && isset( $update->new_version ) ) ? (string) $update->new_version : '';
+	} else {
+		require_once ABSPATH . 'wp-admin/includes/class-theme-upgrader.php';
+
+		$theme = wp_get_theme( $target );
+		if ( ! $theme->exists() ) {
+			wphc_release_update_lock();
+			return array(
+				'result' => 'not_found',
+				'http'   => 200,
+			);
+		}
+		$name         = (string) $theme->get( 'Name' );
+		$version_from = (string) $theme->get( 'Version' );
+
+		wp_clean_themes_cache( false );
+		$muted     = wphc_mute_update_shortcircuit();
+		$transient = get_site_transient( 'update_themes' );
+		wphc_restore_update_shortcircuit( $muted );
+
+		// Le entry di update_themes->response sono ARRAY (a differenza dei
+		// plugin sopra): stessa nota, e' una particolarita' del core.
+		$update     = ( is_object( $transient ) && isset( $transient->response[ $target ] ) ) ? $transient->response[ $target ] : null;
+		$package    = ( null !== $update && isset( $update['package'] ) ) ? (string) $update['package'] : '';
+		$version_to = ( null !== $update && isset( $update['new_version'] ) ) ? (string) $update['new_version'] : '';
+	}
+
+	if ( null === $update ) {
+		wphc_release_update_lock();
+		return array(
+			'result'  => 'up_to_date',
+			'current' => $version_from,
+			'http'    => 200,
+		);
+	}
+
+	if ( '' === $package || ! wphc_is_package_host_allowed( $package ) ) {
+		wphc_release_update_lock();
+		return array(
+			'result' => 'not_updatable',
+			'detail' => __( 'pacchetto non ospitato su wordpress.org', 'wp-health-check' ),
+			'http'   => 200,
+		);
+	}
+
+	if ( $dry_run ) {
+		wphc_release_update_lock();
+		return array(
+			'result'  => 'updatable',
+			'type'    => $type,
+			'target'  => $target,
+			'name'    => $name,
+			'current' => $version_from,
+			'latest'  => $version_to,
+			'http'    => 200,
+		);
+	}
+
+	$correlation_id = wphc_generate_correlation_id();
+	wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'requested' );
+
+	$skin     = new Automatic_Upgrader_Skin(); // Nessun output HTML: la richiesta e' REST, non una pagina admin.
+	$upgrader = ( 'plugin' === $type ) ? new Plugin_Upgrader( $skin ) : new Theme_Upgrader( $skin );
+	$result   = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
+
+	$exists         = false;
+	$actual_version = null;
+	if ( 'plugin' === $type ) {
+		$fresh_plugins  = get_plugins();
+		$exists         = isset( $fresh_plugins[ $target ] );
+		$actual_version = $exists ? $fresh_plugins[ $target ]['Version'] : null;
+	} else {
+		$fresh_theme    = wp_get_theme( $target );
+		$exists         = $fresh_theme->exists();
+		$actual_version = $exists ? (string) $fresh_theme->get( 'Version' ) : null;
+	}
+
+	wphc_maybe_invalidate_item_opcache( $type, $target );
+	if ( 'plugin' === $type ) {
+		wp_clean_plugins_cache( true );
+	} else {
+		wp_clean_themes_cache( true );
+	}
+	delete_transient( 'wphc_health_cache' );
+	delete_transient( 'wphc_detail_plugins_cache' );
+	delete_transient( 'wphc_detail_theme_cache' );
+
+	if ( is_wp_error( $result ) || $actual_version !== $version_to ) {
+		$message = is_wp_error( $result ) ? $result->get_error_message() : __( 'Verifica post-aggiornamento fallita.', 'wp-health-check' );
+
+		// Se l'elemento e' presente ed e' tornato alla versione originale,
+		// il temp-backup nativo (WP 6.3+) ha gia' ripristinato con
+		// successo: si registra 'rolled_back'. Altrimenti lo stato e'
+		// incerto (elemento mancante o a una versione imprevista):
+		// 'failed', da verificare manualmente sul sito.
+		$phase = ( $exists && $actual_version === $version_from ) ? 'rolled_back' : 'failed';
+
+		$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message );
+		wphc_record_last_update( $type, $target, $phase );
+		wphc_release_update_lock();
+
+		return array(
+			'result' => $phase,
+			'detail' => $message,
+			'log_id' => $log_id,
+			'http'   => 200,
+		);
+	}
+
+	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed' );
+	wphc_record_last_update( $type, $target, 'completed' );
+	wphc_release_update_lock();
+
+	return array(
+		'result' => 'updated',
+		'type'   => $type,
+		'target' => $target,
+		'name'   => $name,
+		'from'   => $version_from,
+		'to'     => $version_to,
+		'log_id' => $log_id,
+		'http'   => 200,
+	);
+}
+
+/**
+ * Esegue (o simula) l'aggiornamento del core WordPress tramite
+ * Core_Upgrader. A differenza di plugin/temi, il core NON usa il
+ * temp-backup nativo: il suo meccanismo di rollback e' quello proprio
+ * dell'upgrader, una garanzia diversa e piu' debole (per questo il
+ * requisito WP 6.3 non si applica a questo ramo: non ci sarebbe comunque
+ * un temp-backup da richiedere). Dopo la sostituzione dei file invoca
+ * wp_upgrade() per completare l'aggiornamento del database in contesto
+ * headless, dove nessuna visita a wp-admin/upgrade.php lo farebbe altrimenti.
+ *
+ * @param bool $dry_run True per un controllo senza eseguire l'update (?check=1).
+ * @return array Esito normalizzato, vedi wphc_map_item_update_outcome().
+ */
+function wphc_perform_core_update( $dry_run = false ) {
+	$preflight = wphc_update_preflight( false );
+	if ( true !== $preflight ) {
+		return $preflight;
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/update.php';
+	require_once ABSPATH . 'wp-admin/includes/misc.php';
+	require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+	require_once ABSPATH . 'wp-admin/includes/class-core-upgrader.php';
+
+	$version_from = get_bloginfo( 'version' );
+
+	// Stessa lettura usata dal core in wp-admin/update-core.php: l'indice 0
+	// e' l'update che WordPress stesso ha determinato disponibile per
+	// questo sito (versione e locale), mai una versione indicata dal
+	// chiamante.
+	$core_updates = get_core_updates( array( 'dismissed' => false ) );
+	$update       = ( is_array( $core_updates ) && isset( $core_updates[0] ) ) ? $core_updates[0] : null;
+
+	if ( null === $update || ! isset( $update->response ) || in_array( $update->response, array( 'development', 'latest' ), true ) ) {
+		wphc_release_update_lock();
+		return array(
+			'result'  => 'up_to_date',
+			'current' => $version_from,
+			'http'    => 200,
+		);
+	}
+
+	$version_to = isset( $update->current ) ? (string) $update->current : '';
+
+	// Gli update object del core non hanno un campo ->package come
+	// plugin/temi: il campo equivalente e' ->download, che per un update
+	// standard (risposta diversa da 'development'/'autoupdate' parziale)
+	// coincide con ->packages->full, cioe' il pacchetto che Core_Upgrader
+	// scarica davvero nel ramo che percorriamo qui sotto.
+	if ( empty( $update->download ) || ! wphc_is_package_host_allowed( $update->download ) ) {
+		wphc_release_update_lock();
+		return array(
+			'result' => 'not_updatable',
+			'detail' => __( 'pacchetto non ospitato su wordpress.org', 'wp-health-check' ),
+			'http'   => 200,
+		);
+	}
+
+	if ( $dry_run ) {
+		wphc_release_update_lock();
+		return array(
+			'result'  => 'updatable',
+			'type'    => 'core',
+			'target'  => 'core',
+			'name'    => 'WordPress',
+			'current' => $version_from,
+			'latest'  => $version_to,
+			'http'    => 200,
+		);
+	}
+
+	$correlation_id = wphc_generate_correlation_id();
+	wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'requested' );
+
+	$skin     = new Automatic_Upgrader_Skin();
+	$upgrader = new Core_Upgrader( $skin );
+	$result   = $upgrader->upgrade( $update );
+
+	$actual_version = get_bloginfo( 'version' );
+
+	if ( is_wp_error( $result ) || $actual_version !== $version_to ) {
+		$message = is_wp_error( $result ) ? $result->get_error_message() : __( 'Verifica post-aggiornamento fallita.', 'wp-health-check' );
+		// Vedi nota sul rollback in cima alla funzione: qui la distinzione
+		// rolled_back/failed si basa solo sulla versione osservata dopo il
+		// tentativo, non su una garanzia esplicita del Core_Upgrader.
+		$phase = ( $actual_version === $version_from ) ? 'rolled_back' : 'failed';
+
+		$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, $phase, $message );
+		wphc_record_last_update( 'core', 'core', $phase );
+		wphc_release_update_lock();
+
+		return array(
+			'result' => $phase,
+			'detail' => $message,
+			'log_id' => $log_id,
+			'http'   => 200,
+		);
+	}
+
+	// Completa l'upgrade del database: in contesto headless (nessuna
+	// sessione admin che visiterebbe wp-admin/upgrade.php) le routine di
+	// migrazione del DB non partirebbero altrimenti da sole.
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	wp_upgrade();
+
+	if ( function_exists( 'opcache_reset' ) ) {
+		// Il core sostituisce centinaia di file in un colpo solo: a
+		// differenza del path per singolo plugin/tema, invalidare uno per
+		// uno non e' praticabile qui.
+		opcache_reset();
+	}
+	delete_transient( 'wphc_health_cache' );
+
+	$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed' );
+	wphc_record_last_update( 'core', 'core', 'completed' );
+	wphc_release_update_lock();
+
+	return array(
+		'result' => 'updated',
+		'type'   => 'core',
+		'target' => 'core',
+		'name'   => 'WordPress',
+		'from'   => $version_from,
+		'to'     => $version_to,
+		'log_id' => $log_id,
+		'http'   => 200,
+	);
+}
+
+/**
+ * Mappa l'array-esito interno (comune a wphc_perform_item_update() e
+ * wphc_perform_core_update()) nella risposta REST contrattuale: un
+ * WP_Error per gli status non-200 (403 disabled, 409 locked), altrimenti
+ * un 200 con "updated" true/false e il dettaglio dell'esito.
+ *
+ * @param array $outcome Esito interno con almeno le chiavi 'result' e 'http'.
+ * @return WP_REST_Response|WP_Error
+ */
+function wphc_map_item_update_outcome( $outcome ) {
+	$result = $outcome['result'];
+	$http   = isset( $outcome['http'] ) ? (int) $outcome['http'] : 200;
+
+	if ( 403 === $http ) {
+		return new WP_Error( 'wphc_updates_disabled', __( 'Aggiornamenti via API disattivati per questo sito.', 'wp-health-check' ), array( 'status' => 403 ) );
+	}
+	if ( 409 === $http ) {
+		return new WP_Error( 'wphc_update_locked', __( 'Un altro aggiornamento e\' gia\' in corso.', 'wp-health-check' ), array( 'status' => 409 ) );
+	}
+
+	if ( 'updated' === $result ) {
+		return rest_ensure_response(
+			array(
+				'updated' => true,
+				'type'    => $outcome['type'],
+				'target'  => $outcome['target'],
+				'name'    => $outcome['name'],
+				'from'    => $outcome['from'],
+				'to'      => $outcome['to'],
+				'log_id'  => $outcome['log_id'],
+			)
+		);
+	}
+
+	if ( 'updatable' === $result ) {
+		// Esito del dry-run (?check=1): nessun update e' stato eseguito.
+		return rest_ensure_response(
+			array(
+				'updated' => false,
+				'result'  => 'updatable',
+				'type'    => $outcome['type'],
+				'target'  => $outcome['target'],
+				'name'    => $outcome['name'],
+				'current' => $outcome['current'],
+				'latest'  => $outcome['latest'],
+			)
+		);
+	}
+
+	$response = array(
+		'updated' => false,
+		'result'  => $result,
+	);
+	foreach ( array( 'current', 'detail', 'log_id' ) as $key ) {
+		if ( isset( $outcome[ $key ] ) ) {
+			$response[ $key ] = $outcome[ $key ];
+		}
+	}
+
+	return rest_ensure_response( $response );
+}
+
+/**
+ * Callback REST di POST /update/plugin: valida il payload (solo il plugin
+ * file, mai una sorgente/versione), poi delega a wphc_perform_item_update().
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error Esito dell'update.
+ */
+function wphc_route_update_plugin( WP_REST_Request $request ) {
+	$plugin = (string) $request->get_param( 'plugin' );
+	if ( '' === trim( $plugin ) ) {
+		return new WP_Error( 'wphc_missing_plugin', __( 'Campo "plugin" obbligatorio.', 'wp-health-check' ), array( 'status' => 400 ) );
+	}
+
+	$outcome = wphc_perform_item_update( 'plugin', $plugin, wphc_request_wants_check( $request ) );
+
+	return wphc_map_item_update_outcome( $outcome );
+}
+
+/**
+ * Callback REST di POST /update/theme: identica a wphc_route_update_plugin()
+ * con lo stylesheet come chiave.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error Esito dell'update.
+ */
+function wphc_route_update_theme( WP_REST_Request $request ) {
+	$theme = (string) $request->get_param( 'theme' );
+	if ( '' === trim( $theme ) ) {
+		return new WP_Error( 'wphc_missing_theme', __( 'Campo "theme" obbligatorio.', 'wp-health-check' ), array( 'status' => 400 ) );
+	}
+
+	$outcome = wphc_perform_item_update( 'theme', $theme, wphc_request_wants_check( $request ) );
+
+	return wphc_map_item_update_outcome( $outcome );
+}
+
+/**
+ * Callback REST di POST /update/core: nessun campo obbligatorio nel
+ * payload, la versione target e' sempre quella che WordPress stesso ha
+ * determinato disponibile.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error Esito dell'update.
+ */
+function wphc_route_update_core( WP_REST_Request $request ) {
+	$outcome = wphc_perform_core_update( wphc_request_wants_check( $request ) );
+
+	return wphc_map_item_update_outcome( $outcome );
+}
+
+/**
+ * Callback REST di GET /update/log: lettura paginata della tabella di log
+ * update. Sola lettura, quindi accessibile anche a kill-switch spento
+ * (nessuna chiamata a wphc_update_preflight() qui, deliberatamente).
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response
+ */
+function wphc_route_update_log( WP_REST_Request $request ) {
+	wphc_record_access();
+
+	global $wpdb;
+	$table = wphc_update_log_table();
+
+	$type   = (string) $request->get_param( 'type' );
+	$limit  = (int) $request->get_param( 'limit' );
+	$limit  = $limit > 0 ? min( 200, $limit ) : 50;
+	$offset = max( 0, (int) $request->get_param( 'offset' ) );
+
+	$type_filter = in_array( $type, array( 'plugin', 'theme', 'core' ), true ) ? $type : '';
+
+	if ( '' !== $type_filter ) {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
+		$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE type = %s", $type_filter ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table e' un nome fisso ($wpdb->prefix), non input.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE type = %s ORDER BY id DESC LIMIT %d OFFSET %d", $type_filter, $limit, $offset ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	} else {
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
+		$total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table e' un nome fisso ($wpdb->prefix), non input; nessun altro dato in questo ramo.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+	}
+
+	$entries = array();
+	foreach ( (array) $rows as $row ) {
+		$entries[] = array(
+			'id'             => (int) $row['id'],
+			'correlation_id' => $row['correlation_id'],
+			// created_at e' salvato in UTC (gmdate) da wphc_log_update_row(): il
+			// suffisso rende esplicito a strtotime() il fuso da usare.
+			'created_at'     => gmdate( 'c', strtotime( $row['created_at'] . ' UTC' ) ),
+			'type'           => $row['type'],
+			'target'         => $row['target'],
+			'name'           => $row['name'],
+			'version_from'   => $row['version_from'],
+			'version_to'     => $row['version_to'],
+			'phase'          => $row['phase'],
+			'message'        => $row['message'],
+			'ip'             => $row['ip'],
+		);
+	}
+
+	return rest_ensure_response(
+		array(
+			'site'    => wphc_normalize_site_url(),
+			'count'   => count( $entries ),
+			'total'   => $total,
+			'entries' => $entries,
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
 // ROTTA DIAGNOSTICA: GET /debug
 // -----------------------------------------------------------------------
 
@@ -1885,14 +2766,15 @@ function wphc_render_site_health_tab( $tab ) {
 		return;
 	}
 
-	$is_enrolled       = ! empty( get_option( 'wp_health_check_token' ) );
-	$signed_site_url   = (string) get_option( 'wp_health_check_site_url', '' );
-	$enrolled_at       = get_option( 'wp_health_check_enrolled_at' );
-	$enrolled_ip       = get_option( 'wp_health_check_enrolled_ip' );
-	$last_request_at   = get_option( 'wp_health_check_last_request_at' );
-	$last_request_ip   = get_option( 'wp_health_check_last_request_ip' );
-	$trust_proxy       = (bool) get_option( 'wp_health_check_trust_proxy', false );
-	$last_enroll_error = get_option( 'wp_health_check_last_enroll_error' );
+	$is_enrolled             = ! empty( get_option( 'wp_health_check_token' ) );
+	$signed_site_url         = (string) get_option( 'wp_health_check_site_url', '' );
+	$enrolled_at             = get_option( 'wp_health_check_enrolled_at' );
+	$enrolled_ip             = get_option( 'wp_health_check_enrolled_ip' );
+	$last_request_at         = get_option( 'wp_health_check_last_request_at' );
+	$last_request_ip         = get_option( 'wp_health_check_last_request_ip' );
+	$trust_proxy             = (bool) get_option( 'wp_health_check_trust_proxy', false );
+	$last_enroll_error       = get_option( 'wp_health_check_last_enroll_error' );
+	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', false );
 
 	$candidates       = wphc_candidate_site_urls();
 	$canonical_home   = wphc_normalize_site_url();
@@ -1947,6 +2829,8 @@ function wphc_render_site_health_tab( $tab ) {
 			<div class="notice notice-success"><p><?php esc_html_e( 'Cache dell\'agent svuotate e aggiornamenti ricontrollati.', 'wp-health-check' ); ?></p></div>
 		<?php elseif ( isset( $_GET['wphc_reset'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_updates_toggled'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success"><p><?php esc_html_e( 'Preferenza sugli aggiornamenti via API salvata.', 'wp-health-check' ); ?></p></div>
 		<?php endif; ?>
 
 		<table class="widefat striped" style="max-width: 800px;">
@@ -2225,6 +3109,20 @@ function wphc_render_site_health_tab( $tab ) {
 			?>
 		</form>
 
+		<h3><?php esc_html_e( 'Aggiornamenti plugin, temi e core via API', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Interruttore master: quando spento, le rotte POST /update/plugin, /update/theme e /update/core rifiutano ogni richiesta con 403 (GET /update/log resta sempre leggibile). Solo pacchetti ospitati su wordpress.org; rollback automatico via temp-backup nativo di WordPress per plugin e temi.', 'wp-health-check' ); ?>
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="wphc_toggle_updates" />
+			<?php wp_nonce_field( 'wphc_toggle_updates' ); ?>
+			<label>
+				<input type="checkbox" name="wphc_updates_enabled" value="1" <?php checked( $updates_via_api_enabled ); ?> />
+				<?php esc_html_e( 'Consenti aggiornamenti (plugin, temi, core) via API', 'wp-health-check' ); ?>
+			</label>
+			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+		</form>
+
 		<h3><?php esc_html_e( 'Svuota cache e ricontrolla aggiornamenti', 'wp-health-check' ); ?></h3>
 		<p class="description">
 			<?php esc_html_e( 'Cancella le cache dell\'agent (transient wphc_*: health, dettaglio plugin/tema/server, ultima versione) e forza un ricontrollo COMPLETO degli aggiornamenti di core, plugin e temi. A differenza di ?fresh=1 (che gira via REST), qui siamo in contesto amministrativo: anche i plugin/temi premium vengono ricontrollati correttamente. Usalo se i conteggi o le versioni degli aggiornamenti sembrano sbagliati.', 'wp-health-check' ); ?>
@@ -2466,6 +3364,33 @@ function wphc_handle_reset_enrollment() {
 	exit;
 }
 add_action( 'admin_post_wphc_reset_enrollment', 'wphc_handle_reset_enrollment' );
+
+/**
+ * Handler di admin-post.php per il checkbox "Consenti aggiornamenti
+ * (plugin, temi, core) via API" nella tab Site Health: unico interruttore
+ * master (§5 della specifica) da cui dipendono le rotte POST /update/{plugin,
+ * theme,core}.
+ */
+function wphc_handle_toggle_updates() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_toggle_updates' );
+
+	update_option( 'wp_health_check_updates_enabled', ! empty( $_POST['wphc_updates_enabled'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'                  => 'wp-health-check',
+				'wphc_updates_toggled' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_toggle_updates', 'wphc_handle_toggle_updates' );
 
 // -----------------------------------------------------------------------
 // COMANDO WP-CLI: wp health-check reset

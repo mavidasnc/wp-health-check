@@ -7,8 +7,50 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-07-14
+
 ### Added
 
+- Aggiornamento di **plugin, temi e core del sito** (non solo dell'agent)
+  tramite quattro nuove rotte REST, distinte dal self-update esistente:
+  - `POST /update/plugin` e `POST /update/theme`: aggiornano un singolo
+    elemento già installato, esclusivamente da wordpress.org, tramite
+    `Plugin_Upgrader`/`Theme_Upgrader` con rollback via temp-backup nativo
+    (richiede WordPress ≥ 6.3; sotto, `unsupported_wp_version`). Il payload
+    indica solo *quale* elemento aggiornare (`plugin`/`theme`), mai una
+    sorgente o versione: quelle vengono sempre lette dal transient di update
+    che il core stesso popola da `api.wordpress.org`. Query `?check=1` per un
+    dry-run.
+  - `POST /update/core`: aggiorna il core alla versione che WordPress ha già
+    determinato disponibile, tramite `Core_Upgrader` (rollback nativo diverso
+    e più debole rispetto a plugin/temi); completa esplicitamente l'upgrade
+    del database con `wp_upgrade()` dopo la sostituzione dei file, necessario
+    in un contesto headless.
+  - `GET /update/log`: lettura paginata (`type`, `limit`, `offset`) della
+    nuova tabella custom `{$wpdb->prefix}wphc_update_log`, sempre accessibile
+    anche a kill-switch spento. Ogni operazione scrive due righe con lo
+    stesso `correlation_id` (una prima dell'update, `phase: requested`; una
+    al termine, `completed`/`failed`/`rolled_back`), con prune opportunistico
+    delle righe più vecchie di 90 giorni.
+  - Le tre rotte di update sono protette, oltre che dal bearer token, da un
+    **kill-switch master per sito** (`wp_health_check_updates_enabled`,
+    spento di default), con un checkbox dedicato nella tab Site Health
+    ("Consenti aggiornamenti (plugin, temi, core) via API"); a spento,
+    rispondono `403 disabled` prima di qualunque elaborazione.
+  - Allowlist esplicita dell'host del pacchetto (`downloads.wordpress.org`,
+    `api.wordpress.org`): i plugin/temi **premium** (aggiornati da server
+    propri) sono sempre rifiutati con `not_updatable` in questa versione.
+  - Lock anti-concorrenza (`wp_health_check_update_lock`, TTL 300s, rilascio
+    garantito anche via `register_shutdown_function`), preflight filesystem
+    (`get_filesystem_method() === 'direct'`, altrimenti
+    `fs_method_unavailable`, mai richieste credenziali FTP/SSH) e pulizia
+    difensiva di un eventuale `.maintenance` orfano, condivisi da tutte le
+    rotte di update di terze parti.
+- `GET /health` → `summary`: tre nuovi campi derivati dalla funzionalità sopra,
+  tutti O(1): `updates_via_api_enabled` (stato del kill-switch), `last_update`
+  (ultimo esito, letto da un'opzione autoloaded, non da una query alla
+  tabella di log) e `maintenance_stuck` (`true` se un `.maintenance` orfano è
+  presente da più di 10 minuti).
 - `installer/`: plugin normale "WP Health Check Installer" (+ ZIP) che
   automatizza il primo deploy del mu-plugin. All'attivazione: se
   `mu-plugins/wp-health-check.php` esiste già non fa nulla (notice), altrimenti
@@ -16,6 +58,13 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
   GitHub (con verifica SHA-256) e la installa; in caso di errore lascia una
   notice con il motivo. Non fa parte del mu-plugin (`wp-health-check.php`), è un
   aiuto all'installazione.
+
+### Changed
+
+- `wphc_reset_enrollment()` cancella ora anche il lock anti-concorrenza degli
+  aggiornamenti (`wp_health_check_update_lock`); lo storico della tabella di
+  log e il kill-switch **non** vengono toccati dal reset, perché sono
+  audit/config del sito, non stato di enrollment.
 
 ## [1.17.0] - 2026-07-13
 
@@ -333,7 +382,9 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...HEAD
+[1.18.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.17.0...v1.18.0
+[1.17.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.13.0...v1.14.0

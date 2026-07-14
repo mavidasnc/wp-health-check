@@ -1,7 +1,10 @@
 # WP Health Check — API Reference
 
 Reference tecnico delle rotte REST esposte dal fleet agent
-(`mu-plugins/wp-health-check.php`). Aggiornato all'agent **1.9.0**.
+(`mu-plugins/wp-health-check.php`). Le rotte `/enroll` → `/update` sono
+aggiornate all'agent **1.9.0**; le rotte `/update/plugin`, `/update/theme`,
+`/update/core` e `/update/log`, aggiunte con l'agent **1.18.0**, sono
+documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -18,7 +21,10 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 7. [`GET /detail/theme`](#get-detailtheme)
 8. [`GET /detail/server`](#get-detailserver)
 9. [`POST /update`](#post-update)
-10. [Riferimento codici di errore](#riferimento-codici-di-errore)
+10. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
+11. [`POST /update/core`](#post-updatecore)
+12. [`GET /update/log`](#get-updatelog)
+13. [Riferimento codici di errore](#riferimento-codici-di-errore)
 
 ---
 
@@ -42,6 +48,10 @@ Sintesi delle rotte:
 | `GET` | `/detail/theme` | Bearer token | `?fresh=1` | transient 1h |
 | `GET` | `/detail/server` | Bearer token | `?fresh=1` | transient 12h |
 | `POST` | `/update` | Bearer token | — | nessuna |
+| `POST` | `/update/plugin` | Bearer token + kill-switch | `?check=1` | nessuna |
+| `POST` | `/update/theme` | Bearer token + kill-switch | `?check=1` | nessuna |
+| `POST` | `/update/core` | Bearer token + kill-switch | `?check=1` | nessuna |
+| `GET` | `/update/log` | Bearer token | `type`, `limit`, `offset` | nessuna |
 
 ---
 
@@ -546,6 +556,180 @@ Tutti gli errori di rete/release restituiscono un `WP_Error`:
 
 ---
 
+## `POST /update/plugin`, `POST /update/theme`
+
+Aggiornano, da wordpress.org soltanto, un singolo plugin o tema già installato
+sul sito, tramite `Plugin_Upgrader`/`Theme_Upgrader` con rollback via
+temp-backup nativo (richiede **WordPress ≥ 6.3**). Distinte dal self-update
+dell'agent (`POST /update` sopra): qui si aggiorna software di terze parti,
+non l'agent stesso. Vedi il razionale completo e il flusso passo-passo nella
+sezione [Aggiornamento di plugin, temi e core via
+API](../README.md#aggiornamento-di-plugin-temi-e-core-via-api) del README.
+
+**Auth:** Bearer token. **Richiede inoltre** il kill-switch
+`wp_health_check_updates_enabled` acceso (altrimenti `403 disabled`).
+**Query:** `?check=1` per un dry-run (nessun update eseguito). **Cache:** nessuna.
+
+### Payload
+
+```json
+{ "plugin": "akismet/akismet.php" }
+```
+
+`POST /update/theme` è identica con `{ "theme": "<stylesheet>" }`. Nessun
+campo `package_url` o `version` è accettato: la sorgente e la versione target
+sono sempre quelle che il transient di update del core ha già determinato.
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/update/plugin' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI' \
+  -H 'Content-Type: application/json' \
+  -d '{ "plugin": "akismet/akismet.php" }'
+```
+
+### Risposte `200`
+
+Aggiornamento eseguito:
+
+```json
+{ "updated": true, "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet", "from": "5.3.2", "to": "5.3.4", "log_id": 1287 }
+```
+
+Esito del dry-run (`?check=1`), elemento aggiornabile:
+
+```json
+{ "updated": false, "result": "updatable", "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet", "current": "5.3.2", "latest": "5.3.4" }
+```
+
+Altri esiti (`result`):
+
+```json
+{ "updated": false, "result": "up_to_date", "current": "5.3.4" }
+{ "updated": false, "result": "not_updatable", "detail": "pacchetto non ospitato su wordpress.org" }
+{ "updated": false, "result": "not_found" }
+{ "updated": false, "result": "fs_method_unavailable" }
+{ "updated": false, "result": "unsupported_wp_version" }
+{ "updated": false, "result": "rolled_back", "detail": "...", "log_id": 1290 }
+{ "updated": false, "result": "failed", "detail": "...", "log_id": 1290 }
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `updated` | bool | `true` solo se l'elemento è stato effettivamente aggiornato |
+| `type` | string | `plugin` \| `theme` |
+| `target` | string | Plugin file o stylesheet richiesto |
+| `name` | string | Nome leggibile dell'elemento |
+| `from` / `to` | string | Versioni a confronto (solo con `updated: true`) |
+| `log_id` | int | ID della riga nella tabella di log (vedi `GET /update/log`) |
+| `result` | string | `updatable` (dry-run), `up_to_date`, `not_updatable`, `not_found`, `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` |
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `400` | `wphc_missing_plugin` / `wphc_missing_theme` | Campo `plugin`/`theme` mancante |
+| `403` | `wphc_updates_disabled` | Kill-switch spento per questo sito |
+| `409` | `wphc_update_locked` | Un altro aggiornamento è già in corso |
+
+---
+
+## `POST /update/core`
+
+Aggiorna il core di WordPress alla versione che WordPress stesso ha già
+determinato disponibile (`get_core_updates()`), tramite `Core_Upgrader`. A
+differenza di plugin/temi **non** usa il temp-backup nativo (garanzia di
+rollback più debole) e completa esplicitamente l'upgrade del database via
+`wp_upgrade()` dopo la sostituzione dei file (contesto headless: nessuna
+visita admin la innescherebbe da sola). Vedi [Core: specificità e
+avvertenze](../README.md#core-specificità-e-avvertenze) nel README.
+
+**Auth:** Bearer token + kill-switch acceso. **Payload:** nessun campo
+obbligatorio. **Query:** `?check=1` per un dry-run. **Cache:** nessuna.
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/update/core' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposte `200`
+
+```json
+{ "updated": true, "type": "core", "target": "core", "name": "WordPress", "from": "6.4.3", "to": "6.5.0", "log_id": 1301 }
+```
+
+Stessi `result` di `/update/plugin`/`/update/theme` sopra (senza
+`unsupported_wp_version`, che non si applica al core), con `type: "core"`.
+
+### Errori
+
+Stessi codici/status di `/update/plugin`/`/update/theme` (`wphc_updates_disabled`
+`403`, `wphc_update_locked` `409`); nessun campo obbligatorio nel payload,
+quindi nessun `400` specifico.
+
+---
+
+## `GET /update/log`
+
+Lettura paginata della tabella di log degli aggiornamenti (plugin, temi,
+core). Sola lettura: **sempre accessibile anche a kill-switch spento**.
+
+**Auth:** Bearer token. **Query:** `type` (`plugin`\|`theme`\|`core`,
+opzionale), `limit` (default 50, max 200), `offset` (default 0). **Cache:** nessuna.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=50&offset=0' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "count": 2,
+  "total": 137,
+  "entries": [
+    {
+      "id": 1288, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:03+00:00",
+      "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
+      "version_from": "5.3.2", "version_to": "5.3.4",
+      "phase": "completed", "message": null, "ip": "203.0.113.7"
+    },
+    {
+      "id": 1287, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:00+00:00",
+      "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
+      "version_from": "5.3.2", "version_to": "5.3.4",
+      "phase": "requested", "message": null, "ip": "203.0.113.7"
+    }
+  ]
+}
+```
+
+### Campi (per elemento di `entries`)
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `id` | int | ID della riga |
+| `correlation_id` | string | Lega le righe `requested`/finale della stessa operazione |
+| `created_at` | string | Timestamp ISO 8601 UTC della riga |
+| `type` | string | `plugin` \| `theme` \| `core` |
+| `target` | string | Plugin file, stylesheet, oppure `core` |
+| `name` | string | Nome leggibile dell'elemento |
+| `version_from` / `version_to` | string \| null | Versione installata / target |
+| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` |
+| `message` | string \| null | Dettaglio in caso di errore/rollback |
+| `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
+
+---
+
 ## Riferimento codici di errore
 
 Tutti i `code` restituiti dall'API, raggruppati per rotta.
@@ -583,3 +767,17 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 > non riusciti ma non erronei** (`200` con `reason`): `up_to_date`,
 > `not_writable`, `integrity_check_failed` non sono codici di errore ma stati
 > di risposta `200`.
+
+### `/update/plugin`, `/update/theme`, `/update/core`
+
+| `code` | Status |
+|---|---|
+| `wphc_missing_plugin` | `400` |
+| `wphc_missing_theme` | `400` |
+| `wphc_updates_disabled` | `403` |
+| `wphc_update_locked` | `409` |
+
+> Stessa distinzione di `/update`: `up_to_date`, `not_updatable`, `not_found`,
+> `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` e
+> `updatable` (dry-run) sono valori del campo `result` in una risposta `200`,
+> non codici di errore.
