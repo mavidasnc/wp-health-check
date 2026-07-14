@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.18.0
+ * Version:     1.19.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.18.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.19.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -1123,7 +1123,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'has_builder'             => $signals['has_builder'],
 			'mu_dir_writable'         => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at'      => $updates_checked_at,
-			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', false ),
+			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', true ),
 			'last_update'             => $last_update ? $last_update : null,
 			'maintenance_stuck'       => $maintenance_stuck,
 		),
@@ -1208,6 +1208,11 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 		$items[] = array(
 			'name'             => $plugin_data['Name'],
 			'slug'             => $slug,
+			// Plugin file (chiave di get_plugins(), es. "wordpress-seo/wp-seo.php"):
+			// e' il valore esatto da passare come "plugin" a POST /update/plugin,
+			// a differenza di "slug" che e' solo la cartella e non identifica
+			// univocamente il file principale per i plugin a file singolo.
+			'file'             => $plugin_file,
 			'version'          => $plugin_data['Version'],
 			'active'           => in_array( $plugin_file, $active_plugins, true ),
 			'update_available' => $has_update,
@@ -2042,7 +2047,7 @@ function wphc_request_wants_check( WP_REST_Request $request ) {
 function wphc_update_preflight( $requires_wp63 ) {
 	wphc_record_access();
 
-	if ( ! get_option( 'wp_health_check_updates_enabled', false ) ) {
+	if ( ! get_option( 'wp_health_check_updates_enabled', true ) ) {
 		return array(
 			'result' => 'disabled',
 			'http'   => 403,
@@ -2774,7 +2779,7 @@ function wphc_render_site_health_tab( $tab ) {
 	$last_request_ip         = get_option( 'wp_health_check_last_request_ip' );
 	$trust_proxy             = (bool) get_option( 'wp_health_check_trust_proxy', false );
 	$last_enroll_error       = get_option( 'wp_health_check_last_enroll_error' );
-	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', false );
+	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', true );
 
 	$candidates       = wphc_candidate_site_urls();
 	$canonical_home   = wphc_normalize_site_url();
@@ -3116,10 +3121,12 @@ function wphc_render_site_health_tab( $tab ) {
 		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<input type="hidden" name="action" value="wphc_toggle_updates" />
 			<?php wp_nonce_field( 'wphc_toggle_updates' ); ?>
-			<label>
-				<input type="checkbox" name="wphc_updates_enabled" value="1" <?php checked( $updates_via_api_enabled ); ?> />
-				<?php esc_html_e( 'Consenti aggiornamenti (plugin, temi, core) via API', 'wp-health-check' ); ?>
-			</label>
+			<p>
+				<label>
+					<input type="checkbox" name="wphc_updates_enabled" value="1" <?php checked( $updates_via_api_enabled ); ?> />
+					<?php esc_html_e( 'Consenti aggiornamenti (plugin, temi, core) via API', 'wp-health-check' ); ?>
+				</label>
+			</p>
 			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
 		</form>
 

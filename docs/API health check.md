@@ -2,7 +2,8 @@
 
 Reference tecnico delle rotte REST esposte dal fleet agent
 (`mu-plugins/wp-health-check.php`). Le rotte `/enroll` → `/update` sono
-aggiornate all'agent **1.9.0**; le rotte `/update/plugin`, `/update/theme`,
+aggiornate all'agent **1.9.0** (salvo il campo `file` di `/detail/plugins`,
+aggiunto con l'agent **1.19.0**); le rotte `/update/plugin`, `/update/theme`,
 `/update/core` e `/update/log`, aggiunte con l'agent **1.18.0**, sono
 documentate nelle sezioni dedicate in fondo.
 
@@ -339,6 +340,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/plugins' \
     {
       "name": "Phoenix Media Rename",
       "slug": "phoenix-media-rename",
+      "file": "phoenix-media-rename/phoenix-media-rename.php",
       "version": "3.13.2",
       "active": true,
       "update_available": true,
@@ -347,6 +349,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/plugins' \
     {
       "name": "AI",
       "slug": "ai",
+      "file": "ai/ai.php",
       "version": "1.1.0",
       "active": true,
       "update_available": false,
@@ -362,6 +365,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/plugins' \
 |---|---|---|
 | `name` | string | Nome del plugin |
 | `slug` | string | Cartella del plugin, o nome file senza estensione per i plugin a file singolo |
+| `file` | string | Plugin file (chiave di `get_plugins()`, es. `wordpress-seo/wp-seo.php`): valore da passare come `plugin` a `POST /update/plugin` |
 | `version` | string | Versione installata |
 | `active` | bool | `true` se attivo |
 | `update_available` | bool | `true` se esiste un aggiornamento |

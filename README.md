@@ -374,6 +374,7 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
     {
       "name": "Akismet Anti-spam",
       "slug": "akismet",
+      "file": "akismet/akismet.php",
       "version": "5.3.2",
       "active": true,
       "update_available": false,
@@ -382,6 +383,7 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
     {
       "name": "WooCommerce",
       "slug": "woocommerce",
+      "file": "woocommerce/woocommerce.php",
       "version": "8.9.1",
       "active": true,
       "update_available": true,
@@ -390,6 +392,12 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
   ]
 }
 ```
+
+Il campo `file` (dalla `1.19.0`) è il plugin file, chiave di `get_plugins()`:
+è il valore esatto da passare come `plugin` a
+[`POST /update/plugin`](#post-updateplugin-post-updatetheme), a differenza di
+`slug` (solo la cartella, non univoco per i plugin a file singolo nella
+radice di `wp-content/plugins/`).
 
 ### `GET /detail/theme` — tema attivo e parent
 
@@ -699,12 +707,12 @@ Due controlli aggiuntivi, entrambi indipendenti dal payload:
 
 ### Kill-switch per sito
 
-Interruttore master `wp_health_check_updates_enabled`, **spento di default**
-(scelta fail-safe: la feature va abilitata consapevolmente per ciascun sito),
-gestito da un unico checkbox nella [tab Site Health](#tab-site-health). A
-interruttore spento, `POST /update/plugin`, `/update/theme` e `/update/core`
-rispondono `403 disabled` **prima** di qualunque altra elaborazione;
-`GET /update/log` resta invece sempre leggibile (è sola lettura).
+Interruttore master `wp_health_check_updates_enabled`, **acceso di default**
+(dalla `1.19.0`; disattivabile per singolo sito), gestito da un unico
+checkbox nella [tab Site Health](#tab-site-health). A interruttore spento,
+`POST /update/plugin`, `/update/theme` e `/update/core` rispondono
+`403 disabled` **prima** di qualunque altra elaborazione; `GET /update/log`
+resta invece sempre leggibile (è sola lettura).
 
 ### Flusso comune (plugin e temi)
 
@@ -925,10 +933,10 @@ di ciò che queste rotte espongono.
 
 Dalla `1.18.0` questo perimetro include anche l'aggiornamento di plugin/temi/core
 già installati (vedi [sezione dedicata](#aggiornamento-di-plugin-temi-e-core-via-api)),
-ma **solo** su siti dove il kill-switch è stato acceso esplicitamente e **solo**
-verso la versione che wordpress.org ha già pubblicato per quell'elemento — mai
-un'installazione ex novo di software non presente sul sito, mai una sorgente o
-versione indicata dal token compromesso stesso.
+disattivabile per singolo sito tramite il kill-switch (acceso di default dalla
+`1.19.0`), e **solo** verso la versione che wordpress.org ha già pubblicato per
+quell'elemento — mai un'installazione ex novo di software non presente sul
+sito, mai una sorgente o versione indicata dal token compromesso stesso.
 
 **Trasmissione del token nell'enroll.** Il token viaggia in chiaro (via HTTPS) nel
 payload di `/enroll`: è protetto in transito da TLS, non da un ulteriore livello di
@@ -1083,8 +1091,8 @@ Tre pulsanti eseguono azioni:
 Un checkbox separato (dalla `1.18.0`), **"Consenti aggiornamenti (plugin, temi,
 core) via API"**, governa il kill-switch `wp_health_check_updates_enabled` (vedi
 [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)):
-spento di default, va abilitato consapevolmente per sito prima che le rotte
-`/update/plugin`, `/update/theme` e `/update/core` accettino richieste.
+acceso di default dalla `1.19.0`, va disattivato esplicitamente per i siti su
+cui non si vuole consentire l'aggiornamento via API.
 
 Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce

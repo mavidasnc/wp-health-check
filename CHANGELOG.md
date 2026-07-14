@@ -7,6 +7,27 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-07-14
+
+### Added
+
+- `GET /detail/plugins`: nuovo campo `file` per elemento (plugin file, chiave
+  di `get_plugins()`, es. `wordpress-seo/wp-seo.php`) — il valore esatto da
+  passare come `plugin` a `POST /update/plugin`, a differenza di `slug` (solo
+  la cartella, non univoco per i plugin a file singolo).
+
+### Changed
+
+- Il kill-switch `wp_health_check_updates_enabled` nasce ora **acceso** di
+  default (era spento). Resta disattivabile per singolo sito dal checkbox
+  nella tab Site Health; l'opzione esplicitamente impostata su un sito (in
+  un senso o nell'altro) non viene toccata da questa modifica, che riguarda
+  solo il valore di default per i siti su cui l'opzione non è mai stata
+  salvata.
+- Tab Site Health: il pulsante "Salva" degli aggiornamenti via API è ora
+  posizionato sotto il checkbox (era sulla stessa riga), coerente con lo
+  stile degli altri form della pagina.
+
 ## [1.18.0] - 2026-07-14
 
 ### Added
@@ -382,7 +403,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.19.0...HEAD
+[1.19.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.15.0...v1.16.0
