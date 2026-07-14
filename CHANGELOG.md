@@ -7,6 +7,37 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-07-14
+
+### Fixed
+
+- Dopo un `POST /update/plugin`/`/update/theme` riuscito, il codice cancellava
+  l'intero transient `update_plugins`/`update_themes`
+  (`wp_clean_plugins_cache( true )`/`wp_clean_themes_cache( true )`) invece di
+  correggere solo la entry dell'elemento appena aggiornato. Risultato: dopo
+  un update via API, `/health` e `/detail/plugins`/`/detail/theme`
+  riportavano "tutto aggiornato" per **tutti** i plugin/temi (non solo per
+  quello appena toccato) finché il cron (`wp_update_plugins`, ~2 volte al
+  giorno) o una visita a `wp-admin` non ripopolavano il transient — nemmeno
+  `?fresh=1` lo correggeva, dato che quella rotta legge di proposito solo il
+  transient del cron. Ora, solo sull'esito `completed`, viene rimossa
+  chirurgicamente la sola entry dell'elemento da `->response` (con
+  `->checked` aggiornato alla nuova versione), lasciando intatte tutte le
+  altre righe pendenti, incluse quelle dei plugin/temi **premium**
+  mantenute dal cron. Non si è optato per richiamare
+  `wp_update_plugins()`/`wp_update_themes()` (soluzione più diretta ma già
+  scartata nella `1.13.0`/`1.16.0`): in contesto REST quelle funzioni non
+  caricano gli update-checker premium e avrebbero sovrascritto il transient
+  completo del cron con uno incompleto. Su `rolled_back`/`failed` il
+  transient non viene toccato: l'update è ancora effettivamente pendente
+  (rollback) o lo stato è incerto (failed).
+- `POST /update/core` riusciti lasciavano `summary.core_update` a `true`
+  fino al prossimo `wp_version_check()` da cron. A differenza di
+  plugin/temi, per il core non esiste un equivalente "update-checker
+  premium": forzare un ricontrollo reale (`wp_version_check( array(), true )`)
+  subito dopo un update riuscito è quindi sicuro anche in contesto REST, e
+  ripopola `update_core` immediatamente.
+
 ## [1.19.0] - 2026-07-14
 
 ### Added
@@ -403,7 +434,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.20.0...HEAD
+[1.20.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.17.0...v1.18.0
 [1.17.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.16.0...v1.17.0

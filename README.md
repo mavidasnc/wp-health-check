@@ -740,9 +740,21 @@ resta invece sempre leggibile (è sola lettura).
    ripristinato con successo → `rolled_back`. Altrimenti lo stato è incerto
    (elemento mancante o a una versione imprevista) → `failed`, da verificare
    manualmente sul sito.
-6. Invalidazione opcache dei file dell'elemento, invalidazione delle cache
-   liste/transient (incluse quelle di `/health` e `/detail/*`), riga di log
-   finale, rilascio del lock.
+6. Invalidazione opcache dei file dell'elemento, refresh della sola cache
+   lista (`wp_clean_plugins_cache( false )`/`wp_clean_themes_cache( false )`)
+   e delle cache di `/health` e `/detail/*`, riga di log finale, rilascio
+   del lock. Sull'esito `completed` viene inoltre corretta **solo la entry
+   dell'elemento appena aggiornato** nel transient `update_plugins`/
+   `update_themes` già esistente (rimossa da `->response`, `->checked`
+   aggiornato alla nuova versione) — **mai** un
+   `delete_site_transient()`/`wp_clean_*_cache( true )` del transient intero
+   né una chiamata a `wp_update_plugins()`/`wp_update_themes()`: quest'ultime,
+   in contesto REST, ricostruirebbero il transient senza gli aggiornamenti
+   dei plugin/temi premium (stesso bug già risolto per `/health` e
+   `/detail/plugins` nella `1.13.0`/`1.16.0`), facendo risultare "tutto
+   aggiornato" anche per elementi che hanno ancora un update pendente. Su
+   `rolled_back`/`failed` il transient non viene toccato: l'update è ancora
+   effettivamente pendente, o lo stato è incerto.
 
 ### Core: specificità e avvertenze
 
@@ -757,6 +769,15 @@ Dopo la sostituzione dei file, il flusso invoca esplicitamente `wp_upgrade()`
 per completare le routine di migrazione del database: in un contesto
 headless (nessuna sessione admin che visiterebbe
 `wp-admin/upgrade.php`) queste non partirebbero altrimenti da sole.
+
+Dopo un update riuscito viene anche forzato un ricontrollo reale con
+`wp_version_check( array(), true )`, cosa che invece **non** si fa per
+plugin/temi (vedi sopra): per il core non esiste l'equivalente
+"update-checker premium" che in contesto REST non si caricherebbe — il
+check di versione di WordPress è identico in ogni contesto — quindi qui
+forzarlo è sicuro e ripopola subito `update_core`, così
+`summary.core_update` torna `false` senza aspettare il prossimo giro di
+cron.
 
 Nota tecnica: a differenza di plugin/temi, gli update object del core non
 hanno un campo `->package`; il campo equivalente è `->download` (che, per un

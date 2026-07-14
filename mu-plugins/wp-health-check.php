@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.19.0
+ * Version:     1.20.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.19.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.20.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -2119,6 +2119,48 @@ function wphc_maybe_invalidate_item_opcache( $type, $target ) {
 }
 
 /**
+ * Dopo un update di plugin/tema riuscito, corregge SOLO la entry
+ * dell'elemento appena aggiornato nel transient update_plugins/update_themes
+ * gia' esistente, invece di cancellarlo (wp_clean_plugins_cache( true )) o
+ * di rigenerarlo (wp_update_plugins()/wp_update_themes()).
+ *
+ * Quest'ultime, in contesto REST, ricostruirebbero il transient SENZA gli
+ * aggiornamenti dei plugin/temi premium (i cui update-checker non vengono
+ * caricati qui, vedi wphc_mute_update_shortcircuit()), sovrascrivendo quello
+ * completo mantenuto dal cron con uno incompleto — lo stesso bug gia'
+ * risolto per /health e /detail/plugins (1.13.0/1.16.0). Rimuovendo solo la
+ * entry che sappiamo per certo risolta, tutte le altre righe (incluse
+ * quelle premium) restano intatte, senza alcuna chiamata di rete aggiuntiva.
+ *
+ * Chiamata SOLO sull'esito 'completed': su 'rolled_back' l'update a
+ * $version_to e' ancora effettivamente pendente (il rollback ha ripristinato
+ * $version_from), su 'failed' lo stato e' incerto — in entrambi i casi e'
+ * piu' sicuro non toccare il transient.
+ *
+ * @param string $type       'plugin' | 'theme'.
+ * @param string $target     Plugin file oppure stylesheet appena aggiornato.
+ * @param string $version_to Versione appena installata.
+ */
+function wphc_patch_update_transient_after_success( $type, $target, $version_to ) {
+	$transient_name = ( 'plugin' === $type ) ? 'update_plugins' : 'update_themes';
+	$transient      = get_site_transient( $transient_name );
+
+	if ( ! is_object( $transient ) || ! isset( $transient->response[ $target ] ) ) {
+		return;
+	}
+
+	unset( $transient->response[ $target ] );
+	if ( isset( $transient->checked ) && is_array( $transient->checked ) ) {
+		$transient->checked[ $target ] = $version_to;
+	}
+
+	// Expiration 0 = non tocca il timeout gia' impostato dall'ultimo check
+	// reale del cron: si corregge solo il valore, senza resettare la
+	// "freschezza" del transient ne' forzare un nuovo check anticipato.
+	set_site_transient( $transient_name, $transient );
+}
+
+/**
  * Esegue (o simula, se $dry_run) l'aggiornamento di un singolo plugin o
  * tema tramite le primitive del core (Plugin_Upgrader / Theme_Upgrader),
  * con temp-backup/rollback nativo (WP 6.3+, garantito dal preflight in
@@ -2247,10 +2289,17 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 	}
 
 	wphc_maybe_invalidate_item_opcache( $type, $target );
+	// Solo la cache della lista (get_plugins()/wp_get_themes() rileggono la
+	// cartella), MAI wp_clean_plugins_cache( true )/wp_clean_themes_cache( true ):
+	// cancellerebbero l'intero transient update_plugins/update_themes, non solo
+	// la entry di $target, lasciando "0 aggiornamenti" per TUTTI i plugin/temi
+	// finche' il cron non lo ripopola. La entry del solo elemento appena
+	// aggiornato viene corretta chirurgicamente sotto, solo in caso di successo
+	// (wphc_patch_update_transient_after_success()).
 	if ( 'plugin' === $type ) {
-		wp_clean_plugins_cache( true );
+		wp_clean_plugins_cache( false );
 	} else {
-		wp_clean_themes_cache( true );
+		wp_clean_themes_cache( false );
 	}
 	delete_transient( 'wphc_health_cache' );
 	delete_transient( 'wphc_detail_plugins_cache' );
@@ -2277,6 +2326,8 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 			'http'   => 200,
 		);
 	}
+
+	wphc_patch_update_transient_after_success( $type, $target, $version_to );
 
 	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed' );
 	wphc_record_last_update( $type, $target, 'completed' );
@@ -2405,6 +2456,15 @@ function wphc_perform_core_update( $dry_run = false ) {
 		// uno non e' praticabile qui.
 		opcache_reset();
 	}
+
+	// A differenza di plugin/temi, per il core NON esiste un equivalente
+	// "update-checker premium" che in contesto REST non si caricherebbe: il
+	// check di versione di WordPress e' identico in ogni contesto. Forzare
+	// un ricontrollo reale qui e' quindi sicuro (non riproduce il bug di
+	// wp_update_plugins()/wp_update_themes() visto sopra) e ripopola subito
+	// il transient update_core, cosi' summary.core_update torna false senza
+	// dover aspettare il prossimo giro di cron.
+	wp_version_check( array(), true );
 	delete_transient( 'wphc_health_cache' );
 
 	$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed' );
