@@ -6,8 +6,9 @@ aggiornate all'agent **1.9.0** (salvo il campo `file` di `/detail/plugins`,
 aggiunto con l'agent **1.19.0**, e il campo `has_ecommerce` di `/health`,
 aggiunto con l'agent **1.21.0**); le rotte `/update/plugin`, `/update/theme`,
 `/update/core` e `/update/log`, aggiunte con l'agent **1.18.0** (colonna/campo
-`active` e risultato `reactivation_failed` aggiunti con l'agent **1.21.0**),
-sono documentate nelle sezioni dedicate in fondo.
+`active` e risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
+`/autologin/token`, aggiunta con l'agent **1.22.0**; sono documentate nelle
+sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -27,7 +28,8 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 10. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
 11. [`POST /update/core`](#post-updatecore)
 12. [`GET /update/log`](#get-updatelog)
-13. [Riferimento codici di errore](#riferimento-codici-di-errore)
+13. [`POST /autologin/token`](#post-autologintoken)
+14. [Riferimento codici di errore](#riferimento-codici-di-errore)
 
 ---
 
@@ -55,6 +57,7 @@ Sintesi delle rotte:
 | `POST` | `/update/theme` | Bearer token + kill-switch | `?check=1` | nessuna |
 | `POST` | `/update/core` | Bearer token + kill-switch | `?check=1` | nessuna |
 | `GET` | `/update/log` | Bearer token | `type`, `limit`, `offset` | nessuna |
+| `POST` | `/autologin/token` | `manage_options` (Application Password) | — | nessuna |
 
 ---
 
@@ -90,6 +93,16 @@ rivelare quale dei due casi si sia verificato.
 | Sito mai registrato (nessun token salvato) | `503` | `wphc_not_enrolled` |
 | Header `Authorization` assente o non `Bearer` | `401` | `wphc_unauthorized` |
 | Token errato | `401` | `wphc_unauthorized` |
+
+### `/autologin/token` — autenticazione WordPress (`manage_options`)
+
+Non usa il bearer token: richiede un utente **autenticato con capability
+`manage_options`**, tipicamente via [Application
+Password](https://developer.wordpress.org/rest-api/using-the-rest-api/authentication/#application-passwords)
+(header `Authorization: Basic <base64(user:app_password)>`), stesso
+meccanismo già usato da `GET /debug`. L'identità autenticata è quella che
+finirà loggata in wp-admin dopo il consumo del token: vedi [`POST
+/autologin/token`](#post-autologintoken) per il flusso completo.
 
 ---
 
@@ -746,6 +759,80 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 
 ---
 
+## `POST /autologin/token`
+
+Genera un token **one-time** (TTL 20 secondi, consumabile una sola volta) che
+apre `wp-admin` già autenticati come l'utente che ha chiamato questa rotta.
+Pensata per un pulsante "Accedi al sito" in una dashboard/app centrale: le
+Application Password autenticano solo la chiamata REST (Basic Auth), non
+creano di per sé una sessione a cookie navigabile nel browser — questa rotta
+è il primo dei due passi che colmano quel divario (il secondo è la semplice
+navigazione verso `autologin_url`, gestita internamente dall'agent su `init`,
+non da un'altra rotta REST).
+
+**Auth:** `manage_options` via Application Password (vedi
+[Autenticazione](#autenticazione)), **non** il bearer token. **Payload:**
+nessuno. **Query:** —. **Cache:** nessuna (ogni chiamata genera un nuovo
+token).
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/autologin/token' \
+  -u 'admin:xxxx xxxx xxxx xxxx xxxx xxxx'
+```
+
+### Risposta `200`
+
+```json
+{
+  "autologin_url": "https://esempio.com/?wphc_autologin=3f9c2e...b71a",
+  "expires_in": 20,
+  "user_id": 1,
+  "user_login": "admin"
+}
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `autologin_url` | string | URL da aprire nel browser **entro** `expires_in` secondi; consumabile una sola volta |
+| `expires_in` | int | Secondi di validità del token (`WP_HEALTH_CHECK_AUTOLOGIN_TTL`, default 20) |
+| `user_id` | int | ID dell'utente che verrà autenticato al consumo del token |
+| `user_login` | string | Username dell'utente, per riscontro lato dashboard |
+
+### Consumo del token
+
+Aprire `autologin_url` con una normale navigazione del browser (non una
+`fetch`/XHR: deve essere una navigazione di primo livello, perché deve
+ricevere e conservare il cookie di sessione). L'agent intercetta il parametro
+`?wphc_autologin=` su `init`, **prima** di qualunque altro output:
+
+- token assente, scaduto o già consumato → redirect silenzioso a
+  `wp-login.php` (nessun dettaglio sul motivo, stesso principio fail-closed
+  di `wphc_require_token()`);
+- token valido → `wp_set_auth_cookie()` per l'utente associato, poi redirect
+  a `wp-admin` (`admin_url()`, fisso: nessun parametro di destinazione
+  accettato, per non introdurre un open redirect).
+
+Il token viene cancellato **prima** di procedere con il login, indipendentemente
+dall'esito: un secondo tentativo con lo stesso `autologin_url` restituisce
+sempre e solo il redirect al login.
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `401` | `rest_forbidden` | Nessuna autenticazione valida fornita (generato dal core REST di WordPress, non da questo plugin) |
+| `403` | `rest_forbidden` | Utente autenticato ma privo di `manage_options` |
+
+> Il consumo del token (navigazione su `autologin_url`) non passa dalla REST
+> API: non produce risposte JSON né codici di errore strutturati, solo
+> redirect HTTP verso `wp-login.php` o `wp-admin`.
+
+---
+
 ## Riferimento codici di errore
 
 Tutti i `code` restituiti dall'API, raggruppati per rotta.
@@ -797,3 +884,13 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 > `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` e
 > `updatable` (dry-run) sono valori del campo `result` in una risposta `200`,
 > non codici di errore.
+
+### `/autologin/token`
+
+| `code` | Status |
+|---|---|
+| `rest_forbidden` | `401` / `403` (generato dal core REST di WordPress) |
+
+> Il consumo del token (`GET` verso `autologin_url`, fuori dalla REST API) non
+> restituisce mai un `WP_Error`: solo redirect HTTP verso `wp-login.php` o
+> `wp-admin`.

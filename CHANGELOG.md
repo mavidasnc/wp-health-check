@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-07-17
+
+### Added
+
+- `POST /autologin/token`: nuova rotta per aprire `wp-admin` già autenticati
+  con un click dalla dashboard. Protetta da `manage_options` (tipicamente
+  Application Password), non dal bearer token — l'identità autenticata è
+  quella che verrà loggata, risolta nativamente da WordPress. Genera un
+  token one-time (256 bit, `random_bytes()`) con TTL 20s
+  (`WP_HEALTH_CHECK_AUTOLOGIN_TTL`), indicizzato via hash SHA-256 in un
+  transient. Il consumo avviene fuori dalla REST API, via
+  `wphc_maybe_consume_autologin()` agganciata su `init`: verifica e
+  cancella subito il token (single-use), poi `wp_set_auth_cookie()` e
+  redirect fisso a `admin_url()`.
+
 ## [1.21.0] - 2026-07-14
 
 ### Added

@@ -16,16 +16,17 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 4. [Il modello del token](#il-modello-del-token)
 5. [Generazione della coppia di chiavi Ed25519](#generazione-della-coppia-di-chiavi-ed25519)
 6. [Rotte REST](#rotte-rest)
-7. [Tracciamento accessi](#tracciamento-accessi)
-8. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
-9. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
-10. [Requisiti lato GitHub](#requisiti-lato-github)
-11. [Caching per-rotta](#caching-per-rotta)
-12. [CORS](#cors)
-13. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
-14. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
-15. [Tab Site Health](#tab-site-health)
-16. [Sviluppo locale](#sviluppo-locale)
+7. [Autologin: aprire wp-admin già autenticati](#autologin-aprire-wp-admin-già-autenticati)
+8. [Tracciamento accessi](#tracciamento-accessi)
+9. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
+10. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
+11. [Requisiti lato GitHub](#requisiti-lato-github)
+12. [Caching per-rotta](#caching-per-rotta)
+13. [CORS](#cors)
+14. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
+15. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
+16. [Tab Site Health](#tab-site-health)
+17. [Sviluppo locale](#sviluppo-locale)
 
 ---
 
@@ -41,7 +42,10 @@ che permettono a un sistema centrale esterno di:
 - aggiornare il plugin stesso da una release GitHub firmata (`/update`);
 - aggiornare, dietro consenso esplicito per sito, un singolo plugin/tema/il core del
   sito da wordpress.org (`/update/plugin`, `/update/theme`, `/update/core`), con
-  storico consultabile via `/update/log`.
+  storico consultabile via `/update/log`;
+- aprire `wp-admin`, con un click dalla dashboard, già autenticati come un
+  amministratore del sito (`/autologin/token`, vedi
+  [Autologin](#autologin-aprire-wp-admin-già-autenticati)).
 
 Il file viene installato **una volta sola**, a mano, via SFTP/SSH, in
 `wp-content/mu-plugins/wp-health-check.php`. Da quel momento è identico su tutti i
@@ -572,6 +576,116 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&li
   ]
 }
 ```
+
+### `POST /autologin/token` — genera un token one-time di autologin
+
+Protetta da `manage_options` (tipicamente via Application Password), **non**
+dal bearer token: vedi la sezione dedicata [Autologin](#autologin-aprire-wp-admin-già-autenticati)
+per il razionale completo e il flusso a due passi.
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/autologin/token' \
+  -u 'admin:xxxx xxxx xxxx xxxx xxxx xxxx'
+```
+
+```json
+{
+  "autologin_url": "https://esempio.com/blog/?wphc_autologin=3f9c2e...b71a",
+  "expires_in": 20,
+  "user_id": 1,
+  "user_login": "admin"
+}
+```
+
+## Autologin: aprire wp-admin già autenticati
+
+### Perché le Application Password da sole non bastano
+
+Le Application Password di WordPress autenticano **una singola chiamata
+REST** (Basic Auth): non chiamano mai `wp_set_auth_cookie()` e non creano
+quindi una sessione a cookie navigabile nel browser. Se si apre `wp-admin`
+nel browser con un'application password in mano, non succede nulla: quella
+pagina si aspetta un cookie di sessione, non un header `Authorization`. Per
+far atterrare un click della dashboard dentro `wp-admin` già autenticato
+serve quindi un meccanismo diverso, il classico pattern **magic-link**, a due
+passi separati.
+
+### Passo 1 — generazione del token (`POST /autologin/token`)
+
+La dashboard chiama `POST /autologin/token` autenticandosi con
+un'Application Password dell'amministratore del sito (stesso schema di `GET
+/debug`, gated su `manage_options`, non sul bearer token wphc). Il vantaggio
+di questo schema è che **l'identità è già risolta dal core di WordPress**
+prima ancora che il callback della rotta venga eseguito: non c'è alcuna
+tabella di mapping "utente dashboard → utente WP" da mantenere in questo
+plugin, l'utente che finirà autenticato in `wp-admin` è esattamente quello
+i cui credenziali (Application Password) hanno superato l'autenticazione
+REST nativa.
+
+Il callback (`wphc_route_autologin_token()`):
+
+1. legge `wp_get_current_user()`, già popolato dal core;
+2. genera un token casuale a 256 bit (`random_bytes( 32 )`, CSPRNG — mai
+   `rand()`/`uniqid()`);
+3. salva un transient con **chiave** l'hash SHA-256 del token (mai il token
+   in chiaro) e **valore** l'ID utente, con TTL
+   `WP_HEALTH_CHECK_AUTOLOGIN_TTL` (20 secondi di default);
+4. registra un audit minimo in `wp_health_check_last_autologin` (user, IP,
+   timestamp) — nessuna tabella dedicata, stesso spirito di
+   `wphc_record_access()`;
+5. risponde con `autologin_url`, pronto per essere aperto nel browser.
+
+### Passo 2 — consumo del token, fuori dalla REST API
+
+`autologin_url` punta all'home del sito con `?wphc_autologin=<token>`, **non**
+a un'altra rotta REST: viene intercettato da `wphc_maybe_consume_autologin()`,
+agganciata su `init`, prima che qualunque output sia inviato. Questa scelta
+(anziché una rotta REST che risponda con un redirect) evita ogni rischio
+"headers already sent" nel chiamare `wp_set_auth_cookie()`, e separa con
+chiarezza i due mondi del plugin: REST API per chiamate machine-to-machine
+con header di autenticazione, navigazione diretta del browser per tutto ciò
+che deve impostare un cookie di sessione.
+
+Il flusso, fail-closed su qualunque anomalia (stesso principio di
+`wphc_require_token()`, nessun dettaglio sul motivo nella risposta):
+
+1. token assente nella query string → nessuna azione (richiesta normale);
+2. token presente: lookup del transient per hash, poi **cancellazione
+   immediata** (consumo single-use, prima di procedere) — un secondo
+   tentativo con lo stesso token trova sempre il transient già scaduto;
+3. transient assente/scaduto, o utente associato non più esistente →
+   redirect silenzioso a `wp_login_url()`;
+4. token valido → `wp_set_current_user()` + `wp_set_auth_cookie( $user_id, true )`
+   + `do_action( 'wp_login', ... )` (così i plugin di audit/2FA che si
+   aspettano l'hook di login scattano anche sul magic-login) → redirect a
+   `admin_url()`, **fisso**: nessun parametro di destinazione accettato dal
+   chiamante, per non introdurre un open redirect.
+
+### Considerazioni di sicurezza specifiche
+
+- **TTL cortissimo (20s) + single-use**: la finestra di replay è
+  trascurabile e si chiude comunque a zero dopo il primo utilizzo, anche se
+  il token venisse intercettato.
+- **Nessun binding all'IP**: la generazione arriva server-to-server dalla
+  dashboard (un IP), il consumo dal browser dell'utente (un IP diverso);
+  legare il token all'IP romperebbe il flusso per costruzione. Non è
+  un'omissione, è una scelta di progetto da non "correggere" in futuro senza
+  ripensare l'intero schema.
+- **Il token viaggia in query string** (log di accesso del server,
+  cronologia del browser): un compromesso accettato, mitigato dal TTL
+  cortissimo e dal consumo single-use, sullo stesso spirito del token di
+  enroll che viaggia in chiaro nel payload (vedi [Considerazioni di
+  sicurezza](#considerazioni-e-limiti-di-sicurezza)).
+- **La credenziale che genera il token (Application Password) autentica un
+  amministratore su tutta la REST API di WordPress**, non solo su questa
+  rotta: va custodita lato dashboard con la stessa cura di una password
+  reale (cifrata a riposo, mai nei log). Diversamente dal token wphc — che
+  da accesso solo al perimetro di queste rotte — un'Application Password
+  rubata vale quanto le credenziali complete dell'amministratore lato REST
+  API.
+- **Redirect di destinazione fisso** (`admin_url()`): deliberatamente non
+  configurabile dal chiamante, per non introdurre una superficie di open
+  redirect.
 
 ## Tracciamento accessi
 

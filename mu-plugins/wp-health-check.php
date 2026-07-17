@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.21.0
+ * Version:     1.22.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.21.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.22.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -98,6 +98,18 @@ if ( ! defined( 'WP_HEALTH_CHECK_LOG_RETENTION_DAYS' ) ) {
 /** TTL in secondi del lock anti-concorrenza per le rotte di update (§7.1). */
 if ( ! defined( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL' ) ) {
 	define( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL', 300 );
+}
+
+/**
+ * TTL in secondi del token di autologin (POST /autologin/token). Volutamente
+ * cortissimo: il token e' un bearer opaco che chiunque lo intercetti (log
+ * server, cronologia browser) puo' usare per accedere una sola volta a
+ * wp-admin come l'amministratore che lo ha generato. Un TTL di pochi secondi
+ * rende la finestra di replay trascurabile; il consumo single-use (vedi
+ * wphc_maybe_consume_autologin()) la chiude comunque a zero dopo il primo uso.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL' ) ) {
+	define( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL', 20 );
 }
 
 // -----------------------------------------------------------------------
@@ -798,6 +810,23 @@ function wphc_register_routes() {
 		array(
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => 'wphc_route_debug',
+			'permission_callback' => 'wphc_debug_permission',
+		)
+	);
+
+	// Autologin: genera un token one-time per aprire wp-admin gia' autenticati
+	// (uso tipico: pulsante nella dashboard/app centrale). Gated su
+	// manage_options, NON sul bearer token: l'identita' che finira' loggata in
+	// wp-admin e' esattamente quella risolta da WordPress per la richiesta
+	// (cookie o, tipicamente qui, una Application Password), non un
+	// user_id arbitrario passato dal chiamante. Vedi
+	// wphc_route_autologin_token() e wphc_maybe_consume_autologin().
+	register_rest_route(
+		'health-check/v1',
+		'/autologin/token',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_autologin_token',
 			'permission_callback' => 'wphc_debug_permission',
 		)
 	);
@@ -2892,6 +2921,121 @@ function wphc_route_debug( WP_REST_Request $request ) {
 		)
 	);
 }
+
+// -----------------------------------------------------------------------
+// AUTOLOGIN: POST /autologin/token + consumo su init
+// -----------------------------------------------------------------------
+//
+// Pattern a due passi: le Application Password autenticano una singola
+// chiamata REST (Basic Auth), ma non creano una sessione a cookie navigabile
+// nel browser. Per aprire wp-admin gia' autenticati serve quindi generare un
+// token one-time via una chiamata REST autenticata (questa sezione, primo
+// passo), e poi "consumarlo" con una normale navigazione del browser che
+// imposta il cookie di sessione (wphc_maybe_consume_autologin(), secondo
+// passo, agganciata su 'init' e volutamente FUORI dalla REST API).
+
+/**
+ * POST /autologin/token — genera un token one-time per aprire wp-admin gia'
+ * autenticati come l'utente corrente. L'identita' e' quella che WordPress
+ * stesso ha gia' risolto per questa richiesta (tipicamente una Application
+ * Password, ma funziona anche con cookie), MAI un user_id passato dal
+ * chiamante: niente mapping da mantenere in questo plugin.
+ *
+ * Il token e' un valore casuale ad alta entropia (32 byte da random_bytes(),
+ * CSPRNG — mai rand()/uniqid()), mai derivato ne' prevedibile. Il transient
+ * che lo custodisce e' indicizzato dall'hash SHA-256 del token, non dal
+ * token in chiaro: chi legge le wp_options non trova il segreto navigabile
+ * in tabella.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente (nessun payload richiesto).
+ * @return WP_REST_Response Esito con l'URL di autologin e la scadenza.
+ */
+function wphc_route_autologin_token( WP_REST_Request $request ) {
+	unset( $request );
+
+	wphc_maybe_send_cors_headers();
+
+	$user = wp_get_current_user();
+
+	$token = bin2hex( random_bytes( 32 ) );
+	$key   = 'wphc_autologin_' . hash( 'sha256', $token );
+
+	set_transient( $key, $user->ID, WP_HEALTH_CHECK_AUTOLOGIN_TTL );
+
+	// Audit minimo (non una tabella dedicata): solo l'ultimo autologin
+	// richiesto, sullo stesso spirito di wphc_record_access().
+	update_option(
+		'wp_health_check_last_autologin',
+		array(
+			'user_id' => $user->ID,
+			'login'   => $user->user_login,
+			'at'      => gmdate( 'c' ),
+			'ip'      => wphc_get_client_ip(),
+		),
+		false
+	);
+	if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+		error_log( sprintf( 'wp-health-check: autologin token generato per user #%d (%s)', $user->ID, $user->user_login ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+	}
+
+	return rest_ensure_response(
+		array(
+			'autologin_url' => add_query_arg( 'wphc_autologin', $token, home_url( '/' ) ),
+			'expires_in'    => WP_HEALTH_CHECK_AUTOLOGIN_TTL,
+			'user_id'       => $user->ID,
+			'user_login'    => $user->user_login,
+		)
+	);
+}
+
+/**
+ * Consuma un token di autologin. Agganciata su 'init' e deliberatamente FUORI
+ * dalla REST API: questo endpoint deve rispondere a una semplice navigazione
+ * del browser (?wphc_autologin=<token> sull'home del sito), non a una
+ * chiamata con header di autenticazione. Girare su 'init', prima che
+ * qualunque output sia inviato, evita ogni rischio "headers already sent"
+ * nel chiamare wp_set_auth_cookie().
+ *
+ * Fail-closed: qualunque anomalia (token assente, scaduto/già consumato,
+ * utente inesistente) porta a un redirect silenzioso al login, senza
+ * distinguere il motivo nella risposta — stesso principio di
+ * wphc_require_token() per le rotte dati.
+ */
+function wphc_maybe_consume_autologin() {
+	if ( empty( $_GET['wphc_autologin'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- il token stesso e' la credenziale one-time, non serve un nonce di sessione.
+		return;
+	}
+
+	$token = sanitize_text_field( wp_unslash( $_GET['wphc_autologin'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+	$key   = 'wphc_autologin_' . hash( 'sha256', $token );
+
+	$user_id = get_transient( $key );
+
+	// Consumo single-use: il transient viene cancellato SUBITO dopo la
+	// lettura, indipendentemente dall'esito, per chiudere la finestra di
+	// replay al primo utilizzo anche se l'utente risultasse poi invalido.
+	delete_transient( $key );
+
+	if ( false === $user_id ) {
+		wp_safe_redirect( wp_login_url() );
+		exit;
+	}
+
+	$user = get_user_by( 'id', (int) $user_id );
+	if ( ! $user ) {
+		wp_safe_redirect( wp_login_url() );
+		exit;
+	}
+
+	wp_set_current_user( $user->ID );
+	wp_set_auth_cookie( $user->ID, true );
+	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si invoca l'hook core "wp_login" (non se ne dichiara uno nuovo), cosi' i plugin di audit/2FA che vi si agganciano reagiscono anche a questo login.
+	do_action( 'wp_login', $user->user_login, $user );
+
+	wp_safe_redirect( admin_url() );
+	exit;
+}
+add_action( 'init', 'wphc_maybe_consume_autologin' );
 
 // -----------------------------------------------------------------------
 // TAB SITE HEALTH: stato e configurazione da wp-admin

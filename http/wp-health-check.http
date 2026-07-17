@@ -14,6 +14,8 @@
 
 @baseUrl = http://localhost:8888
 @token = INSERISCI_IL_TOKEN_DI_ENROLLMENT
+@appUser = INSERISCI_USERNAME_ADMIN
+@appPassword = INSERISCI_APPLICATION_PASSWORD
 
 ### POST /enroll — bootstrap firmato (nessun token richiesto, serve la firma
 # Ed25519 del sistema centrale: vedi README.md, sezione "Il problema del
@@ -53,3 +55,12 @@ Authorization: Bearer {{token}}
 ### POST /update — self-update da GitHub (protetta da bearer token)
 POST {{baseUrl}}/wp-json/health-check/v1/update
 Authorization: Bearer {{token}}
+
+### POST /autologin/token — genera un token one-time per aprire wp-admin già
+# autenticati (vedi README.md, sezione "Autologin"). Protetta da
+# manage_options via Application Password, NON dal bearer token: {{appUser}}/
+# {{appPassword}} vanno creati in Utenti → Profilo → Application Passwords.
+# La risposta contiene "autologin_url": aprilo nel browser entro 20 secondi
+# (TTL), una sola volta (single-use).
+POST {{baseUrl}}/wp-json/health-check/v1/autologin/token
+Authorization: Basic {{appUser}} {{appPassword}}
