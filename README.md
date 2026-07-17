@@ -338,6 +338,7 @@ Risposta:
     "core_update": false,
     "has_gdpr": true,
     "has_builder": false,
+    "has_ecommerce": false,
     "mu_dir_writable": true,
     "updates_checked_at": "2026-07-08T09:12:00+00:00"
   },
@@ -755,6 +756,19 @@ resta invece sempre leggibile (è sola lettura).
    aggiornato" anche per elementi che hanno ancora un update pendente. Su
    `rolled_back`/`failed` il transient non viene toccato: l'update è ancora
    effettivamente pendente, o lo stato è incerto.
+7. **Solo per i plugin**, sull'esito `completed`: verifica che un plugin
+   già attivo prima dell'update resti attivo dopo
+   (`is_plugin_active()`/`is_plugin_active_for_network()` per il caso
+   multisite). In teoria `Plugin_Upgrader::upgrade()` non tocca mai
+   l'opzione `active_plugins`, ma una disattivazione può comunque avvenire
+   per cause esterne (plugin di sicurezza/hosting che disattivano su
+   modifica file, un main file rinominato dalla nuova versione...). Se il
+   plugin risulta disattivato, si tenta una riattivazione automatica nello
+   stesso ambito di prima (`activate_plugin( $target, '', $was_network_active )`);
+   se anche questa fallisce, la rotta risponde `updated: true` +
+   `result: "reactivation_failed"` + `detail` con il messaggio d'errore
+   (stesso pattern "risultato + dettaglio" di `not_updatable`), invece di
+   dichiarare un successo pieno che nasconderebbe il problema.
 
 ### Core: specificità e avvertenze
 
@@ -790,10 +804,13 @@ percorre).
 Ogni operazione produce **due righe** nella tabella custom
 `{$wpdb->prefix}wphc_update_log` (`id`, `correlation_id`, `created_at`,
 `type`, `target`, `name`, `version_from`, `version_to`, `phase`, `message`,
-`ip`), legate dallo stesso `correlation_id`: una **prima** di toccare
-qualunque file (`phase = requested`, prova che un aggiornamento è stato
-avviato anche se PHP muore a metà), una al termine (`completed` / `failed` /
-`rolled_back`). La tabella non ha un hook di attivazione dedicato (i
+`ip`, `active`), legate dallo stesso `correlation_id`: una **prima** di
+toccare qualunque file (`phase = requested`, prova che un aggiornamento è
+stato avviato anche se PHP muore a metà), una al termine (`completed` /
+`failed` / `rolled_back`). La colonna `active` (dalla `1.21.0`) registra lo
+stato attivo osservato in quel momento — `true`/`false` solo sulle righe
+`plugin` (vedi [punto 7 del flusso](#flusso-comune-plugin-e-temi) sopra),
+sempre `NULL` per temi/core. La tabella non ha un hook di attivazione dedicato (i
 mu-plugin non ne hanno): viene creata/allineata con `dbDelta()` al primo
 caricamento in cui `wp_health_check_db_version` non combacia con lo schema
 atteso. Le righe più vecchie di 90 giorni (`WP_HEALTH_CHECK_LOG_RETENTION_DAYS`)

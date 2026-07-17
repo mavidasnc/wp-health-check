@@ -7,6 +7,30 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-07-14
+
+### Added
+
+- Tabella di log degli aggiornamenti: nuova colonna `active` (bool, nullable),
+  che registra lo stato attivo di un plugin nel momento della riga di log
+  (`requested`/`completed`), sempre `NULL` per temi/core. Esposta anche in
+  `GET /update/log` (campo `active` per elemento).
+- `POST /update/plugin`: controllo più robusto dopo un update riuscito —
+  verifica che un plugin **già attivo prima** dell'update **resti attivo
+  dopo** (`is_plugin_active()`/`is_plugin_active_for_network()` per il caso
+  multisite). In teoria `Plugin_Upgrader::upgrade()` non tocca mai l'opzione
+  `active_plugins`, ma una disattivazione può comunque avvenire per cause
+  esterne (plugin di sicurezza/hosting, un main file rinominato dalla nuova
+  versione...). Se il plugin risulta disattivato, si tenta una
+  riattivazione automatica nello stesso ambito di prima (rete o singolo
+  sito); se anche questa fallisce, la rotta risponde `updated: true` +
+  `result: "reactivation_failed"` + `detail` con il messaggio d'errore
+  (stesso pattern "risultato + dettaglio" di `not_updatable`), invece di
+  dichiarare un successo pieno che nasconderebbe il problema.
+- `GET /health` → `summary`: nuovo booleano `has_ecommerce` (plugin
+  e-commerce attivo: WooCommerce o Easy Digital Downloads), calcolato in
+  `wphc_detect_site_signals()` sullo stesso modello di `has_gdpr`/`has_builder`.
+
 ## [1.20.0] - 2026-07-14
 
 ### Fixed
@@ -434,7 +458,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.20.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.21.0...HEAD
+[1.21.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.17.0...v1.18.0

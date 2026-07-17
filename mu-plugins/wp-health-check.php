@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.20.0
+ * Version:     1.21.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.20.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.21.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -87,7 +87,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
  * wphc_maybe_install_update_log_schema()).
  */
 if ( ! defined( 'WP_HEALTH_CHECK_DB_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_DB_VERSION', '1' );
+	define( 'WP_HEALTH_CHECK_DB_VERSION', '2' );
 }
 
 /** Giorni di conservazione delle righe della tabella di log update (§6.5). */
@@ -406,19 +406,21 @@ function wphc_send_enroll_mismatch_alert( $expected, $received, $candidates ) {
 }
 
 /**
- * Rileva due segnali booleani sul sito, calcolati dai plugin/temi
- * effettivamente attivi: presenza di un consent manager GDPR (has_gdpr) e
- * presenza di un page builder (has_builder). L'API centrale li persiste e li
- * espone; qui li si calcola perche' il plugin ha accesso diretto a WordPress.
+ * Rileva tre segnali booleani sul sito, calcolati dai plugin/temi
+ * effettivamente attivi: presenza di un consent manager GDPR (has_gdpr),
+ * presenza di un page builder (has_builder) e presenza di un plugin
+ * e-commerce (has_ecommerce). L'API centrale li persiste e li espone; qui
+ * li si calcola perche' il plugin ha accesso diretto a WordPress.
  *
  * PUNTO UNICO DEGLI SLUG: gli elenchi degli slug riconosciuti vivono solo
- * dentro questa funzione, cosi' aggiungerne altri (nuovi consent manager o
- * builder) non richiede toccare altre parti del plugin ne' l'API centrale.
- * Gli slug plugin sono la cartella (primo segmento di "cartella/file.php") e
- * vanno verificati contro le versioni realmente installate (Cookiebot in
- * particolare ha avuto slug diversi nel tempo).
+ * dentro questa funzione, cosi' aggiungerne altri (nuovi consent manager,
+ * builder o piattaforme e-commerce) non richiede toccare altre parti del
+ * plugin ne' l'API centrale. Gli slug plugin sono la cartella (primo
+ * segmento di "cartella/file.php") e vanno verificati contro le versioni
+ * realmente installate (Cookiebot in particolare ha avuto slug diversi nel
+ * tempo).
  *
- * @return array{has_gdpr: bool, has_builder: bool} Segnali rilevati.
+ * @return array{has_gdpr: bool, has_builder: bool, has_ecommerce: bool} Segnali rilevati.
  */
 function wphc_detect_site_signals() {
 	// Slug (cartella) dei consent manager GDPR riconosciuti.
@@ -436,6 +438,12 @@ function wphc_detect_site_signals() {
 	// Slug (stylesheet/template) dei temi builder riconosciuti.
 	$builder_theme_slugs = array(
 		'divi',
+	);
+
+	// Slug (cartella) dei plugin e-commerce riconosciuti.
+	$ecommerce_plugin_slugs = array(
+		'woocommerce',
+		'easy-digital-downloads',
 	);
 
 	$active_plugins = (array) get_option( 'active_plugins', array() );
@@ -461,9 +469,12 @@ function wphc_detect_site_signals() {
 	$has_builder = (bool) array_intersect( $plugin_slugs, $builder_plugin_slugs )
 		|| (bool) array_intersect( $theme_slugs, $builder_theme_slugs );
 
+	$has_ecommerce = (bool) array_intersect( $plugin_slugs, $ecommerce_plugin_slugs );
+
 	return array(
-		'has_gdpr'    => $has_gdpr,
-		'has_builder' => $has_builder,
+		'has_gdpr'      => $has_gdpr,
+		'has_builder'   => $has_builder,
+		'has_ecommerce' => $has_ecommerce,
 	);
 }
 
@@ -1121,6 +1132,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'core_update'             => $core_update_available,
 			'has_gdpr'                => $signals['has_gdpr'],
 			'has_builder'             => $signals['has_builder'],
+			'has_ecommerce'           => $signals['has_ecommerce'],
 			'mu_dir_writable'         => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at'      => $updates_checked_at,
 			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', true ),
@@ -1857,6 +1869,7 @@ function wphc_maybe_install_update_log_schema() {
 		phase VARCHAR(16) NOT NULL,
 		message VARCHAR(255) DEFAULT NULL,
 		ip VARCHAR(45) DEFAULT NULL,
+		active TINYINT(1) DEFAULT NULL,
 		PRIMARY KEY  (id),
 		KEY correlation_id (correlation_id),
 		KEY type_created_at (type, created_at)
@@ -1883,9 +1896,12 @@ add_action( 'init', 'wphc_maybe_install_update_log_schema' );
  * @param string|null $version_to     Versione target/attesa (dal transient del core).
  * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back'.
  * @param string|null $message        Dettaglio in caso di errore/rollback.
+ * @param bool|null   $active         Stato attivo dell'elemento in questo momento
+ *                                    (solo plugin: true/false; null per temi/core
+ *                                    o quando non rilevato).
  * @return int ID della riga inserita (0 se l'insert fallisce).
  */
-function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null ) {
+function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null, $active = null ) {
 	global $wpdb;
 
 	$wpdb->insert(
@@ -1901,8 +1917,12 @@ function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_f
 			'phase'          => $phase,
 			'message'        => $message,
 			'ip'             => wphc_get_client_ip(),
+			// $wpdb->insert() ignora il formato dichiarato quando il valore e'
+			// realmente null (usa NULL SQL a prescindere), quindi %d va bene
+			// anche per le righe temi/core dove $active resta null.
+			'active'         => null === $active ? null : (int) $active,
 		),
-		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' )
+		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d' )
 	);
 
 	return (int) $wpdb->insert_id;
@@ -2187,6 +2207,14 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 	require_once ABSPATH . 'wp-admin/includes/misc.php';
 	require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 
+	// Stato attivo del plugin prima dell'update (solo plugin: un update non
+	// cambia mai il tema attivo, non c'e' un equivalente da tracciare per
+	// temi/core). $was_network_active distingue l'attivazione di rete
+	// (multisite) da quella per singolo sito, per poter riattivare nello
+	// stesso ambito se necessario (vedi sotto).
+	$was_active         = null;
+	$was_network_active = false;
+
 	if ( 'plugin' === $type ) {
 		require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
 
@@ -2200,6 +2228,9 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 		}
 		$name         = $all_plugins[ $target ]['Name'];
 		$version_from = $all_plugins[ $target ]['Version'];
+
+		$was_network_active = is_multisite() && is_plugin_active_for_network( $target );
+		$was_active         = $was_network_active || is_plugin_active( $target );
 
 		wp_clean_plugins_cache( false );
 		$muted     = wphc_mute_update_shortcircuit();
@@ -2270,7 +2301,7 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 	}
 
 	$correlation_id = wphc_generate_correlation_id();
-	wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'requested' );
+	wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'requested', null, $was_active );
 
 	$skin     = new Automatic_Upgrader_Skin(); // Nessun output HTML: la richiesta e' REST, non una pagina admin.
 	$upgrader = ( 'plugin' === $type ) ? new Plugin_Upgrader( $skin ) : new Theme_Upgrader( $skin );
@@ -2329,9 +2360,56 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 
 	wphc_patch_update_transient_after_success( $type, $target, $version_to );
 
-	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed' );
+	// Rete di sicurezza: un update non dovrebbe mai disattivare un plugin
+	// gia' attivo (Plugin_Upgrader::upgrade() non tocca active_plugins), ma
+	// puo' succedere per cause esterne (plugin di sicurezza/hosting che
+	// disattivano su modifica file, un main file rinominato dalla nuova
+	// versione...). Se succede, si tenta una riattivazione nello stesso
+	// ambito di prima (rete o singolo sito); se anche questa fallisce, lo
+	// si segnala come esito distinto invece di dichiarare un successo pieno.
+	$active_after       = null;
+	$log_message        = null;
+	$reactivation_error = null;
+	if ( 'plugin' === $type ) {
+		$active_after = $was_network_active
+			? is_plugin_active_for_network( $target )
+			: is_plugin_active( $target );
+
+		if ( $was_active && ! $active_after ) {
+			$reactivated = activate_plugin( $target, '', $was_network_active );
+			if ( is_wp_error( $reactivated ) ) {
+				$reactivation_error = $reactivated->get_error_message();
+				$log_message        = sprintf(
+					/* translators: %s: messaggio d'errore restituito da activate_plugin(). */
+					__( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: %s', 'wp-health-check' ),
+					$reactivation_error
+				);
+			} else {
+				$active_after = $was_network_active
+					? is_plugin_active_for_network( $target )
+					: is_plugin_active( $target );
+				$log_message  = __( 'Plugin disattivato dall\'update e riattivato automaticamente.', 'wp-health-check' );
+			}
+		}
+	}
+
+	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', $log_message, $active_after );
 	wphc_record_last_update( $type, $target, 'completed' );
 	wphc_release_update_lock();
+
+	if ( null !== $reactivation_error ) {
+		return array(
+			'result' => 'reactivation_failed',
+			'type'   => $type,
+			'target' => $target,
+			'name'   => $name,
+			'from'   => $version_from,
+			'to'     => $version_to,
+			'log_id' => $log_id,
+			'detail' => $log_message,
+			'http'   => 200,
+		);
+	}
 
 	return array(
 		'result' => 'updated',
@@ -2532,6 +2610,26 @@ function wphc_map_item_update_outcome( $outcome ) {
 		);
 	}
 
+	if ( 'reactivation_failed' === $result ) {
+		// Il file e' stato sostituito correttamente (updated: true): a
+		// fallire e' stato solo il tentativo di riattivare un plugin che
+		// era attivo prima dell'update. Va segnalato, ma non e' lo stesso
+		// esito di un update non riuscito.
+		return rest_ensure_response(
+			array(
+				'updated' => true,
+				'result'  => 'reactivation_failed',
+				'type'    => $outcome['type'],
+				'target'  => $outcome['target'],
+				'name'    => $outcome['name'],
+				'from'    => $outcome['from'],
+				'to'      => $outcome['to'],
+				'log_id'  => $outcome['log_id'],
+				'detail'  => $outcome['detail'],
+			)
+		);
+	}
+
 	$response = array(
 		'updated' => false,
 		'result'  => $result,
@@ -2644,6 +2742,10 @@ function wphc_route_update_log( WP_REST_Request $request ) {
 			'phase'          => $row['phase'],
 			'message'        => $row['message'],
 			'ip'             => $row['ip'],
+			// Stato attivo del plugin in quel momento (true/false), o null
+			// per temi/core e per righe scritte prima della 1.21.0 (colonna
+			// aggiunta con dbDelta, valore NULL sulle righe preesistenti).
+			'active'         => isset( $row['active'] ) && null !== $row['active'] ? (bool) $row['active'] : null,
 		);
 	}
 

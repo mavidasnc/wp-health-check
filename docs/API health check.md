@@ -3,9 +3,11 @@
 Reference tecnico delle rotte REST esposte dal fleet agent
 (`mu-plugins/wp-health-check.php`). Le rotte `/enroll` → `/update` sono
 aggiornate all'agent **1.9.0** (salvo il campo `file` di `/detail/plugins`,
-aggiunto con l'agent **1.19.0**); le rotte `/update/plugin`, `/update/theme`,
-`/update/core` e `/update/log`, aggiunte con l'agent **1.18.0**, sono
-documentate nelle sezioni dedicate in fondo.
+aggiunto con l'agent **1.19.0**, e il campo `has_ecommerce` di `/health`,
+aggiunto con l'agent **1.21.0**); le rotte `/update/plugin`, `/update/theme`,
+`/update/core` e `/update/log`, aggiunte con l'agent **1.18.0** (colonna/campo
+`active` e risultato `reactivation_failed` aggiunti con l'agent **1.21.0**),
+sono documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -619,17 +621,26 @@ Altri esiti (`result`):
 { "updated": false, "result": "failed", "detail": "...", "log_id": 1290 }
 ```
 
+Esito **solo per `POST /update/plugin`** (dalla `1.21.0`): il file è stato
+aggiornato correttamente, ma il plugin era attivo prima dell'update e la
+riattivazione automatica dopo l'update è fallita — a differenza degli esiti
+sopra, `updated` è `true` perché la sostituzione del file è comunque riuscita:
+
+```json
+{ "updated": true, "result": "reactivation_failed", "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet", "from": "5.3.2", "to": "5.3.4", "log_id": 1291, "detail": "Plugin aggiornato correttamente ma la riattivazione automatica è fallita: ..." }
+```
+
 ### Campi
 
 | Campo | Tipo | Note |
 |---|---|---|
-| `updated` | bool | `true` solo se l'elemento è stato effettivamente aggiornato |
+| `updated` | bool | `true` se l'elemento è stato effettivamente aggiornato (anche con `result: "reactivation_failed"`, vedi sopra) |
 | `type` | string | `plugin` \| `theme` |
 | `target` | string | Plugin file o stylesheet richiesto |
 | `name` | string | Nome leggibile dell'elemento |
 | `from` / `to` | string | Versioni a confronto (solo con `updated: true`) |
 | `log_id` | int | ID della riga nella tabella di log (vedi `GET /update/log`) |
-| `result` | string | `updatable` (dry-run), `up_to_date`, `not_updatable`, `not_found`, `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` |
+| `result` | string | `updatable` (dry-run), `up_to_date`, `not_updatable`, `not_found`, `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed`, `reactivation_failed` (solo plugin) |
 
 ### Errori
 
@@ -705,13 +716,13 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
       "id": 1288, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:03+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.2", "version_to": "5.3.4",
-      "phase": "completed", "message": null, "ip": "203.0.113.7"
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": true
     },
     {
       "id": 1287, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:00+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.2", "version_to": "5.3.4",
-      "phase": "requested", "message": null, "ip": "203.0.113.7"
+      "phase": "requested", "message": null, "ip": "203.0.113.7", "active": true
     }
   ]
 }
@@ -731,6 +742,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 | `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` |
 | `message` | string \| null | Dettaglio in caso di errore/rollback |
 | `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
+| `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core` |
 
 ---
 
