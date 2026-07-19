@@ -2,11 +2,14 @@
 
 Reference tecnico delle rotte REST esposte dal fleet agent
 (`mu-plugins/wp-health-check.php`). Le rotte `/enroll` → `/update` sono
-aggiornate all'agent **1.9.0** (salvo il campo `file` di `/detail/plugins`,
-aggiunto con l'agent **1.19.0**, e il campo `has_ecommerce` di `/health`,
-aggiunto con l'agent **1.21.0**); le rotte `/update/plugin`, `/update/theme`,
-`/update/core` e `/update/log`, aggiunte con l'agent **1.18.0** (colonna/campo
-`active` e risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
+aggiornate all'agent **1.9.0** (salvo l'array `themes` di `/detail/theme` e i
+campi `has_gdpr`/`has_builder` di `/health`, aggiunti con l'agent **1.17.0**;
+il campo `file` di `/detail/plugins`, aggiunto con l'agent **1.19.0**; e il
+campo `has_ecommerce` di `/health`, aggiunto con l'agent **1.21.0**); le rotte
+`/update/plugin`, `/update/theme`, `/update/core` e `/update/log`, aggiunte
+con l'agent **1.18.0** insieme ai campi `updates_via_api_enabled`,
+`last_update` e `maintenance_stuck` di `/health` (colonna/campo `active` e
+risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
 `/autologin/token`, aggiunta con l'agent **1.22.0**; `/detail/users` e
 `POST /update/reactivate`, aggiunte con l'agent **1.23.0**; sono documentate
 nelle sezioni dedicate in fondo.
@@ -294,8 +297,19 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
     "theme_name": "miziomon",
     "parent_theme_name": "Blocksy",
     "core_update": false,
+    "has_gdpr": true,
+    "has_builder": false,
+    "has_ecommerce": true,
     "mu_dir_writable": true,
-    "updates_checked_at": "2026-07-09T07:50:53+00:00"
+    "updates_checked_at": "2026-07-09T07:50:53+00:00",
+    "updates_via_api_enabled": true,
+    "last_update": {
+      "type": "plugin",
+      "target": "akismet/akismet.php",
+      "phase": "completed",
+      "at": "2026-07-14T10:00:03+00:00"
+    },
+    "maintenance_stuck": false
   },
   "last_access": {
     "at": "2026-07-09T07:59:00+00:00",
@@ -327,8 +341,18 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.theme_name` | string | Nome del tema attivo |
 | `summary.parent_theme_name` | string \| null | Nome del tema parent, `null` se il tema attivo non è un child |
 | `summary.core_update` | bool | `true` se è disponibile un aggiornamento core |
+| `summary.has_gdpr` | bool | `true` se è attivo un consent manager GDPR riconosciuto (es. Iubenda, Cookiebot) |
+| `summary.has_builder` | bool | `true` se è attivo un page builder riconosciuto (plugin, es. Elementor, o tema, es. Divi) |
+| `summary.has_ecommerce` | bool | `true` se è attivo un plugin e-commerce riconosciuto (WooCommerce o Easy Digital Downloads); dall'agent **1.21.0** |
 | `summary.mu_dir_writable` | bool | `true` se `WPMU_PLUGIN_DIR` è scrivibile (self-update possibile) |
 | `summary.updates_checked_at` | string \| null | Ultimo check aggiornamenti del cron (ISO 8601) |
+| `summary.updates_via_api_enabled` | bool | Stato del kill-switch `wp_health_check_updates_enabled` per `/update/plugin`, `/update/theme`, `/update/core`, `/update/reactivate` |
+| `summary.last_update` | object \| null | Esito dell'ultima operazione di update via API, o `null` se non ancora eseguita; vedi sotto |
+| `summary.last_update.type` | string | `plugin` \| `theme` \| `core` |
+| `summary.last_update.target` | string | Plugin file, stylesheet, oppure `core` |
+| `summary.last_update.phase` | string | `completed` \| `failed` \| `rolled_back` (le fasi terminali di un update; non include `requested`/`reactivated`/`reactivation_failed`) |
+| `summary.last_update.at` | string | Timestamp ISO 8601 UTC dell'esito |
+| `summary.maintenance_stuck` | bool | `true` se il file `.maintenance` del core è presente da più di 10 minuti (segnale di un update interrotto a metà, mai ripulito) |
 | `last_access.at` | string \| null | Timestamp dell'accesso **precedente** (segnale di audit) |
 | `last_access.ip` | string \| null | IP dell'accesso precedente |
 | `last_access.enrolled_at` | string \| null | Timestamp dell'enroll |
@@ -422,11 +446,33 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/theme' \
   "parent_theme": {
     "name": "Blocksy",
     "version": "2.1.48"
-  }
+  },
+  "themes": [
+    {
+      "name": "miziomon",
+      "stylesheet": "miziomon",
+      "version": "1.0",
+      "active": true,
+      "parent": "blocksy",
+      "update_available": false,
+      "new_version": null
+    },
+    {
+      "name": "Blocksy",
+      "stylesheet": "blocksy",
+      "version": "2.1.48",
+      "active": false,
+      "parent": null,
+      "update_available": true,
+      "new_version": "2.1.49"
+    }
+  ]
 }
 ```
 
-`parent_theme` è `null` quando il tema attivo non è un child theme.
+`parent_theme` è `null` quando il tema attivo non è un child theme. `themes`
+è l'elenco completo di **tutti** i temi installati (non solo l'attivo),
+richiesto dalla dashboard per mostrarli tutti in un'unica chiamata.
 
 ### Campi
 
@@ -440,6 +486,14 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/theme' \
 | `parent_theme` | object \| null | `null` se non è un child theme |
 | `parent_theme.name` | string | Nome del tema parent |
 | `parent_theme.version` | string | Versione del tema parent |
+| `themes` | array | Elenco di **tutti** i temi installati, attivo incluso |
+| `themes[].name` | string | Nome del tema |
+| `themes[].stylesheet` | string | Slug (directory) del tema |
+| `themes[].version` | string | Versione installata |
+| `themes[].active` | bool | `true` se è il tema correntemente attivo |
+| `themes[].parent` | string \| null | Stylesheet del tema parent se è un child theme, altrimenti `null` |
+| `themes[].update_available` | bool | `true` se esiste un aggiornamento |
+| `themes[].new_version` | string \| null | Versione disponibile, o `null` |
 
 ---
 
@@ -780,9 +834,15 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 ```json
 {
   "site": "https://esempio.com",
-  "count": 2,
-  "total": 137,
+  "count": 3,
+  "total": 138,
   "entries": [
+    {
+      "id": 1305, "correlation_id": "b2c3d4e5f6071829", "created_at": "2026-07-19T08:05:10+00:00",
+      "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
+      "version_from": "5.3.4", "version_to": null,
+      "phase": "reactivated", "message": null, "ip": "203.0.113.7", "active": true
+    },
     {
       "id": 1288, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:03+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
@@ -799,21 +859,27 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 }
 ```
 
+La prima riga dell'esempio (`id: 1305`) è una riga scritta da `POST
+/update/reactivate` (vedi sotto): stessa tabella di log dell'update, quindi
+visibile anche da qui. `version_to` è sempre `null` per queste righe (una
+riattivazione non cambia la versione installata); `correlation_id` è nuovo per
+ogni tentativo, non condiviso con l'operazione di update originaria.
+
 ### Campi (per elemento di `entries`)
 
 | Campo | Tipo | Note |
 |---|---|---|
 | `id` | int | ID della riga |
-| `correlation_id` | string | Lega le righe `requested`/finale della stessa operazione |
+| `correlation_id` | string | Lega le righe `requested`/finale della stessa operazione (per le righe di `POST /update/reactivate`, un id nuovo per ogni tentativo: vedi sotto) |
 | `created_at` | string | Timestamp ISO 8601 UTC della riga |
 | `type` | string | `plugin` \| `theme` \| `core` |
 | `target` | string | Plugin file, stylesheet, oppure `core` |
 | `name` | string | Nome leggibile dell'elemento |
-| `version_from` / `version_to` | string \| null | Versione installata / target |
-| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` |
-| `message` | string \| null | Dettaglio in caso di errore/rollback |
+| `version_from` / `version_to` | string \| null | Versione installata / target; `version_to` sempre `null` sulle righe `reactivated`/`reactivation_failed` (nessun cambio di versione) |
+| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` (da `POST /update/plugin`/`/theme`/`/core`), oppure `reactivated` \| `reactivation_failed` (da `POST /update/reactivate`, dalla `1.23.0`; colonna allargata a `VARCHAR(32)` per ospitarli) |
+| `message` | string \| null | Dettaglio in caso di errore/rollback/riattivazione fallita |
 | `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
-| `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core` |
+| `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core`; sulle righe `reactivation_failed` è sempre `null` anziché `false` (vedi [`POST /update/reactivate`](#post-updatereactivate)) |
 
 ---
 
@@ -1055,6 +1121,11 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 | `wphc_updates_disabled` | `403` |
 | `wphc_update_locked` | `409` |
 
+> Stessa distinzione di `/update`: `up_to_date`, `not_updatable`, `not_found`,
+> `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` e
+> `updatable` (dry-run) sono valori del campo `result` in una risposta `200`,
+> non codici di errore.
+
 ### `/update/reactivate`
 
 | `code` | Status |
@@ -1062,10 +1133,11 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 | `wphc_updates_disabled` | `403` (solo esecuzione reale, non in dry-run) |
 | `wphc_update_locked` | `409` (solo esecuzione reale, non in dry-run) |
 
-> Stessa distinzione di `/update`: `up_to_date`, `not_updatable`, `not_found`,
-> `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` e
-> `updatable` (dry-run) sono valori del campo `result` in una risposta `200`,
-> non codici di errore.
+> Nessun campo `result` con esiti "non erronei" qui: la rotta restituisce
+> sempre `200` con `discrepancies`/`reactivated`/`failed`/`results[]` (vedi
+> sopra); i soli codici errore possibili sono quelli in tabella, entrambi
+> esclusivi dell'esecuzione reale (il dry-run non fallisce mai per
+> kill-switch/lock).
 
 ### `/autologin/token`
 
