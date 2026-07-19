@@ -7,8 +7,9 @@ aggiunto con l'agent **1.19.0**, e il campo `has_ecommerce` di `/health`,
 aggiunto con l'agent **1.21.0**); le rotte `/update/plugin`, `/update/theme`,
 `/update/core` e `/update/log`, aggiunte con l'agent **1.18.0** (colonna/campo
 `active` e risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
-`/autologin/token`, aggiunta con l'agent **1.22.0**; sono documentate nelle
-sezioni dedicate in fondo.
+`/autologin/token`, aggiunta con l'agent **1.22.0**; `/detail/users` e
+`POST /update/reactivate`, aggiunte con l'agent **1.23.0**; sono documentate
+nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -24,12 +25,14 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 6. [`GET /detail/plugins`](#get-detailplugins)
 7. [`GET /detail/theme`](#get-detailtheme)
 8. [`GET /detail/server`](#get-detailserver)
-9. [`POST /update`](#post-update)
-10. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
-11. [`POST /update/core`](#post-updatecore)
-12. [`GET /update/log`](#get-updatelog)
-13. [`POST /autologin/token`](#post-autologintoken)
-14. [Riferimento codici di errore](#riferimento-codici-di-errore)
+9. [`GET /detail/users`](#get-detailusers)
+10. [`POST /update`](#post-update)
+11. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
+12. [`POST /update/core`](#post-updatecore)
+13. [`GET /update/log`](#get-updatelog)
+14. [`POST /update/reactivate`](#post-updatereactivate)
+15. [`POST /autologin/token`](#post-autologintoken)
+16. [Riferimento codici di errore](#riferimento-codici-di-errore)
 
 ---
 
@@ -40,7 +43,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.9.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.23.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -52,11 +55,13 @@ Sintesi delle rotte:
 | `GET` | `/detail/plugins` | Bearer token | `?fresh=1` | transient 1h |
 | `GET` | `/detail/theme` | Bearer token | `?fresh=1` | transient 1h |
 | `GET` | `/detail/server` | Bearer token | `?fresh=1` | transient 12h |
+| `GET` | `/detail/users` | Bearer token | — | nessuna |
 | `POST` | `/update` | Bearer token | — | nessuna |
 | `POST` | `/update/plugin` | Bearer token + kill-switch | `?check=1` | nessuna |
 | `POST` | `/update/theme` | Bearer token + kill-switch | `?check=1` | nessuna |
 | `POST` | `/update/core` | Bearer token + kill-switch | `?check=1` | nessuna |
 | `GET` | `/update/log` | Bearer token | `type`, `limit`, `offset` | nessuna |
+| `POST` | `/update/reactivate` | Bearer token + kill-switch (salvo `?check=1`) | `?check=1` | nessuna |
 | `POST` | `/autologin/token` | `manage_options` (Application Password) | — | nessuna |
 
 ---
@@ -504,6 +509,59 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
 
 ---
 
+## `GET /detail/users`
+
+Elenco degli amministratori del sito, per censire dalla dashboard centrale chi
+ha accesso pieno. Legge il ruolo `administrator` sul blog corrente; su
+multisite include anche i super admin di rete (accesso pieno anche senza il
+ruolo administrator sul singolo blog), deduplicati per `user_login`.
+
+**Auth:** Bearer token. **Query:** —. **Cache:** nessuna (dato anagrafico a
+bassa frequenza di interrogazione, a differenza di `/detail/plugins` e
+`/detail/theme`).
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/detail/users' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-19T08:04:38+00:00",
+  "count": 2,
+  "users": [
+    {
+      "id": 1,
+      "user_login": "admin",
+      "display_name": "Amministratore",
+      "email": "admin@esempio.com"
+    },
+    {
+      "id": 4,
+      "user_login": "maurizio",
+      "display_name": "Maurizio",
+      "email": "maurizio@mavida.com"
+    }
+  ]
+}
+```
+
+### Campi (per elemento di `users`)
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `id` | int | ID utente (`wp_users.ID`) |
+| `user_login` | string | Username |
+| `display_name` | string | Nome visualizzato |
+| `email` | string | Indirizzo email |
+
+---
+
 ## `POST /update`
 
 Self-update dell'agent da una release GitHub firmata. Innescato da questa
@@ -759,6 +817,123 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 
 ---
 
+## `POST /update/reactivate`
+
+Riconciliazione a posteriori: su alcuni siti un plugin può restare
+disattivato dopo un aggiornamento (la rete di sicurezza già presente in
+`POST /update/plugin` tenta una riattivazione immediata, ma non copre i casi
+in cui la disattivazione avviene con un ritardo, ad opera di un processo
+esterno, o quando l'update è stato eseguito fuori da questo agent). Confronta,
+per ogni plugin, l'ultimo stato "atteso attivo" registrato nel log
+(`GET /update/log`) con lo stato reale corrente; per ogni discrepanza trovata
+tenta la riattivazione (`activate_plugin()`), registrando **sempre** una riga
+di log per il tentativo (`phase` `reactivated` o `reactivation_failed`).
+
+**Auth:** Bearer token. **Richiede inoltre**, solo per l'esecuzione reale, il
+kill-switch `wp_health_check_updates_enabled` acceso (altrimenti `403
+disabled`) e il lock anti-concorrenza condiviso con le altre rotte di update
+(altrimenti `409 locked`). **Query:** `?check=1` per un dry-run — sola
+lettura, **non** richiede kill-switch né lock. **Cache:** nessuna.
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/update/reactivate?check=1' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200` — dry-run (`?check=1`)
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-19T08:04:38+00:00",
+  "check": true,
+  "discrepancies": 1,
+  "reactivated": 0,
+  "failed": 0,
+  "results": [
+    {
+      "target": "akismet/akismet.php",
+      "name": "Akismet",
+      "was_active": true,
+      "currently_active": false
+    }
+  ]
+}
+```
+
+### Risposta `200` — esecuzione reale
+
+```json
+{
+  "site": "https://esempio.com",
+  "generated_at": "2026-07-19T08:05:10+00:00",
+  "check": false,
+  "discrepancies": 2,
+  "reactivated": 1,
+  "failed": 1,
+  "results": [
+    {
+      "target": "akismet/akismet.php",
+      "name": "Akismet",
+      "was_active": true,
+      "currently_active": true,
+      "reactivated": true,
+      "log_id": 1305
+    },
+    {
+      "target": "wp-super-cache/wp-cache.php",
+      "name": "WP Super Cache",
+      "was_active": true,
+      "currently_active": false,
+      "reactivated": false,
+      "log_id": 1306,
+      "detail": "Plugin file does not exist."
+    }
+  ]
+}
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `check` | bool | `true` se è stato un dry-run (nessuna modifica di stato) |
+| `discrepancies` | int | Plugin trovati "atteso attivo" ma ora disattivati |
+| `reactivated` | int | Riattivazioni riuscite (`0` in dry-run) |
+| `failed` | int | Tentativi di riattivazione falliti (`0` in dry-run) |
+| `results[].target` | string | Plugin file |
+| `results[].name` | string | Nome leggibile del plugin |
+| `results[].was_active` | bool | Sempre `true`: solo i plugin attesi attivi secondo il log compaiono qui |
+| `results[].currently_active` | bool | Stato reale rilevato prima del tentativo |
+| `results[].reactivated` | bool | Presente solo fuori dal dry-run: esito del tentativo |
+| `results[].log_id` | int | Presente solo fuori dal dry-run: ID della riga in `GET /update/log` |
+| `results[].detail` | string | Presente solo sui tentativi falliti: messaggio d'errore |
+
+### Note
+
+- Il rilevamento si basa **solo sul log**: per ogni plugin si considera la
+  riga più recente con `active` valorizzato. Un plugin disattivato
+  volontariamente in un update successivo (che logga `active=0`) smette
+  correttamente di comparire come discrepanza.
+- Su un tentativo fallito la riga di log viene scritta con `active = NULL`
+  (non `false`): così la discrepanza resta rilevabile e la riattivazione
+  viene ritentata alla chiamata successiva, invece di essere mascherata.
+- Riattivazione sempre **per singolo sito** (`activate_plugin( $target, '', false )`):
+  un plugin che era attivo **a livello di rete** su multisite non è
+  distinguibile da qui (il log non memorizza lo scope) e viene riattivato solo
+  per il sito corrente.
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `403` | `wphc_updates_disabled` | Kill-switch spento per questo sito (solo esecuzione reale) |
+| `409` | `wphc_update_locked` | Un altro aggiornamento è già in corso (solo esecuzione reale) |
+
+---
+
 ## `POST /autologin/token`
 
 Genera un token **one-time** (TTL 20 secondi, consumabile una sola volta) che
@@ -879,6 +1054,13 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 | `wphc_missing_theme` | `400` |
 | `wphc_updates_disabled` | `403` |
 | `wphc_update_locked` | `409` |
+
+### `/update/reactivate`
+
+| `code` | Status |
+|---|---|
+| `wphc_updates_disabled` | `403` (solo esecuzione reale, non in dry-run) |
+| `wphc_update_locked` | `409` (solo esecuzione reale, non in dry-run) |
 
 > Stessa distinzione di `/update`: `up_to_date`, `not_updatable`, `not_found`,
 > `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed` e

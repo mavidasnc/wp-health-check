@@ -7,6 +7,36 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-07-19
+
+### Added
+
+- `GET /detail/users`: nuova rotta che elenca gli amministratori del sito
+  (`id`, `user_login`, `display_name`, `email`). Su multisite include anche i
+  super admin di rete (deduplicati per `user_login`), che possono avere
+  accesso pieno senza il ruolo `administrator` sul singolo blog. Nessuna
+  cache transient: dato anagrafico a bassa frequenza di interrogazione.
+- `POST /update/reactivate`: nuova rotta di riconciliazione a posteriori
+  dello stato attivo dei plugin. Su alcuni siti un plugin può restare
+  disattivato dopo un aggiornamento per cause esterne al flusso di update
+  stesso (la rete di sicurezza già presente in `POST /update/plugin` copre
+  solo la disattivazione avvenuta durante l'update immediatamente
+  precedente). La nuova rotta confronta, per ogni plugin, l'ultimo stato
+  "atteso attivo" registrato nella tabella di log (`wphc_get_reactivation_candidates()`,
+  basata sulla riga più recente con `active` valorizzato per quel plugin) con
+  lo stato reale corrente (`is_plugin_active()`); per ogni discrepanza tenta
+  la riattivazione (`activate_plugin()`) registrando sempre una riga di log
+  per il tentativo (`phase` `reactivated` o `reactivation_failed`). Su un
+  fallimento la riga viene scritta con `active = NULL` (non `false`), cosi'
+  la discrepanza resta rilevabile e viene ritentata alla chiamata successiva.
+  Supporta `?check=1` per un dry-run di sola lettura (nessun kill-switch/lock
+  richiesto); l'esecuzione reale richiede invece il kill-switch
+  `wp_health_check_updates_enabled` e il lock anti-concorrenza condivisi con
+  le altre rotte di update.
+- Tabella di log degli aggiornamenti: colonna `phase` allargata da
+  `VARCHAR(16)` a `VARCHAR(32)` (`WP_HEALTH_CHECK_DB_VERSION` `2` → `3`), per
+  ospitare i nuovi valori `reactivated`/`reactivation_failed`.
+
 ## [1.22.0] - 2026-07-17
 
 ### Added

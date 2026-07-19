@@ -38,11 +38,12 @@ che permettono a un sistema centrale esterno di:
 - registrare (*enroll*) un sito nella flotta, ottenendo un token di accesso;
 - interrogare un sommario di salute economico e ad alta frequenza (`/health`);
 - interrogare dettagli più costosi, on demand (`/detail/plugins`, `/detail/theme`,
-  `/detail/server`);
+  `/detail/server`, `/detail/users`);
 - aggiornare il plugin stesso da una release GitHub firmata (`/update`);
 - aggiornare, dietro consenso esplicito per sito, un singolo plugin/tema/il core del
   sito da wordpress.org (`/update/plugin`, `/update/theme`, `/update/core`), con
-  storico consultabile via `/update/log`;
+  storico consultabile via `/update/log` e riconciliazione a posteriori dello stato
+  attivo dei plugin via `/update/reactivate`;
 - aprire `wp-admin`, con un click dalla dashboard, già autenticati come un
   amministratore del sito (`/autologin/token`, vedi
   [Autologin](#autologin-aprire-wp-admin-già-autenticati)).
@@ -500,6 +501,32 @@ costruito con un **allowlist esplicito** di campi: i campi marcati `private` da
 `WP_Debug_Data` (utente e host del database) non possono finire nella risposta per
 costruzione, indipendentemente da come una futura versione del core li chiami.
 
+### `GET /detail/users` — amministratori del sito
+
+Elenco degli utenti con ruolo `administrator`, per censire dalla dashboard
+centrale chi ha accesso pieno al sito. Su multisite include anche i super
+admin di rete (deduplicati per `user_login`), che possono avere accesso pieno
+senza il ruolo administrator sul singolo blog.
+
+```bash
+curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/users' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{
+  "site": "https://esempio.com/blog",
+  "generated_at": "2026-07-19T08:00:00+00:00",
+  "count": 1,
+  "users": [
+    { "id": 1, "user_login": "admin", "display_name": "Amministratore", "email": "admin@esempio.com" }
+  ]
+}
+```
+
+Nessuna cache transient: a differenza di `/detail/plugins` e `/detail/theme`,
+è un dato anagrafico interrogato raramente.
+
 ### `POST /update` — self-update da GitHub
 
 Vedi la sezione dedicata [Self-update](#self-update-flusso-passo-per-passo).
@@ -576,6 +603,47 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&li
   ]
 }
 ```
+
+### `POST /update/reactivate` — riconciliazione dello stato attivo dei plugin
+
+La rete di sicurezza già presente in `POST /update/plugin` tenta una
+riattivazione immediata subito dopo un update, ma non copre il caso — visto
+su alcuni siti clienti — in cui un plugin resta disattivato per un motivo
+esterno (plugin di sicurezza/hosting, ritardo del filesystem su hosting
+condivisi...) non legato all'update stesso. Questa rotta rileva la
+discrepanza a posteriori, confrontando l'ultimo stato "atteso attivo"
+registrato in `GET /update/log` con lo stato reale corrente, e tenta la
+riattivazione registrando **sempre** una riga di log per il tentativo.
+
+Protetta dal token; l'esecuzione reale richiede inoltre il kill-switch e il
+lock anti-concorrenza condivisi con le altre rotte di update. Il dry-run
+(`?check=1`) resta invece sola lettura.
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/reactivate' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{
+  "site": "https://esempio.com/blog",
+  "generated_at": "2026-07-19T08:05:10+00:00",
+  "check": false,
+  "discrepancies": 1,
+  "reactivated": 1,
+  "failed": 0,
+  "results": [
+    { "target": "akismet/akismet.php", "name": "Akismet", "was_active": true, "currently_active": true, "reactivated": true, "log_id": 1305 }
+  ]
+}
+```
+
+Dettaglio importante: su un tentativo fallito la riga di log viene scritta
+con `active = NULL` (non `false`), perché scrivere `false` la renderebbe la
+riga più recente e farebbe smettere di rilevare la discrepanza alla chiamata
+successiva — vanificando proprio il ritentativo che la rotta esiste per
+offrire. Vedi il dettaglio completo in
+[docs/API health check.md](docs/API%20health%20check.md#post-updatereactivate).
 
 ### `POST /autologin/token` — genera un token one-time di autologin
 

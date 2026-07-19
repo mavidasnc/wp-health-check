@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.22.0
+ * Version:     1.23.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.22.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.23.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -87,7 +87,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
  * wphc_maybe_install_update_log_schema()).
  */
 if ( ! defined( 'WP_HEALTH_CHECK_DB_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_DB_VERSION', '2' );
+	define( 'WP_HEALTH_CHECK_DB_VERSION', '3' );
 }
 
 /** Giorni di conservazione delle righe della tabella di log update (§6.5). */
@@ -746,6 +746,16 @@ function wphc_register_routes() {
 
 	register_rest_route(
 		'health-check/v1',
+		'/detail/users',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_detail_users',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	register_rest_route(
+		'health-check/v1',
 		'/update',
 		array(
 			'methods'             => WP_REST_Server::CREATABLE,
@@ -796,6 +806,19 @@ function wphc_register_routes() {
 		array(
 			'methods'             => WP_REST_Server::READABLE,
 			'callback'            => 'wphc_route_update_log',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
+	// Riconciliazione a posteriori dello stato attivo dei plugin (vedi
+	// wphc_perform_reactivate()): rispetta kill-switch e lock come le altre
+	// rotte di scrittura, salvo il dry-run (?check=1) che resta sola lettura.
+	register_rest_route(
+		'health-check/v1',
+		'/update/reactivate',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_reactivate',
 			'permission_callback' => 'wphc_require_token',
 		)
 	);
@@ -1488,6 +1511,81 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 }
 
 // -----------------------------------------------------------------------
+// CALLBACK: GET /detail/users
+// -----------------------------------------------------------------------
+
+/**
+ * Elenco degli amministratori del sito, per censire dalla dashboard
+ * centrale chi ha accesso pieno. Legge il ruolo "administrator" sul blog
+ * corrente; su multisite include anche i super admin di rete (accesso
+ * pieno anche senza il ruolo administrator sul singolo blog), deduplicati
+ * per user_login. Nessuna cache transient: dato anagrafico a bassa
+ * frequenza di interrogazione, a differenza di /detail/plugins e /detail/theme.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response Elenco amministratori.
+ */
+function wphc_route_detail_users( WP_REST_Request $request ) {
+	unset( $request );
+
+	wphc_record_access();
+
+	// 'fields' come array di nomi colonna di wp_users (non un WP_User
+	// completo): restituisce oggetti gia' limitati ai soli campi richiesti.
+	$admins = get_users(
+		array(
+			'role'   => 'administrator',
+			'fields' => array( 'ID', 'user_login', 'display_name', 'user_email' ),
+		)
+	);
+
+	$users       = array();
+	$seen_logins = array();
+	foreach ( $admins as $user ) {
+		$users[]                          = array(
+			'id'           => (int) $user->ID,
+			'user_login'   => $user->user_login,
+			'display_name' => $user->display_name,
+			'email'        => $user->user_email,
+		);
+		$seen_logins[ $user->user_login ] = true;
+	}
+
+	// Multisite: i super admin di rete non hanno necessariamente il ruolo
+	// administrator sul SINGOLO blog (es. non sono mai stati aggiunti come
+	// utente di questo sito), ma hanno comunque accesso pieno. get_super_admins()
+	// restituisce solo i login: si risolve ciascuno e si aggiunge solo se non
+	// gia' incluso sopra.
+	if ( is_multisite() ) {
+		foreach ( get_super_admins() as $login ) {
+			if ( isset( $seen_logins[ $login ] ) ) {
+				continue;
+			}
+			$user = get_user_by( 'login', $login );
+			if ( ! $user ) {
+				continue;
+			}
+			$users[]               = array(
+				'id'           => (int) $user->ID,
+				'user_login'   => $user->user_login,
+				'display_name' => $user->display_name,
+				'email'        => $user->user_email,
+			);
+			$seen_logins[ $login ] = true;
+		}
+	}
+
+	return rest_ensure_response(
+		array(
+			'site'         => wphc_normalize_site_url(),
+			'generated_at' => gmdate( 'c' ),
+			'count'        => count( $users ),
+			'users'        => $users,
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
 // CALLBACK: POST /update
 // -----------------------------------------------------------------------
 
@@ -1895,7 +1993,7 @@ function wphc_maybe_install_update_log_schema() {
 		name VARCHAR(191) NOT NULL,
 		version_from VARCHAR(32) DEFAULT NULL,
 		version_to VARCHAR(32) DEFAULT NULL,
-		phase VARCHAR(16) NOT NULL,
+		phase VARCHAR(32) NOT NULL,
 		message VARCHAR(255) DEFAULT NULL,
 		ip VARCHAR(45) DEFAULT NULL,
 		active TINYINT(1) DEFAULT NULL,
@@ -1923,7 +2021,9 @@ add_action( 'init', 'wphc_maybe_install_update_log_schema' );
  * @param string      $name           Nome leggibile dell'elemento.
  * @param string|null $version_from   Versione installata prima dell'update.
  * @param string|null $version_to     Versione target/attesa (dal transient del core).
- * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back'.
+ * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back' |
+ *                                    'reactivated' | 'reactivation_failed' (questi ultimi due
+ *                                    solo da wphc_perform_reactivate()).
  * @param string|null $message        Dettaglio in caso di errore/rollback.
  * @param bool|null   $active         Stato attivo dell'elemento in questo momento
  *                                    (solo plugin: true/false; null per temi/core
@@ -1955,6 +2055,36 @@ function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_f
 	);
 
 	return (int) $wpdb->insert_id;
+}
+
+/**
+ * Determina, dal solo storico di log, quali plugin risultavano attivi
+ * l'ultima volta che il loro stato e' stato registrato (riga 'requested' o
+ * 'completed' con 'active' valorizzato). Per ciascun target distinto si
+ * considera SOLO la riga piu' recente non-null: cosi' un plugin disattivato
+ * volontariamente in un update successivo (che avrebbe loggato active=0)
+ * smette correttamente di comparire come candidato, evitando falsi positivi.
+ * Non confronta con lo stato reale corrente: quello e' compito del chiamante
+ * (wphc_perform_reactivate()), qui si restituisce solo l'atteso secondo il log.
+ *
+ * @return array<int, array{target: string, name: string}> Plugin attesi attivi secondo il log.
+ */
+function wphc_get_reactivation_candidates() {
+	global $wpdb;
+	$table = wphc_update_log_table();
+
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
+	$rows = $wpdb->get_results( $wpdb->prepare( "SELECT l.target, l.name, l.active FROM {$table} l INNER JOIN ( SELECT target, MAX(id) AS max_id FROM {$table} WHERE type = %s AND active IS NOT NULL GROUP BY target ) latest ON latest.max_id = l.id WHERE l.active = 1", 'plugin' ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table e' un nome fisso ($wpdb->prefix), non input (appare due volte nella query).
+
+	$candidates = array();
+	foreach ( (array) $rows as $row ) {
+		$candidates[] = array(
+			'target' => $row['target'],
+			'name'   => $row['name'],
+		);
+	}
+
+	return $candidates;
 }
 
 /**
@@ -2132,6 +2262,43 @@ function wphc_update_preflight( $requires_wp63 ) {
 
 	wphc_clear_stale_maintenance();
 	wphc_maybe_prune_update_log();
+
+	return true;
+}
+
+/**
+ * Preambolo per POST /update/reactivate: solo accesso, kill-switch e lock
+ * anti-concorrenza (condiviso con le rotte di update, per non riattivare
+ * mentre un altro update e' in corso). Deliberatamente PIU' LEGGERO di
+ * wphc_update_preflight(): la riattivazione non scarica ne' scrive alcun
+ * pacchetto, quindi il requisito WP >= 6.3 e il preflight del filesystem
+ * ('direct') non si applicano qui.
+ *
+ * In caso di successo acquisisce il lock: il chiamante deve rilasciarlo con
+ * wphc_release_update_lock() su ogni uscita successiva (rilascio comunque
+ * garantito anche in caso di crash, vedi register_shutdown_function sotto).
+ *
+ * @return true|array True se si puo' procedere, altrimenti array-esito con
+ *                     chiavi 'result' e 'http' da restituire cosi' com'e'.
+ */
+function wphc_reactivate_preflight() {
+	wphc_record_access();
+
+	if ( ! get_option( 'wp_health_check_updates_enabled', true ) ) {
+		return array(
+			'result' => 'disabled',
+			'http'   => 403,
+		);
+	}
+
+	if ( false !== get_transient( 'wp_health_check_update_lock' ) ) {
+		return array(
+			'result' => 'locked',
+			'http'   => 409,
+		);
+	}
+	set_transient( 'wp_health_check_update_lock', 1, WP_HEALTH_CHECK_UPDATE_LOCK_TTL );
+	register_shutdown_function( 'wphc_release_update_lock' );
 
 	return true;
 }
@@ -2591,6 +2758,136 @@ function wphc_perform_core_update( $dry_run = false ) {
 }
 
 /**
+ * Riconciliazione a posteriori: su alcuni siti un plugin puo' restare
+ * disattivato dopo un aggiornamento (la rete di sicurezza gia' presente in
+ * wphc_perform_item_update() tenta una riattivazione immediata, ma non
+ * copre i casi in cui la disattivazione avviene con un ritardo, ad opera di
+ * un processo esterno, o quando l'update e' stato eseguito fuori da questo
+ * agent). Confronta lo stato "atteso attivo" secondo il log
+ * (wphc_get_reactivation_candidates()) con lo stato reale corrente
+ * (is_plugin_active()) e, per ogni discrepanza trovata, tenta la
+ * riattivazione, registrando SEMPRE una riga di log per il tentativo.
+ *
+ * In dry-run (?check=1) si salta il preflight (kill-switch/lock): e' una
+ * lettura pura, nessuno stato del sito viene toccato.
+ *
+ * @param bool $dry_run True per elencare le discrepanze senza riattivare.
+ * @return array<string, mixed> Esito interno. In caso di preflight fallito,
+ *         le sole chiavi 'result' ('disabled'|'locked') e 'http' (403|409);
+ *         altrimenti 'result' => 'ok', 'http' => 200, 'discrepancies',
+ *         'reactivated', 'failed', 'results' (array di dettagli per elemento).
+ */
+function wphc_perform_reactivate( $dry_run = false ) {
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+	$candidates = wphc_get_reactivation_candidates();
+
+	// Discrepanza vera: candidato "atteso attivo" secondo l'ultima riga di
+	// log non-null per quel target, ma risulta disattivato ORA.
+	// is_plugin_active() e' l'unica fonte di verita' sullo stato reale.
+	$discrepancies = array();
+	foreach ( $candidates as $candidate ) {
+		if ( ! is_plugin_active( $candidate['target'] ) ) {
+			$discrepancies[] = $candidate;
+		}
+	}
+
+	if ( $dry_run ) {
+		$results = array();
+		foreach ( $discrepancies as $candidate ) {
+			$results[] = array(
+				'target'           => $candidate['target'],
+				'name'             => $candidate['name'],
+				'was_active'       => true,
+				'currently_active' => false,
+			);
+		}
+
+		return array(
+			'result'        => 'ok',
+			'http'          => 200,
+			'discrepancies' => count( $results ),
+			'reactivated'   => 0,
+			'failed'        => 0,
+			'results'       => $results,
+		);
+	}
+
+	$preflight = wphc_reactivate_preflight();
+	if ( true !== $preflight ) {
+		return $preflight;
+	}
+
+	// Nomi/versioni "vivi" da get_plugins(), con fallback al nome gia'
+	// registrato nel log se il plugin file nel frattempo e' sparito
+	// (disinstallato manualmente fra il log e questa chiamata).
+	$all_plugins = get_plugins();
+
+	$results     = array();
+	$reactivated = 0;
+	$failed      = 0;
+
+	foreach ( $discrepancies as $candidate ) {
+		$target       = $candidate['target'];
+		$name         = isset( $all_plugins[ $target ] ) ? $all_plugins[ $target ]['Name'] : $candidate['name'];
+		$version_from = isset( $all_plugins[ $target ] ) ? $all_plugins[ $target ]['Version'] : null;
+
+		$correlation_id = wphc_generate_correlation_id();
+		$activation     = activate_plugin( $target, '', false );
+		$now_active     = is_plugin_active( $target );
+
+		if ( is_wp_error( $activation ) || ! $now_active ) {
+			$message = is_wp_error( $activation )
+				? $activation->get_error_message()
+				: __( 'activate_plugin() non ha segnalato errori ma il plugin risulta ancora inattivo.', 'wp-health-check' );
+
+			// active = null, NON false: se si scrivesse false, questa
+			// diventerebbe la riga piu' recente non-null per il target e
+			// wphc_get_reactivation_candidates() smetterebbe di considerarlo
+			// "atteso attivo" alla prossima chiamata, non ritentando piu' la
+			// riattivazione. Con null resta valida l'ultima riga active=1
+			// precedente: la discrepanza continua a essere rilevata.
+			$log_id = wphc_log_update_row( $correlation_id, 'plugin', $target, $name, $version_from, null, 'reactivation_failed', $message, null );
+
+			$results[] = array(
+				'target'           => $target,
+				'name'             => $name,
+				'was_active'       => true,
+				'currently_active' => false,
+				'reactivated'      => false,
+				'log_id'           => $log_id,
+				'detail'           => $message,
+			);
+			++$failed;
+			continue;
+		}
+
+		$log_id = wphc_log_update_row( $correlation_id, 'plugin', $target, $name, $version_from, null, 'reactivated', null, true );
+
+		$results[] = array(
+			'target'           => $target,
+			'name'             => $name,
+			'was_active'       => true,
+			'currently_active' => true,
+			'reactivated'      => true,
+			'log_id'           => $log_id,
+		);
+		++$reactivated;
+	}
+
+	wphc_release_update_lock();
+
+	return array(
+		'result'        => 'ok',
+		'http'          => 200,
+		'discrepancies' => count( $results ),
+		'reactivated'   => $reactivated,
+		'failed'        => $failed,
+		'results'       => $results,
+	);
+}
+
+/**
  * Mappa l'array-esito interno (comune a wphc_perform_item_update() e
  * wphc_perform_core_update()) nella risposta REST contrattuale: un
  * WP_Error per gli status non-200 (403 disabled, 409 locked), altrimenti
@@ -2784,6 +3081,45 @@ function wphc_route_update_log( WP_REST_Request $request ) {
 			'count'   => count( $entries ),
 			'total'   => $total,
 			'entries' => $entries,
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: POST /update/reactivate
+// -----------------------------------------------------------------------
+
+/**
+ * Callback REST di POST /update/reactivate: riconciliazione a posteriori
+ * dello stato attivo dei plugin (vedi wphc_perform_reactivate()). Rispetta
+ * il kill-switch e il lock anti-concorrenza come le altre rotte di
+ * scrittura, salvo in dry-run (?check=1) che resta pura lettura.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error Esito della riconciliazione.
+ */
+function wphc_route_reactivate( WP_REST_Request $request ) {
+	$dry_run = wphc_request_wants_check( $request );
+	$outcome = wphc_perform_reactivate( $dry_run );
+
+	$http = isset( $outcome['http'] ) ? (int) $outcome['http'] : 200;
+
+	if ( 403 === $http ) {
+		return new WP_Error( 'wphc_updates_disabled', __( 'Aggiornamenti via API disattivati per questo sito.', 'wp-health-check' ), array( 'status' => 403 ) );
+	}
+	if ( 409 === $http ) {
+		return new WP_Error( 'wphc_update_locked', __( 'Un altro aggiornamento e\' gia\' in corso.', 'wp-health-check' ), array( 'status' => 409 ) );
+	}
+
+	return rest_ensure_response(
+		array(
+			'site'          => wphc_normalize_site_url(),
+			'generated_at'  => gmdate( 'c' ),
+			'check'         => $dry_run,
+			'discrepancies' => $outcome['discrepancies'],
+			'reactivated'   => $outcome['reactivated'],
+			'failed'        => $outcome['failed'],
+			'results'       => $outcome['results'],
 		)
 	);
 }
