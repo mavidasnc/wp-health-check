@@ -52,9 +52,67 @@ Authorization: Bearer {{token}}
 GET {{baseUrl}}/wp-json/health-check/v1/detail/server
 Authorization: Bearer {{token}}
 
+### GET /detail/users — amministratori del sito (dalla 1.23.0)
+GET {{baseUrl}}/wp-json/health-check/v1/detail/users
+Authorization: Bearer {{token}}
+
 ### POST /update — self-update da GitHub (protetta da bearer token)
 POST {{baseUrl}}/wp-json/health-check/v1/update
 Authorization: Bearer {{token}}
+
+### POST /update/plugin — aggiorna un singolo plugin (richiede il kill-switch
+# acceso in Site Health). Di default (dalla 1.24.0) aggiornabile qualsiasi
+# plugin, anche premium: vedi README.md, sezione "Restrizione ai soli
+# pacchetti ufficiali", per l'opzione che ripristina il vincolo wordpress.org.
+POST {{baseUrl}}/wp-json/health-check/v1/update/plugin
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "plugin": "akismet/akismet.php" }
+
+### POST /update/plugin — dry-run (?check=1, nessun update eseguito)
+POST {{baseUrl}}/wp-json/health-check/v1/update/plugin?check=1
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "plugin": "akismet/akismet.php" }
+
+### POST /update/theme — aggiorna un singolo tema (stessa logica di /update/plugin)
+POST {{baseUrl}}/wp-json/health-check/v1/update/theme
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "theme": "twentytwentyfour" }
+
+### POST /update/core — aggiorna il core WordPress alla versione già determinata disponibile
+POST {{baseUrl}}/wp-json/health-check/v1/update/core
+Authorization: Bearer {{token}}
+
+### POST /update/core — dry-run (?check=1)
+POST {{baseUrl}}/wp-json/health-check/v1/update/core?check=1
+Authorization: Bearer {{token}}
+
+### GET /update/log — storico degli aggiornamenti (paginato, sempre leggibile
+# anche a kill-switch spento)
+GET {{baseUrl}}/wp-json/health-check/v1/update/log?type=plugin&limit=50&offset=0
+Authorization: Bearer {{token}}
+
+### POST /update/reactivate — riconciliazione: riattiva i plugin risultati
+# disattivati dopo un update (dalla 1.23.0). Dry-run: elenca le discrepanze
+# senza riattivare, non richiede kill-switch/lock.
+POST {{baseUrl}}/wp-json/health-check/v1/update/reactivate?check=1
+Authorization: Bearer {{token}}
+
+### POST /update/reactivate — esecuzione reale (richiede il kill-switch acceso)
+POST {{baseUrl}}/wp-json/health-check/v1/update/reactivate
+Authorization: Bearer {{token}}
+
+### GET /debug — diagnostica interna, utile per capire discrepanze fra i
+# conteggi update visti in admin e via REST. Protetta da manage_options via
+# Application Password, NON dal bearer token: {{appUser}}/{{appPassword}}
+# vanno creati in Utenti → Profilo → Application Passwords.
+GET {{baseUrl}}/wp-json/health-check/v1/debug
+Authorization: Basic {{appUser}} {{appPassword}}
 
 ### POST /autologin/token — genera un token one-time per aprire wp-admin già
 # autenticati (vedi README.md, sezione "Autologin"). Protetta da

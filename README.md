@@ -882,9 +882,11 @@ incrementale è paragonabile a quello di un amministratore che clicca
 Due controlli aggiuntivi, entrambi indipendenti dal payload:
 
 - **Allowlist dell'host del pacchetto** (`wphc_is_package_host_allowed()`):
-  solo `downloads.wordpress.org` e `api.wordpress.org`. Copre di fatto i
-  plugin/temi **premium** (che si aggiornano da server propri): vengono
-  sempre rifiutati con `not_updatable`, in v1 non sono aggiornabili via API.
+  **opzionale e spenta di default dalla `1.24.0`** (vedi
+  ["Restrizione ai soli pacchetti ufficiali"](#restrizione-ai-soli-pacchetti-ufficiali-opzionale)
+  sotto); se accesa per singolo sito, ammette solo `downloads.wordpress.org`
+  e `api.wordpress.org`, escludendo i plugin/temi **premium** (che si
+  aggiornano da server propri) con `not_updatable`.
 - **`sslverify` sempre attivo** (default della WP HTTP API di WordPress): mai
   disabilitato.
 
@@ -896,6 +898,29 @@ checkbox nella [tab Site Health](#tab-site-health). A interruttore spento,
 `POST /update/plugin`, `/update/theme` e `/update/core` rispondono
 `403 disabled` **prima** di qualunque altra elaborazione; `GET /update/log`
 resta invece sempre leggibile (è sola lettura).
+
+### Restrizione ai soli pacchetti ufficiali (opzionale)
+
+Dalla `1.24.0`, un secondo checkbox nello stesso form della tab Site Health
+(opzione `wp_health_check_restrict_official_only`, **spenta di default**)
+permette di ripristinare, per singolo sito, la restrizione storica ai soli
+pacchetti ospitati su `downloads.wordpress.org`/`api.wordpress.org`: con la
+restrizione spenta (default) qualsiasi plugin/tema è aggiornabile via API,
+inclusi i premium; con la restrizione accesa, un plugin/tema premium
+restituisce sempre `result: "not_updatable"`.
+
+Rendere questa restrizione opzionale (anziché hardcoded, come fino alla
+`1.23.0`) non indebolisce il [vincolo di sicurezza non
+negoziabile](#il-vincolo-di-sicurezza-non-negoziabile) sopra: l'host
+controllato da `wphc_is_package_host_allowed()` non è mai un valore fornito
+dalla richiesta REST — è sempre quello che il sistema di aggiornamento del
+sito **stesso** ha già determinato (il transient del core, o quello di un
+update-checker premium già attivo su quel sito). Un token compromesso non
+guadagna quindi nessuna capacità nuova togliendo questa restrizione dal
+default: non può comunque indicare una sorgente arbitraria. La allowlist era
+una scelta editoriale ("i premium non sono supportati in v1"), non una
+barriera contro un vettore di attacco — da qui la scelta di renderla
+un'opzione per sito anziché un vincolo fisso.
 
 ### Flusso comune (plugin e temi)
 
@@ -1154,9 +1179,13 @@ di ciò che queste rotte espongono.
 Dalla `1.18.0` questo perimetro include anche l'aggiornamento di plugin/temi/core
 già installati (vedi [sezione dedicata](#aggiornamento-di-plugin-temi-e-core-via-api)),
 disattivabile per singolo sito tramite il kill-switch (acceso di default dalla
-`1.19.0`), e **solo** verso la versione che wordpress.org ha già pubblicato per
-quell'elemento — mai un'installazione ex novo di software non presente sul
-sito, mai una sorgente o versione indicata dal token compromesso stesso.
+`1.19.0`), e **solo** verso la versione che il sistema di aggiornamento del
+sito stesso ha già determinato disponibile per quell'elemento (il core via
+wordpress.org, oppure — di default dalla `1.24.0`, salvo restrizione
+esplicita, vedi [sopra](#restrizione-ai-soli-pacchetti-ufficiali-opzionale) —
+un update-checker premium già attivo su quel sito) — mai un'installazione ex
+novo di software non presente sul sito, mai una sorgente o versione indicata
+dal token compromesso stesso.
 
 **Trasmissione del token nell'enroll.** Il token viaggia in chiaro (via HTTPS) nel
 payload di `/enroll`: è protetto in transito da TLS, non da un ulteriore livello di
@@ -1312,7 +1341,14 @@ Un checkbox separato (dalla `1.18.0`), **"Consenti aggiornamenti (plugin, temi,
 core) via API"**, governa il kill-switch `wp_health_check_updates_enabled` (vedi
 [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)):
 acceso di default dalla `1.19.0`, va disattivato esplicitamente per i siti su
-cui non si vuole consentire l'aggiornamento via API.
+cui non si vuole consentire l'aggiornamento via API. Nello stesso form, un
+secondo checkbox (dalla `1.24.0`), **"Limita gli aggiornamenti ai soli
+pacchetti ospitati su wordpress.org (esclude i plugin/temi premium)"**,
+governa `wp_health_check_restrict_official_only` (vedi
+[Restrizione ai soli pacchetti ufficiali](#restrizione-ai-soli-pacchetti-ufficiali-opzionale)):
+spento di default (qualsiasi plugin/tema è aggiornabile), va acceso
+esplicitamente per i siti su cui si vuole escludere i plugin/temi premium
+dall'aggiornamento via API.
 
 Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce

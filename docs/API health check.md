@@ -11,8 +11,11 @@ con l'agent **1.18.0** insieme ai campi `updates_via_api_enabled`,
 `last_update` e `maintenance_stuck` di `/health` (colonna/campo `active` e
 risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
 `/autologin/token`, aggiunta con l'agent **1.22.0**; `/detail/users` e
-`POST /update/reactivate`, aggiunte con l'agent **1.23.0**; sono documentate
-nelle sezioni dedicate in fondo.
+`POST /update/reactivate`, aggiunte con l'agent **1.23.0**; il campo
+`summary.restrict_official_only` di `/health` e l'inversione del default
+della restrizione host su `/update/plugin`/`/update/theme`/`/update/core`
+(prima sempre attiva, ora opzionale e spenta di default), introdotti con
+l'agent **1.24.0**; sono documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -303,6 +306,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
     "mu_dir_writable": true,
     "updates_checked_at": "2026-07-09T07:50:53+00:00",
     "updates_via_api_enabled": true,
+    "restrict_official_only": false,
     "last_update": {
       "type": "plugin",
       "target": "akismet/akismet.php",
@@ -347,6 +351,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.mu_dir_writable` | bool | `true` se `WPMU_PLUGIN_DIR` è scrivibile (self-update possibile) |
 | `summary.updates_checked_at` | string \| null | Ultimo check aggiornamenti del cron (ISO 8601) |
 | `summary.updates_via_api_enabled` | bool | Stato del kill-switch `wp_health_check_updates_enabled` per `/update/plugin`, `/update/theme`, `/update/core`, `/update/reactivate` |
+| `summary.restrict_official_only` | bool | Stato dell'opzione `wp_health_check_restrict_official_only`; `false` di default (dall'agent **1.24.0**) — `true` se il sito limita gli aggiornamenti ai soli pacchetti ospitati su wordpress.org |
 | `summary.last_update` | object \| null | Esito dell'ultima operazione di update via API, o `null` se non ancora eseguita; vedi sotto |
 | `summary.last_update.type` | string | `plugin` \| `theme` \| `core` |
 | `summary.last_update.target` | string | Plugin file, stylesheet, oppure `core` |
@@ -689,13 +694,22 @@ Tutti gli errori di rete/release restituiscono un `WP_Error`:
 
 ## `POST /update/plugin`, `POST /update/theme`
 
-Aggiornano, da wordpress.org soltanto, un singolo plugin o tema già installato
-sul sito, tramite `Plugin_Upgrader`/`Theme_Upgrader` con rollback via
-temp-backup nativo (richiede **WordPress ≥ 6.3**). Distinte dal self-update
-dell'agent (`POST /update` sopra): qui si aggiorna software di terze parti,
-non l'agent stesso. Vedi il razionale completo e il flusso passo-passo nella
-sezione [Aggiornamento di plugin, temi e core via
+Aggiornano un singolo plugin o tema già installato sul sito, tramite
+`Plugin_Upgrader`/`Theme_Upgrader` con rollback via temp-backup nativo
+(richiede **WordPress ≥ 6.3**). Distinte dal self-update dell'agent
+(`POST /update` sopra): qui si aggiorna software di terze parti, non l'agent
+stesso. Vedi il razionale completo e il flusso passo-passo nella sezione
+[Aggiornamento di plugin, temi e core via
 API](../README.md#aggiornamento-di-plugin-temi-e-core-via-api) del README.
+
+Di default (dalla `1.24.0`) è aggiornabile **qualsiasi** plugin/tema, inclusi
+quelli **premium** (aggiornati da server propri). Se l'opzione "Limita gli
+aggiornamenti ai soli pacchetti ospitati su wordpress.org" è attiva per il
+sito (checkbox nella tab Site Health, spento di default), un plugin/tema
+premium restituisce sempre `result: "not_updatable"` — vedi [Restrizione ai
+soli pacchetti
+ufficiali](../README.md#restrizione-ai-soli-pacchetti-ufficiali-opzionale)
+del README.
 
 **Auth:** Bearer token. **Richiede inoltre** il kill-switch
 `wp_health_check_updates_enabled` acceso (altrimenti `403 disabled`).
@@ -745,6 +759,13 @@ Altri esiti (`result`):
 { "updated": false, "result": "rolled_back", "detail": "...", "log_id": 1290 }
 { "updated": false, "result": "failed", "detail": "...", "log_id": 1290 }
 ```
+
+`not_updatable` con `detail: "pacchetto non ospitato su wordpress.org"`
+compare **solo** se l'opzione "Limita gli aggiornamenti ai soli pacchetti
+ospitati su wordpress.org" è attiva per il sito e l'elemento è un plugin/tema
+premium; con l'opzione spenta (default dalla `1.24.0`) questo esito non si
+verifica più per i premium (resta possibile per altre cause, es. pacchetto
+senza URL nel transient).
 
 Esito **solo per `POST /update/plugin`** (dalla `1.21.0`): il file è stato
 aggiornato correttamente, ma il plugin era attivo prima dell'update e la

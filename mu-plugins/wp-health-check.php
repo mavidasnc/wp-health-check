@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.23.0
+ * Version:     1.24.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.23.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.24.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -1188,6 +1188,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'mu_dir_writable'         => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
 			'updates_checked_at'      => $updates_checked_at,
 			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', true ),
+			'restrict_official_only'  => (bool) get_option( 'wp_health_check_restrict_official_only', false ),
 			'last_update'             => $last_update ? $last_update : null,
 			'maintenance_stuck'       => $maintenance_stuck,
 		),
@@ -2169,16 +2170,28 @@ function wphc_clear_stale_maintenance( $max_age_seconds = 600 ) {
 }
 
 /**
- * Verifica che l'host del pacchetto di update sia nell'allowlist
- * wordpress.org: unico controllo che impedisce a un plugin/tema premium
- * (con update-checker proprio, package su host terzi) di essere scaricato
- * ed eseguito da questa rotta. Copre anche il caso di un transient
- * avvelenato da un filtro di terze parti.
+ * Verifica che l'host del pacchetto di update sia ammesso. Di DEFAULT
+ * ammette qualunque host: l'update via API puo' aggiornare qualsiasi
+ * plugin/tema, non solo quelli ospitati su wordpress.org. Questo non e' un
+ * indebolimento del vincolo di sicurezza non negoziabile (vedi README.md,
+ * "Il vincolo di sicurezza non negoziabile"): il payload REST non accetta
+ * MAI un package_url o una version dal chiamante, quindi $package_url qui e'
+ * sempre un valore che il sistema di aggiornamento del sito STESSO ha gia'
+ * determinato (transient del core, o di un update-checker premium gia'
+ * attivo), mai un input della richiesta. Se l'opzione
+ * wp_health_check_restrict_official_only e' attiva, si applica invece la
+ * allowlist storica (solo downloads.wordpress.org/api.wordpress.org), per i
+ * siti che vogliono escludere esplicitamente i plugin/temi premium
+ * dall'update via API: vedi il checkbox dedicato nella tab Site Health.
  *
  * @param string $package_url URL del pacchetto da scaricare.
  * @return bool True se l'host e' ammesso.
  */
 function wphc_is_package_host_allowed( $package_url ) {
+	if ( ! get_option( 'wp_health_check_restrict_official_only', false ) ) {
+		return true;
+	}
+
 	$host = wp_parse_url( (string) $package_url, PHP_URL_HOST );
 	return in_array( $host, array( 'downloads.wordpress.org', 'api.wordpress.org' ), true );
 }
@@ -3422,6 +3435,7 @@ function wphc_render_site_health_tab( $tab ) {
 	$trust_proxy             = (bool) get_option( 'wp_health_check_trust_proxy', false );
 	$last_enroll_error       = get_option( 'wp_health_check_last_enroll_error' );
 	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', true );
+	$restrict_official_only  = (bool) get_option( 'wp_health_check_restrict_official_only', false );
 
 	$candidates       = wphc_candidate_site_urls();
 	$canonical_home   = wphc_normalize_site_url();
@@ -3758,7 +3772,7 @@ function wphc_render_site_health_tab( $tab ) {
 
 		<h3><?php esc_html_e( 'Aggiornamenti plugin, temi e core via API', 'wp-health-check' ); ?></h3>
 		<p class="description">
-			<?php esc_html_e( 'Interruttore master: quando spento, le rotte POST /update/plugin, /update/theme e /update/core rifiutano ogni richiesta con 403 (GET /update/log resta sempre leggibile). Solo pacchetti ospitati su wordpress.org; rollback automatico via temp-backup nativo di WordPress per plugin e temi.', 'wp-health-check' ); ?>
+			<?php esc_html_e( 'Interruttore master: quando spento, le rotte POST /update/plugin, /update/theme e /update/core rifiutano ogni richiesta con 403 (GET /update/log resta sempre leggibile). Di default e\' aggiornabile qualsiasi plugin/tema, non solo quelli ospitati su wordpress.org (vedi checkbox sotto); rollback automatico via temp-backup nativo di WordPress per plugin e temi.', 'wp-health-check' ); ?>
 		</p>
 		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<input type="hidden" name="action" value="wphc_toggle_updates" />
@@ -3767,6 +3781,12 @@ function wphc_render_site_health_tab( $tab ) {
 				<label>
 					<input type="checkbox" name="wphc_updates_enabled" value="1" <?php checked( $updates_via_api_enabled ); ?> />
 					<?php esc_html_e( 'Consenti aggiornamenti (plugin, temi, core) via API', 'wp-health-check' ); ?>
+				</label>
+			</p>
+			<p>
+				<label>
+					<input type="checkbox" name="wphc_restrict_official_only" value="1" <?php checked( $restrict_official_only ); ?> />
+					<?php esc_html_e( 'Limita gli aggiornamenti ai soli pacchetti ospitati su wordpress.org (esclude i plugin/temi premium)', 'wp-health-check' ); ?>
 				</label>
 			</p>
 			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
@@ -4015,10 +4035,12 @@ function wphc_handle_reset_enrollment() {
 add_action( 'admin_post_wphc_reset_enrollment', 'wphc_handle_reset_enrollment' );
 
 /**
- * Handler di admin-post.php per il checkbox "Consenti aggiornamenti
- * (plugin, temi, core) via API" nella tab Site Health: unico interruttore
- * master (§5 della specifica) da cui dipendono le rotte POST /update/{plugin,
- * theme,core}.
+ * Handler di admin-post.php per i checkbox "Consenti aggiornamenti (plugin,
+ * temi, core) via API" e "Limita gli aggiornamenti ai soli pacchetti
+ * ospitati su wordpress.org" nella tab Site Health: stesso form/nonce, unico
+ * interruttore master (§5 della specifica) da cui dipendono le rotte
+ * POST /update/{plugin,theme,core}, piu' la sotto-opzione che ne restringe
+ * l'host del pacchetto (vedi wphc_is_package_host_allowed()).
  */
 function wphc_handle_toggle_updates() {
 	if ( ! current_user_can( 'manage_options' ) ) {
@@ -4027,6 +4049,7 @@ function wphc_handle_toggle_updates() {
 	check_admin_referer( 'wphc_toggle_updates' );
 
 	update_option( 'wp_health_check_updates_enabled', ! empty( $_POST['wphc_updates_enabled'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+	update_option( 'wp_health_check_restrict_official_only', ! empty( $_POST['wphc_restrict_official_only'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
 
 	wp_safe_redirect(
 		add_query_arg(

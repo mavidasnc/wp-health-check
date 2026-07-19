@@ -7,6 +7,32 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-07-20
+
+### Changed
+
+- **Inversione del default della restrizione host su `POST /update/plugin`,
+  `POST /update/theme` e `POST /update/core`**: di default è ora aggiornabile
+  **qualsiasi** plugin/tema, inclusi quelli **premium** (aggiornati da server
+  propri) — fino alla `1.23.0` la allowlist (`downloads.wordpress.org`/
+  `api.wordpress.org`) era hardcoded e sempre attiva, rifiutando sempre i
+  premium con `result: "not_updatable"`. Non è un indebolimento del vincolo
+  di sicurezza non negoziabile (nessun `package_url`/`version` accettato nel
+  payload): l'host controllato non è mai un valore fornito dalla richiesta
+  REST, ma quello che il sistema di aggiornamento del sito stesso ha già
+  determinato (transient del core, o di un update-checker premium già
+  attivo). La allowlist storica resta disponibile come **opzione per sito**.
+
+### Added
+
+- Nuovo checkbox nella tab Site Health, nello stesso form del kill-switch
+  aggiornamenti: "Limita gli aggiornamenti ai soli pacchetti ospitati su
+  wordpress.org (esclude i plugin/temi premium)" (opzione
+  `wp_health_check_restrict_official_only`, spenta di default; persiste a un
+  reset enrollment come `wp_health_check_updates_enabled`).
+- `GET /health` → `summary`: nuovo booleano `restrict_official_only`, stato
+  della nuova opzione.
+
 ## [1.23.0] - 2026-07-19
 
 ### Added
