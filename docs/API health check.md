@@ -15,7 +15,9 @@ risultato `reactivation_failed` aggiunti con l'agent **1.21.0**);
 `summary.restrict_official_only` di `/health` e l'inversione del default
 della restrizione host su `/update/plugin`/`/update/theme`/`/update/core`
 (prima sempre attiva, ora opzionale e spenta di default), introdotti con
-l'agent **1.24.0**; sono documentate nelle sezioni dedicate in fondo.
+l'agent **1.24.0**; i valori `token`/`login` del campo `type` di
+`GET /update/log` (audit trail di `POST /autologin/token`), introdotti con
+l'agent **1.25.0**; sono documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -845,7 +847,7 @@ quindi nessun `400` specifico.
 Lettura paginata della tabella di log degli aggiornamenti (plugin, temi,
 core). Sola lettura: **sempre accessibile anche a kill-switch spento**.
 
-**Auth:** Bearer token. **Query:** `type` (`plugin`\|`theme`\|`core`,
+**Auth:** Bearer token. **Query:** `type` (`plugin`\|`theme`\|`core`\|`token`\|`login`,
 opzionale), `limit` (default 50, max 200), `offset` (default 0). **Cache:** nessuna.
 
 ### Esempio di richiesta
@@ -860,9 +862,21 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 ```json
 {
   "site": "https://esempio.com",
-  "count": 3,
-  "total": 138,
+  "count": 5,
+  "total": 140,
   "entries": [
+    {
+      "id": 1307, "correlation_id": "c3d4e5f6a1b20718", "created_at": "2026-07-20T09:10:05+00:00",
+      "type": "login", "target": "admin", "name": "Amministratore",
+      "version_from": null, "version_to": null,
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null
+    },
+    {
+      "id": 1306, "correlation_id": "c3d4e5f6a1b20718", "created_at": "2026-07-20T09:10:00+00:00",
+      "type": "token", "target": "admin", "name": "Amministratore",
+      "version_from": null, "version_to": null,
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null
+    },
     {
       "id": 1305, "correlation_id": "b2c3d4e5f6071829", "created_at": "2026-07-19T08:05:10+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
@@ -885,27 +899,42 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 }
 ```
 
-La prima riga dell'esempio (`id: 1305`) è una riga scritta da `POST
-/update/reactivate` (vedi sotto): stessa tabella di log dell'update, quindi
-visibile anche da qui. `version_to` è sempre `null` per queste righe (una
-riattivazione non cambia la versione installata); `correlation_id` è nuovo per
-ogni tentativo, non condiviso con l'operazione di update originaria.
+Le righe `id: 1306`/`1307` sono l'audit trail dell'autologin (dall'agent
+**1.25.0**, vedi [`POST /autologin/token`](#post-autologintoken)):
+`type: "token"` alla richiesta del token, `type: "login"` al consumo
+riuscito, stesso `correlation_id` a collegarle. Per queste due righe `target`
+è lo `user_login` dell'utente coinvolto e `name` il suo `display_name`
+(fallback a `user_login` se vuoto); `version_from`/`version_to`/`active` sono
+sempre `null` (non applicabili). Un tentativo di consumo **fallito** (token
+sconosciuto/scaduto/già consumato, o utente cancellato nel frattempo) produce
+comunque una riga `type: "login"` con `phase: "failed"` e `message`
+valorizzato: se il token non è più risolvibile (nessuna identità
+recuperabile), `target` è un prefisso dell'hash del token invece dello
+`user_login` (permette di riconoscere tentativi ripetuti con lo stesso token
+senza esporlo in chiaro) e il `correlation_id` è nuovo, non collegato ad
+alcuna riga `token` precedente.
+
+La riga `id: 1305` è invece scritta da `POST /update/reactivate` (vedi
+sotto): stessa tabella di log dell'update, quindi visibile anche da qui.
+`version_to` è sempre `null` per queste righe (una riattivazione non cambia
+la versione installata); `correlation_id` è nuovo per ogni tentativo, non
+condiviso con l'operazione di update originaria.
 
 ### Campi (per elemento di `entries`)
 
 | Campo | Tipo | Note |
 |---|---|---|
 | `id` | int | ID della riga |
-| `correlation_id` | string | Lega le righe `requested`/finale della stessa operazione (per le righe di `POST /update/reactivate`, un id nuovo per ogni tentativo: vedi sotto) |
+| `correlation_id` | string | Lega le righe `requested`/finale della stessa operazione (per le righe di `POST /update/reactivate`, un id nuovo per ogni tentativo; per `token`/`login`, vedi nota sopra) |
 | `created_at` | string | Timestamp ISO 8601 UTC della riga |
-| `type` | string | `plugin` \| `theme` \| `core` |
-| `target` | string | Plugin file, stylesheet, oppure `core` |
-| `name` | string | Nome leggibile dell'elemento |
-| `version_from` / `version_to` | string \| null | Versione installata / target; `version_to` sempre `null` sulle righe `reactivated`/`reactivation_failed` (nessun cambio di versione) |
-| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` (da `POST /update/plugin`/`/theme`/`/core`), oppure `reactivated` \| `reactivation_failed` (da `POST /update/reactivate`, dalla `1.23.0`; colonna allargata a `VARCHAR(32)` per ospitarli) |
-| `message` | string \| null | Dettaglio in caso di errore/rollback/riattivazione fallita |
+| `type` | string | `plugin` \| `theme` \| `core`, oppure `token` \| `login` (audit trail autologin, dall'agent **1.25.0**) |
+| `target` | string | Plugin file, stylesheet, `core`, oppure per `token`/`login` lo `user_login` dell'utente (o un identificatore di ripiego se non recuperabile: vedi nota sopra) |
+| `name` | string | Nome leggibile dell'elemento; per `token`/`login` il `display_name` dell'utente (fallback `user_login`) |
+| `version_from` / `version_to` | string \| null | Versione installata / target; `version_to` sempre `null` sulle righe `reactivated`/`reactivation_failed` (nessun cambio di versione); entrambi sempre `null` per `token`/`login` |
+| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` (da `POST /update/plugin`/`/theme`/`/core`), oppure `reactivated` \| `reactivation_failed` (da `POST /update/reactivate`, dalla `1.23.0`; colonna allargata a `VARCHAR(32)` per ospitarli); `token`/`login` riusano `completed`/`failed`, nessun valore nuovo |
+| `message` | string \| null | Dettaglio in caso di errore/rollback/riattivazione fallita, o motivo di un consumo autologin fallito |
 | `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
-| `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core`; sulle righe `reactivation_failed` è sempre `null` anziché `false` (vedi [`POST /update/reactivate`](#post-updatereactivate)) |
+| `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core`/`token`/`login`; sulle righe `reactivation_failed` è sempre `null` anziché `false` (vedi [`POST /update/reactivate`](#post-updatereactivate)) |
 
 ---
 
@@ -1086,6 +1115,17 @@ ricevere e conservare il cookie di sessione). L'agent intercetta il parametro
 Il token viene cancellato **prima** di procedere con il login, indipendentemente
 dall'esito: un secondo tentativo con lo stesso `autologin_url` restituisce
 sempre e solo il redirect al login.
+
+### Audit trail (dall'agent 1.25.0)
+
+Sia la richiesta del token sia il suo consumo lasciano una riga nella tabella
+di log consultabile con [`GET /update/log`](#get-updatelog): `type: "token"`
+alla chiamata di questa rotta, `type: "login"` al consumo (riuscito o
+fallito), collegate dallo stesso `correlation_id` quando l'identità è
+recuperabile. Vedi la nota dedicata nella sezione `GET /update/log` per il
+dettaglio dei campi `target`/`name` in questi casi. Resta inoltre invariata
+l'opzione `wp_health_check_last_autologin`, che conserva solo l'ultima
+richiesta (non uno storico).
 
 ### Errori
 

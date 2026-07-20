@@ -7,6 +7,30 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-07-20
+
+### Added
+
+- **Audit trail per l'autologin**: `POST /autologin/token` e il consumo del
+  token (`wphc_maybe_consume_autologin()`) scrivono ora ciascuno una riga
+  nella tabella di log esistente (`wphc_update_log`, la stessa di
+  `GET /update/log`), invece di lasciare traccia solo nell'opzione
+  `wp_health_check_last_autologin` (che continua a esistere, ma conserva solo
+  l'ultima richiesta). Nuovi valori del campo `type`: `token` (alla
+  richiesta) e `login` (al consumo, riuscito o fallito), collegati dallo
+  stesso `correlation_id` quando l'identità è recuperabile. Per queste righe
+  `target` è lo `user_login` dell'utente coinvolto e `name` il suo
+  `display_name` (fallback `user_login`); su un consumo fallito con token
+  del tutto sconosciuto/scaduto (nessuna identità recuperabile), `target` è
+  un prefisso dell'hash del token e il `correlation_id` è nuovo, non
+  collegato ad alcuna riga `token` precedente. Riusa `phase` `completed`/
+  `failed` già esistenti, nessun nuovo valore. Nessuna modifica di schema:
+  `type VARCHAR(10)` ospita già `token`/`login`.
+- L'allowlist del filtro `?type=` di `GET /update/log` (`wphc_route_update_log()`)
+  è stata estesa con `token`/`login`, altrimenti il filtro sarebbe stato
+  silenziosamente ignorato per questi due valori (nessun filtro applicato,
+  non un errore).
+
 ## [1.24.0] - 2026-07-20
 
 ### Changed

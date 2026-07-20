@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.24.0
+ * Version:     1.25.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.24.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.25.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -2017,17 +2017,26 @@ add_action( 'init', 'wphc_maybe_install_update_log_schema' );
  * ('completed' / 'failed' / 'rolled_back').
  *
  * @param string      $correlation_id Lega le righe della stessa operazione.
- * @param string      $type           'plugin' | 'theme' | 'core'.
- * @param string      $target         Plugin file, stylesheet, oppure 'core'.
- * @param string      $name           Nome leggibile dell'elemento.
- * @param string|null $version_from   Versione installata prima dell'update.
- * @param string|null $version_to     Versione target/attesa (dal transient del core).
+ * @param string      $type           'plugin' | 'theme' | 'core' | 'token' | 'login' (questi
+ *                                    ultimi due dall'audit trail dell'autologin, vedi
+ *                                    wphc_route_autologin_token()/wphc_maybe_consume_autologin()).
+ * @param string      $target         Plugin file, stylesheet, 'core', oppure per 'token'/'login'
+ *                                    lo user_login dell'utente coinvolto (o, quando l'identita'
+ *                                    non e' recuperabile, un identificatore di ripiego: user_id
+ *                                    o prefisso hash del token).
+ * @param string      $name           Nome leggibile dell'elemento; per 'token'/'login' il
+ *                                    display_name dell'utente (fallback a user_login).
+ * @param string|null $version_from   Versione installata prima dell'update; sempre null per
+ *                                    'token'/'login'.
+ * @param string|null $version_to     Versione target/attesa (dal transient del core); sempre
+ *                                    null per 'token'/'login'.
  * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back' |
  *                                    'reactivated' | 'reactivation_failed' (questi ultimi due
- *                                    solo da wphc_perform_reactivate()).
+ *                                    solo da wphc_perform_reactivate()); 'token'/'login' riusano
+ *                                    'completed'/'failed', nessun valore nuovo per loro.
  * @param string|null $message        Dettaglio in caso di errore/rollback.
  * @param bool|null   $active         Stato attivo dell'elemento in questo momento
- *                                    (solo plugin: true/false; null per temi/core
+ *                                    (solo plugin: true/false; null per temi/core/token/login
  *                                    o quando non rilevato).
  * @return int ID della riga inserita (0 se l'insert fallisce).
  */
@@ -3051,7 +3060,7 @@ function wphc_route_update_log( WP_REST_Request $request ) {
 	$limit  = $limit > 0 ? min( 200, $limit ) : 50;
 	$offset = max( 0, (int) $request->get_param( 'offset' ) );
 
-	$type_filter = in_array( $type, array( 'plugin', 'theme', 'core' ), true ) ? $type : '';
+	$type_filter = in_array( $type, array( 'plugin', 'theme', 'core', 'token', 'login' ), true ) ? $type : '';
 
 	if ( '' !== $type_filter ) {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
@@ -3306,13 +3315,25 @@ function wphc_route_autologin_token( WP_REST_Request $request ) {
 
 	$user = wp_get_current_user();
 
-	$token = bin2hex( random_bytes( 32 ) );
-	$key   = 'wphc_autologin_' . hash( 'sha256', $token );
+	$token          = bin2hex( random_bytes( 32 ) );
+	$key            = 'wphc_autologin_' . hash( 'sha256', $token );
+	$correlation_id = wphc_generate_correlation_id();
 
-	set_transient( $key, $user->ID, WP_HEALTH_CHECK_AUTOLOGIN_TTL );
+	// Il transient custodisce anche il correlation_id, cosi' la riga di log
+	// del consumo (wphc_maybe_consume_autologin()) puo' collegarsi a questa
+	// riga di richiesta senza dover ricalcolare o esporre nulla in piu'.
+	set_transient(
+		$key,
+		array(
+			'user_id'        => $user->ID,
+			'correlation_id' => $correlation_id,
+		),
+		WP_HEALTH_CHECK_AUTOLOGIN_TTL
+	);
 
-	// Audit minimo (non una tabella dedicata): solo l'ultimo autologin
-	// richiesto, sullo stesso spirito di wphc_record_access().
+	// Audit minimo pre-esistente (non una tabella dedicata): solo l'ultimo
+	// autologin richiesto, sullo stesso spirito di wphc_record_access().
+	// Resta accanto alla riga di log sotto (che invece conserva lo storico).
 	update_option(
 		'wp_health_check_last_autologin',
 		array(
@@ -3323,6 +3344,13 @@ function wphc_route_autologin_token( WP_REST_Request $request ) {
 		),
 		false
 	);
+
+	// Riga di log dell'audit trail: type='token', target/name identificano
+	// l'utente per cui e' stato generato (stesso schema tecnico/leggibile
+	// gia' usato per plugin/temi/core, dove target e' l'identificatore e
+	// name l'etichetta). version_from/to e active non si applicano: null.
+	wphc_log_update_row( $correlation_id, 'token', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
+
 	if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
 		error_log( sprintf( 'wp-health-check: autologin token generato per user #%d (%s)', $user->ID, $user->user_login ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	}
@@ -3348,7 +3376,16 @@ function wphc_route_autologin_token( WP_REST_Request $request ) {
  * Fail-closed: qualunque anomalia (token assente, scaduto/già consumato,
  * utente inesistente) porta a un redirect silenzioso al login, senza
  * distinguere il motivo nella risposta — stesso principio di
- * wphc_require_token() per le rotte dati.
+ * wphc_require_token() per le rotte dati. Ogni esito (riuscito o fallito)
+ * lascia comunque una riga type='login' nella tabella di log: sul successo
+ * riusa il correlation_id della riga 'token' corrispondente; se il token e'
+ * del tutto sconosciuto/scaduto (transient gia' assente) non c'e' alcuna
+ * identita' recuperabile, quindi si logga con un correlation_id nuovo e
+ * target = prefisso dell'hash del token (permette di riconoscere tentativi
+ * ripetuti con lo stesso token senza esporlo in chiaro); se il token e'
+ * valido ma l'utente e' stato nel frattempo cancellato, si riusa comunque il
+ * correlation_id della riga 'token', con target = user_id (non si dispone
+ * piu' dello user_login).
  */
 function wphc_maybe_consume_autologin() {
 	if ( empty( $_GET['wphc_autologin'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- il token stesso e' la credenziale one-time, non serve un nonce di sessione.
@@ -3358,20 +3395,44 @@ function wphc_maybe_consume_autologin() {
 	$token = sanitize_text_field( wp_unslash( $_GET['wphc_autologin'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 	$key   = 'wphc_autologin_' . hash( 'sha256', $token );
 
-	$user_id = get_transient( $key );
+	$data = get_transient( $key );
 
 	// Consumo single-use: il transient viene cancellato SUBITO dopo la
 	// lettura, indipendentemente dall'esito, per chiudere la finestra di
 	// replay al primo utilizzo anche se l'utente risultasse poi invalido.
 	delete_transient( $key );
 
-	if ( false === $user_id ) {
+	if ( ! is_array( $data ) || empty( $data['user_id'] ) ) {
+		// Token sconosciuto, scaduto o gia' consumato: nessuna identita'
+		// recuperabile. target = prefisso dell'hash del token (stesso hash
+		// gia' calcolato per la chiave del transient), per poter comunque
+		// distinguere tentativi ripetuti con lo stesso token nei log.
+		wphc_log_update_row(
+			wphc_generate_correlation_id(),
+			'login',
+			substr( hash( 'sha256', $token ), 0, 16 ),
+			__( 'Token sconosciuto o scaduto', 'wp-health-check' ),
+			null,
+			null,
+			'failed',
+			__( 'Token assente, scaduto o gia\' consumato.', 'wp-health-check' )
+		);
 		wp_safe_redirect( wp_login_url() );
 		exit;
 	}
 
-	$user = get_user_by( 'id', (int) $user_id );
+	$user = get_user_by( 'id', (int) $data['user_id'] );
 	if ( ! $user ) {
+		wphc_log_update_row(
+			$data['correlation_id'],
+			'login',
+			(string) $data['user_id'],
+			__( 'Utente non trovato', 'wp-health-check' ),
+			null,
+			null,
+			'failed',
+			__( 'L\'utente e\' stato eliminato dopo la richiesta del token.', 'wp-health-check' )
+		);
 		wp_safe_redirect( wp_login_url() );
 		exit;
 	}
@@ -3380,6 +3441,8 @@ function wphc_maybe_consume_autologin() {
 	wp_set_auth_cookie( $user->ID, true );
 	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si invoca l'hook core "wp_login" (non se ne dichiara uno nuovo), cosi' i plugin di audit/2FA che vi si agganciano reagiscono anche a questo login.
 	do_action( 'wp_login', $user->user_login, $user );
+
+	wphc_log_update_row( $data['correlation_id'], 'login', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
 
 	wp_safe_redirect( admin_url() );
 	exit;

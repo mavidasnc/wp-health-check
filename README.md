@@ -696,12 +696,18 @@ Il callback (`wphc_route_autologin_token()`):
 2. genera un token casuale a 256 bit (`random_bytes( 32 )`, CSPRNG — mai
    `rand()`/`uniqid()`);
 3. salva un transient con **chiave** l'hash SHA-256 del token (mai il token
-   in chiaro) e **valore** l'ID utente, con TTL
-   `WP_HEALTH_CHECK_AUTOLOGIN_TTL` (20 secondi di default);
+   in chiaro) e **valore** un array `{ user_id, correlation_id }`, con TTL
+   `WP_HEALTH_CHECK_AUTOLOGIN_TTL` (20 secondi di default) — il
+   `correlation_id` permette di collegare la riga di log di questo passo a
+   quella scritta al passo 2, quando il token viene consumato;
 4. registra un audit minimo in `wp_health_check_last_autologin` (user, IP,
-   timestamp) — nessuna tabella dedicata, stesso spirito di
-   `wphc_record_access()`;
-5. risponde con `autologin_url`, pronto per essere aperto nel browser.
+   timestamp) — nessuna tabella dedicata, solo l'ultima richiesta, stesso
+   spirito di `wphc_record_access()`;
+5. **dall'agent 1.25.0**, scrive anche una riga `type: "token"` nella tabella
+   di log (`wphc_update_log`, la stessa di `GET /update/log`): `target` è lo
+   `user_login`, `name` il `display_name` (fallback `user_login`) — questa
+   sì è uno storico consultabile, non un singolo valore sovrascritto;
+6. risponde con `autologin_url`, pronto per essere aperto nel browser.
 
 ### Passo 2 — consumo del token, fuori dalla REST API
 
@@ -721,13 +727,23 @@ Il flusso, fail-closed su qualunque anomalia (stesso principio di
 2. token presente: lookup del transient per hash, poi **cancellazione
    immediata** (consumo single-use, prima di procedere) — un secondo
    tentativo con lo stesso token trova sempre il transient già scaduto;
-3. transient assente/scaduto, o utente associato non più esistente →
-   redirect silenzioso a `wp_login_url()`;
-4. token valido → `wp_set_current_user()` + `wp_set_auth_cookie( $user_id, true )`
+3. transient assente/scaduto/già consumato → redirect silenzioso a
+   `wp_login_url()`; **dall'agent 1.25.0**, scrive comunque una riga
+   `type: "login"`/`phase: "failed"` nel log, con `target` = prefisso
+   dell'hash del token (nessuna identità utente è recuperabile a questo
+   punto, ma tentativi ripetuti con lo stesso token restano riconoscibili
+   senza esporlo in chiaro) e un `correlation_id` nuovo, non collegato ad
+   alcuna riga `token` precedente;
+4. utente associato non più esistente (cancellato nella finestra dei 20s) →
+   stesso redirect; riga `type: "login"`/`phase: "failed"`, stavolta con lo
+   stesso `correlation_id` della riga `token` (recuperato dal transient) e
+   `target` = user_id (non si dispone più dello `user_login`);
+5. token valido → `wp_set_current_user()` + `wp_set_auth_cookie( $user_id, true )`
    + `do_action( 'wp_login', ... )` (così i plugin di audit/2FA che si
-   aspettano l'hook di login scattano anche sul magic-login) → redirect a
-   `admin_url()`, **fisso**: nessun parametro di destinazione accettato dal
-   chiamante, per non introdurre un open redirect.
+   aspettano l'hook di login scattano anche sul magic-login), poi riga
+   `type: "login"`/`phase: "completed"` con lo stesso `correlation_id` della
+   riga `token` → redirect a `admin_url()`, **fisso**: nessun parametro di
+   destinazione accettato dal chiamante, per non introdurre un open redirect.
 
 ### Considerazioni di sicurezza specifiche
 
