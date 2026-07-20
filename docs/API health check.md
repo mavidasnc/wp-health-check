@@ -49,7 +49,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.23.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.24.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -156,9 +156,11 @@ autorizzata solo quell'origin esatta; se è vuota, viene riflessa qualunque
 origin della richiesta (mai il wildcard letterale `*`). Vedi la sezione
 [CORS del README](../README.md#cors).
 
-> Negli esempi seguenti `esempio.com` è un segnaposto. I payload di risposta
-> sono strutturalmente reali (verificati su un sito di produzione con agent
-> 1.9.0); host, versioni e conteggi variano per sito.
+> Negli esempi seguenti `esempio.com` è un segnaposto. La **struttura** dei
+> payload di risposta è reale (verificata su un sito di produzione); i numeri
+> di versione dell'agent negli esempi sono uniformati alla release corrente
+> (`1.24.0`), mentre host, conteggi e versioni di plugin/temi restano segnaposto
+> e variano per sito.
 
 ---
 
@@ -231,7 +233,7 @@ lo restituisce nel campo `site`.
 {
   "enrolled": true,
   "site": "https://esempio.com",
-  "agent_version": "1.9.0"
+  "agent_version": "1.24.0"
 }
 ```
 
@@ -285,13 +287,13 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 {
   "site": "https://esempio.com",
   "generated_at": "2026-07-09T08:00:00+00:00",
-  "fleet_agent_version": "1.9.0",
+  "fleet_agent_version": "1.24.0",
   "summary": {
     "wp_version": "7.0",
     "php_version": "8.3.30",
     "php_memory_limit": "2G",
     "server_ip": "203.0.113.10",
-    "plugin_version": "1.9.0",
+    "plugin_version": "1.24.0",
     "plugins_total": 21,
     "plugins_active": 14,
     "plugins_updates": 1,
@@ -644,13 +646,13 @@ curl -X POST 'https://esempio.com/wp-json/health-check/v1/update' \
 Aggiornamento eseguito:
 
 ```json
-{ "updated": true, "from": "1.6.0", "to": "1.7.0" }
+{ "updated": true, "from": "1.23.0", "to": "1.24.0" }
 ```
 
 Già aggiornato:
 
 ```json
-{ "updated": false, "reason": "up_to_date", "current": "1.7.0", "latest": "1.7.0" }
+{ "updated": false, "reason": "up_to_date", "current": "1.24.0", "latest": "1.24.0" }
 ```
 
 Directory non scrivibile:
@@ -785,6 +787,9 @@ sopra, `updated` è `true` perché la sostituzione del file è comunque riuscita
 | `target` | string | Plugin file o stylesheet richiesto |
 | `name` | string | Nome leggibile dell'elemento |
 | `from` / `to` | string | Versioni a confronto (solo con `updated: true`) |
+| `current` | string | Versione installata corrente (con `result: "up_to_date"` e, nel dry-run, `result: "updatable"`) |
+| `latest` | string | Versione disponibile (solo nel dry-run, `result: "updatable"`) |
+| `detail` | string | Dettaglio testuale dell'esito (con `result` `not_updatable`, `rolled_back`, `failed`, `reactivation_failed`) |
 | `log_id` | int | ID della riga nella tabella di log (vedi `GET /update/log`) |
 | `result` | string | `updatable` (dry-run), `up_to_date`, `not_updatable`, `not_found`, `fs_method_unavailable`, `unsupported_wp_version`, `rolled_back`, `failed`, `reactivation_failed` (solo plugin) |
 
