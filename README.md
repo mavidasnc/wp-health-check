@@ -36,7 +36,9 @@ Il plugin espone, sotto il namespace REST `health-check/v1`, un piccolo set di r
 che permettono a un sistema centrale esterno di:
 
 - registrare (*enroll*) un sito nella flotta, ottenendo un token di accesso;
-- interrogare un sommario di salute economico e ad alta frequenza (`/health`);
+- interrogare un sommario di salute economico e ad alta frequenza (`/health`),
+  o un heartbeat ancora più leggero per il solo uptime/latenza (`/ping`,
+  dalla 1.26.0);
 - interrogare dettagli più costosi, on demand (`/detail/plugins`, `/detail/theme`,
   `/detail/server`, `/detail/users`);
 - aggiornare il plugin stesso da una release GitHub firmata (`/update`);
@@ -363,6 +365,41 @@ Risposta:
 `last_access` espone l'accesso **precedente** a questa chiamata (letto prima di
 sovrascriverlo): è un segnale di audit, "chi ha chiamato l'ultima volta prima di
 ora".
+
+### `GET /ping` — heartbeat leggero (dalla 1.26.0)
+
+`/health` è già pensata per il polling frequente, ma **non è un ping puro**:
+anche a cache calda scrive sempre `wp_health_check_last_request_*` (audit
+accessi), e a cache fredda — che per un monitoraggio esterno a cadenza di
+minuti è di fatto sempre, visto che il transient dura solo 60s — esegue
+`get_plugins()`/`wp_get_themes()`, le uniche due operazioni della rotta con
+una vera scansione di filesystem (un file aperto e parsato per ogni
+plugin/tema installato).
+
+`/ping` esiste per un caso d'uso diverso e più ristretto: un servizio di
+monitoraggio esterno che misura solo **raggiungibilità e tempo di risposta**
+a frequenza alta (es. ogni 15-20 minuti), per cui il sommario completo di
+`/health` sarebbe uno spreco. Non chiama mai `get_plugins()`/`wp_get_themes()`,
+non scrive mai su `wp_options`, non usa alcuna cache (il suo scopo è proprio
+misurare il tempo di *questa* chiamata).
+
+```bash
+curl 'https://esempio.com/blog/wp-json/health-check/v1/ping' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{
+  "status": "ok",
+  "site": "https://esempio.com/blog",
+  "agent_version": "1.26.0",
+  "generated_at": "2026-07-22T10:00:00+00:00"
+}
+```
+
+Non sostituisce `/health` (che resta l'unica fonte del sommario: versioni,
+conteggi plugin/temi, aggiornamenti disponibili): è complementare, per un
+probe più frequente di sola raggiungibilità/latenza.
 
 ### `GET /detail/plugins` — elenco completo plugin
 

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.25.0
+ * Version:     1.26.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.25.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.26.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -714,6 +714,18 @@ function wphc_register_routes() {
 		)
 	);
 
+	// Heartbeat leggero per il polling ad alta frequenza (uptime + latenza):
+	// vedi wphc_route_ping() per il razionale del perche' non riusa /health.
+	register_rest_route(
+		'health-check/v1',
+		'/ping',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_ping',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
 	register_rest_route(
 		'health-check/v1',
 		'/detail/plugins',
@@ -1209,6 +1221,41 @@ function wphc_route_health( WP_REST_Request $request ) {
 	set_transient( 'wphc_health_cache', $payload, 60 );
 
 	return rest_ensure_response( $payload );
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: GET /ping
+// -----------------------------------------------------------------------
+
+/**
+ * Heartbeat volutamente minimale: pensato per un polling ad alta frequenza
+ * (uptime + tempo di risposta) senza pagare il costo di /health. A
+ * differenza di wphc_route_health(), qui non si chiama MAI get_plugins()/
+ * wp_get_themes() (le uniche due operazioni realmente O(n), con scansione
+ * di filesystem, dell'intera rotta /health), e non si scrive mai su
+ * wp_options: si salta deliberatamente wphc_record_access(), perche' un
+ * ping ad alta frequenza non e' un "accesso" ai fini dell'audit (che resta
+ * tracciato da /health, interrogata piu' di rado ma con piu' significato).
+ * Nessuna cache/transient: lo scopo della rotta e' misurare il tempo di
+ * risposta di QUESTA chiamata, una cache lo renderebbe inutile — e non ce
+ * n'e' comunque bisogno, il costo e' gia' O(1) senza bisogno di cache.
+ * Stessa autenticazione delle altre rotte dati (bearer token), per non
+ * introdurre una nuova superficie anonima.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente (nessun parametro).
+ * @return WP_REST_Response Esito minimale.
+ */
+function wphc_route_ping( WP_REST_Request $request ) {
+	unset( $request );
+
+	return rest_ensure_response(
+		array(
+			'status'        => 'ok',
+			'site'          => wphc_normalize_site_url(),
+			'agent_version' => WP_HEALTH_CHECK_VERSION,
+			'generated_at'  => gmdate( 'c' ),
+		)
+	);
 }
 
 // -----------------------------------------------------------------------

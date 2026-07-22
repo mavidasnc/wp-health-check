@@ -7,6 +7,24 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.26.0] - 2026-07-22
+
+### Added
+
+- **`GET /ping`**: nuova rotta heartbeat volutamente minimale, per un
+  monitoraggio esterno ad alta frequenza (uptime + tempo di risposta) che
+  non ha bisogno del sommario completo di `/health`. Verificato che il
+  costo di `/health` non sia trascurabile per questo caso d'uso: anche a
+  cache calda (transient 60s) scrive sempre `wp_health_check_last_request_*`
+  (`wphc_record_access()`), e a cache fredda — di fatto sempre, per un
+  polling a cadenza di minuti più lunga del TTL — esegue `get_plugins()` e
+  `wp_get_themes()`, le uniche due operazioni con una vera scansione di
+  filesystem dell'intera rotta. `/ping` non chiama mai queste due funzioni,
+  non scrive mai su `wp_options`, e non usa alcuna cache (il suo scopo è
+  misurare il tempo di risposta della chiamata stessa). Stessa
+  autenticazione bearer token delle altre rotte dati. Risposta:
+  `{ status, site, agent_version, generated_at }`.
+
 ## [1.25.0] - 2026-07-20
 
 ### Added

@@ -17,7 +17,8 @@ della restrizione host su `/update/plugin`/`/update/theme`/`/update/core`
 (prima sempre attiva, ora opzionale e spenta di default), introdotti con
 l'agent **1.24.0**; i valori `token`/`login` del campo `type` di
 `GET /update/log` (audit trail di `POST /autologin/token`), introdotti con
-l'agent **1.25.0**; sono documentate nelle sezioni dedicate in fondo.
+l'agent **1.25.0**; `GET /ping`, aggiunta con l'agent **1.26.0**; sono
+documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -30,17 +31,18 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 3. [Convenzioni comuni](#convenzioni-comuni)
 4. [`POST /enroll`](#post-enroll)
 5. [`GET /health`](#get-health)
-6. [`GET /detail/plugins`](#get-detailplugins)
-7. [`GET /detail/theme`](#get-detailtheme)
-8. [`GET /detail/server`](#get-detailserver)
-9. [`GET /detail/users`](#get-detailusers)
-10. [`POST /update`](#post-update)
-11. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
-12. [`POST /update/core`](#post-updatecore)
-13. [`GET /update/log`](#get-updatelog)
-14. [`POST /update/reactivate`](#post-updatereactivate)
-15. [`POST /autologin/token`](#post-autologintoken)
-16. [Riferimento codici di errore](#riferimento-codici-di-errore)
+6. [`GET /ping`](#get-ping)
+7. [`GET /detail/plugins`](#get-detailplugins)
+8. [`GET /detail/theme`](#get-detailtheme)
+9. [`GET /detail/server`](#get-detailserver)
+10. [`GET /detail/users`](#get-detailusers)
+11. [`POST /update`](#post-update)
+12. [`POST /update/plugin`, `POST /update/theme`](#post-updateplugin-post-updatetheme)
+13. [`POST /update/core`](#post-updatecore)
+14. [`GET /update/log`](#get-updatelog)
+15. [`POST /update/reactivate`](#post-updatereactivate)
+16. [`POST /autologin/token`](#post-autologintoken)
+17. [Riferimento codici di errore](#riferimento-codici-di-errore)
 
 ---
 
@@ -51,7 +53,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.24.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.26.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -60,6 +62,7 @@ Sintesi delle rotte:
 |---|---|---|---|---|
 | `POST` | `/enroll` | Firma Ed25519 (nel body) | — | nessuna |
 | `GET` | `/health` | Bearer token | `?fresh=1` | transient 60s |
+| `GET` | `/ping` | Bearer token | — | nessuna |
 | `GET` | `/detail/plugins` | Bearer token | `?fresh=1` | transient 1h |
 | `GET` | `/detail/theme` | Bearer token | `?fresh=1` | transient 1h |
 | `GET` | `/detail/server` | Bearer token | `?fresh=1` | transient 12h |
@@ -366,6 +369,67 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `last_access.ip` | string \| null | IP dell'accesso precedente |
 | `last_access.enrolled_at` | string \| null | Timestamp dell'enroll |
 | `detail_routes` | object | URL assoluti delle rotte di dettaglio |
+
+---
+
+## `GET /ping`
+
+Heartbeat volutamente minimale (dall'agent **1.26.0**), pensato per un
+monitoraggio ad alta frequenza (uptime + tempo di risposta) senza pagare il
+costo di `/health`. A differenza di `/health`, questa rotta:
+
+- **non** chiama `get_plugins()`/`wp_get_themes()` — le uniche due operazioni
+  realmente O(n), con scansione di filesystem (ogni plugin/tema installato
+  viene aperto e il suo header parsato), dell'intera rotta `/health`;
+- **non** scrive mai su `wp_options` (salta il tracciamento accessi di
+  `/health`: un ping ad alta frequenza non è un "accesso" ai fini
+  dell'audit, che resta tracciato da `/health`);
+- **non** usa alcuna cache/transient: lo scopo della rotta è misurare il
+  tempo di risposta di *questa* chiamata, una cache lo renderebbe inutile —
+  e non ce n'è comunque bisogno, il costo è già O(1) senza cache.
+
+Non sostituisce `/health` (che resta necessaria per il sommario completo:
+versioni, conteggi plugin/temi, aggiornamenti disponibili): è complementare,
+per un probe di sola raggiungibilità/latenza a frequenza più alta.
+
+**Auth:** Bearer token (stessa autenticazione delle altre rotte dati).
+**Query:** —. **Cache:** nessuna.
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/ping' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "status": "ok",
+  "site": "https://esempio.com",
+  "agent_version": "1.26.0",
+  "generated_at": "2026-07-22T10:00:00+00:00"
+}
+```
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `status` | string | Sempre `"ok"`: se il sito risponde a questa rotta, il plugin è attivo e la richiesta è autenticata correttamente (un token errato o un enroll mancante producono un errore, vedi sotto, mai `status` diverso da `ok`) |
+| `site` | string | URL normalizzato del sito |
+| `agent_version` | string | Versione dell'agent |
+| `generated_at` | string | Timestamp ISO 8601 UTC di generazione della risposta |
+
+### Errori
+
+Stessi codici di autenticazione delle altre rotte dati (vedi [Autenticazione](#autenticazione)):
+
+| Status | `code` | Caso |
+|---|---|---|
+| `503` | `wphc_not_enrolled` | Sito mai registrato (nessun token salvato) |
+| `401` | `wphc_unauthorized` | Header `Authorization` assente o token errato |
 
 ---
 
@@ -1148,8 +1212,8 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 
 | `code` | Status | Rotte |
 |---|---|---|
-| `wphc_not_enrolled` | `503` | `/health`, `/detail/*`, `/update` |
-| `wphc_unauthorized` | `401` | `/health`, `/detail/*`, `/update` |
+| `wphc_not_enrolled` | `503` | `/health`, `/ping`, `/detail/*`, `/update` |
+| `wphc_unauthorized` | `401` | `/health`, `/ping`, `/detail/*`, `/update` |
 
 ### `/enroll`
 
