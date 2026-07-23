@@ -19,8 +19,11 @@ l'agent **1.24.0**; i valori `token`/`login` del campo `type` di
 `GET /update/log` (audit trail di `POST /autologin/token`), introdotti con
 l'agent **1.25.0**; `GET /ping`, aggiunta con l'agent **1.26.0**; il campo
 `summary.thumbnail` di `/health` (screenshot del sito via thum.io, generato
-alla prima chiamata e poi persistito), introdotto con l'agent **1.27.0**;
-sono documentate nelle sezioni dedicate in fondo.
+alla prima chiamata e poi persistito), introdotto con l'agent **1.27.0** e
+corretto nell'agent **1.28.0** (PNG statico invece del GIF animato di
+default di thum.io, home pubblica del sito invece dell'indirizzo WordPress,
+pulsante di eliminazione/rigenerazione in admin); sono documentate nelle
+sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -55,7 +58,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.27.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.28.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -294,13 +297,13 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 {
   "site": "https://esempio.com",
   "generated_at": "2026-07-09T08:00:00+00:00",
-  "fleet_agent_version": "1.27.0",
+  "fleet_agent_version": "1.28.0",
   "summary": {
     "wp_version": "7.0",
     "php_version": "8.3.30",
     "php_memory_limit": "2G",
     "server_ip": "203.0.113.10",
-    "plugin_version": "1.27.0",
+    "plugin_version": "1.28.0",
     "plugins_total": 21,
     "plugins_active": 14,
     "plugins_updates": 1,
@@ -368,7 +371,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.last_update.phase` | string | `completed` \| `failed` \| `rolled_back` (le fasi terminali di un update; non include `requested`/`reactivated`/`reactivation_failed`) |
 | `summary.last_update.at` | string | Timestamp ISO 8601 UTC dell'esito |
 | `summary.maintenance_stuck` | bool | `true` se il file `.maintenance` del core è presente da più di 10 minuti (segnale di un update interrotto a metà, mai ripulito) |
-| `summary.thumbnail` | string \| null | URL assoluto dello screenshot del sito (400×400, via thum.io), caricato nel Media Library alla prima chiamata e poi persistito in `wp_health_check_thumb`; `null` se non ancora generato o se la generazione è temporaneamente in cooldown dopo un fallimento (dall'agent **1.27.0**) |
+| `summary.thumbnail` | string \| null | URL assoluto dello screenshot PNG della home pubblica del sito (`get_home_url()`, larghezza 400px, altezza proporzionale, via thum.io), caricato nel Media Library alla prima chiamata e poi persistito in `wp_health_check_thumb`; `null` se non ancora generato o se la generazione è temporaneamente in cooldown dopo un fallimento (dall'agent **1.27.0**; formato e sorgente corretti nella **1.28.0**) |
 | `last_access.at` | string \| null | Timestamp dell'accesso **precedente** (segnale di audit) |
 | `last_access.ip` | string \| null | IP dell'accesso precedente |
 | `last_access.enrolled_at` | string \| null | Timestamp dell'enroll |

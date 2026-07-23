@@ -366,15 +366,23 @@ Risposta:
 sovrascriverlo): è un segnale di audit, "chi ha chiamato l'ultima volta prima di
 ora".
 
-**Screenshot del sito (dalla 1.27.0).** `summary.thumbnail` espone l'URL
-assoluto di uno screenshot 400×400 del sito, generato via
-[thum.io](https://thum.io/) e caricato nel Media Library. La generazione
-avviene **una sola volta**, alla prima `/health` con l'opzione
+**Screenshot del sito (dalla 1.27.0, formato corretto nella 1.28.0).**
+`summary.thumbnail` espone l'URL assoluto di uno screenshot PNG (larghezza
+400px, altezza proporzionale) della **home pubblica** del sito
+(`get_home_url()`, non l'indirizzo WordPress), generato via
+[thum.io](https://thum.io/) e caricato nel Media Library. L'URL del servizio
+usa le opzioni `noanimate`/`png`: senza queste, thum.io risponde in
+streaming con un GIF animato (spinner + render progressivo, pensato per
+essere mostrato dal vivo in una pagina, non salvato come file). La
+generazione avviene **una sola volta**, alla prima `/health` con l'opzione
 `wp_health_check_thumb` vuota; le chiamate successive leggono solo
 quell'opzione (O(1), coerente col contratto economico della rotta). Se
-thum.io non risponde, un transient di cooldown (`wphc_thumb_retry_lock`, 1
-giorno) evita che ogni `/health` successiva ritenti la chiamata remota:
-`summary.thumbnail` resta `null` fino al prossimo tentativo.
+thum.io non risponde (o restituisce ancora un GIF), un transient di cooldown
+(`wphc_thumb_retry_lock`, 1 giorno) evita che ogni `/health` successiva
+ritenti la chiamata remota: `summary.thumbnail` resta `null` fino al
+prossimo tentativo. Nella tab Site Health un pulsante "Elimina e rigenera"
+cancella l'attachment dal Media Library e le opzioni collegate, forzando
+una nuova generazione alla `/health` successiva.
 
 ### `GET /ping` — heartbeat leggero (dalla 1.26.0)
 

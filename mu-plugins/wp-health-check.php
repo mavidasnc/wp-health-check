@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.27.0
+ * Version:     1.28.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.27.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.28.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -1060,19 +1060,26 @@ function wphc_restore_update_shortcircuit( $saved ) {
 // -----------------------------------------------------------------------
 
 /**
- * Scarica dal servizio thum.io uno screenshot 400x400 (crop quadrato)
- * dell'homepage del sito e lo carica nel Media Library. Operazione remota
- * e potenzialmente lenta: va chiamata solo tramite wphc_maybe_generate_thumbnail(),
- * mai direttamente, per rispettare la guardia anti-retry-loop.
+ * Scarica dal servizio thum.io uno screenshot PNG (larghezza 400, altezza
+ * proporzionale) della home pubblica del sito e lo carica nel Media Library.
+ * Operazione remota e potenzialmente lenta: va chiamata solo tramite
+ * wphc_maybe_generate_thumbnail(), mai direttamente, per rispettare la
+ * guardia anti-retry-loop.
  *
- * @return string|null URL assoluto dell'attachment creato, o null su fallimento.
+ * @return int|null ID dell'attachment creato, o null su fallimento.
  */
 function wphc_generate_site_thumbnail() {
 	require_once ABSPATH . 'wp-admin/includes/file.php';
 	require_once ABSPATH . 'wp-admin/includes/media.php';
 	require_once ABSPATH . 'wp-admin/includes/image.php';
 
-	$service_url = 'https://image.thum.io/get/width/400/crop/400/' . get_site_url();
+	// noanimate+png: senza queste due opzioni thum.io risponde in streaming
+	// con un GIF animato (spinner + render progressivo), pensato per essere
+	// mostrato dal vivo in una pagina, non per essere salvato come file.
+	// get_home_url() (non get_site_url()): la home PUBBLICA del sito, non
+	// l'indirizzo WordPress (che puo' differire, es. installazioni in una
+	// sottocartella tecnica).
+	$service_url = 'https://image.thum.io/get/noanimate/png/width/400/' . get_home_url();
 
 	$tmp_file = download_url( $service_url, 20 );
 	if ( is_wp_error( $tmp_file ) ) {
@@ -1080,10 +1087,16 @@ function wphc_generate_site_thumbnail() {
 	}
 
 	// thum.io non garantisce il Content-Type nell'header: si rileva il tipo
-	// reale dal file scaricato invece di assumere .png, cosi' media_handle_sideload()
-	// non rifiuta il file per estensione incoerente col contenuto.
+	// reale dal file scaricato invece di assumere .png. Un GIF qui
+	// significherebbe che noanimate/png non hanno avuto effetto (es. sito
+	// non ancora renderizzato): si scarta, il cooldown gestira' il retry.
 	$image_info = getimagesize( $tmp_file );
-	$extension  = ( false !== $image_info ) ? image_type_to_extension( $image_info[2] ) : false;
+	if ( false === $image_info || IMAGETYPE_GIF === $image_info[2] ) {
+		wp_delete_file( $tmp_file );
+		return null;
+	}
+
+	$extension = image_type_to_extension( $image_info[2] );
 	if ( false === $extension ) {
 		$extension = '.png';
 	}
@@ -1094,7 +1107,7 @@ function wphc_generate_site_thumbnail() {
 	);
 
 	// post_id = 0: l'attachment non appartiene a nessun post, e' solo un
-	// riferimento tenuto in wp_health_check_thumb.
+	// riferimento tenuto in wp_health_check_thumb/wp_health_check_thumb_id.
 	$attachment_id = media_handle_sideload( $file_array, 0, 'WP Health Check site thumbnail' );
 
 	if ( is_wp_error( $attachment_id ) ) {
@@ -1103,8 +1116,7 @@ function wphc_generate_site_thumbnail() {
 		return null;
 	}
 
-	$url = wp_get_attachment_url( $attachment_id );
-	return $url ? $url : null;
+	return $attachment_id;
 }
 
 /**
@@ -1130,12 +1142,20 @@ function wphc_maybe_generate_thumbnail() {
 	// blocca i ritentativi per il resto del TTL indipendentemente dall'esito.
 	set_transient( 'wphc_thumb_retry_lock', time(), DAY_IN_SECONDS );
 
-	$url = wphc_generate_site_thumbnail();
+	$attachment_id = wphc_generate_site_thumbnail();
+	if ( ! $attachment_id ) {
+		return null;
+	}
+
+	$url = wp_get_attachment_url( $attachment_id );
 	if ( ! $url ) {
 		return null;
 	}
 
+	// L'ID viene conservato accanto all'URL per permettere l'eliminazione
+	// affidabile dell'attachment dal pulsante "Elimina e rigenera" in admin.
 	update_option( 'wp_health_check_thumb', $url, false );
+	update_option( 'wp_health_check_thumb_id', $attachment_id, false );
 	delete_transient( 'wphc_thumb_retry_lock' );
 
 	return $url;
@@ -3696,6 +3716,8 @@ function wphc_render_site_health_tab( $tab ) {
 			<div class="notice notice-success"><p><?php esc_html_e( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".', 'wp-health-check' ); ?></p></div>
 		<?php elseif ( isset( $_GET['wphc_updates_toggled'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Preferenza sugli aggiornamenti via API salvata.', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_thumb_deleted'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima del sito eliminata: verra\' rigenerata alla prossima chiamata /health.', 'wp-health-check' ); ?></p></div>
 		<?php endif; ?>
 
 		<table class="widefat striped" style="max-width: 800px;">
@@ -3722,7 +3744,18 @@ function wphc_render_site_health_tab( $tab ) {
 					<td><?php esc_html_e( 'Anteprima sito', 'wp-health-check' ); ?></td>
 					<td>
 						<?php if ( $thumbnail ) : ?>
-							<img src="<?php echo esc_url( $thumbnail ); ?>" width="200" height="200" alt="<?php esc_attr_e( 'Anteprima del sito', 'wp-health-check' ); ?>" style="border:1px solid #ccc;">
+							<p>
+								<img src="<?php echo esc_url( $thumbnail ); ?>" width="200" alt="<?php esc_attr_e( 'Anteprima del sito', 'wp-health-check' ); ?>" style="height:auto;border:1px solid #ccc;">
+							</p>
+							<form
+								method="post"
+								action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+								onsubmit="return confirm( <?php echo esc_attr( wp_json_encode( __( 'Eliminare l\'anteprima? Verra\' rigenerata alla prossima chiamata /health.', 'wp-health-check' ) ) ); ?> );"
+							>
+								<input type="hidden" name="action" value="wphc_delete_thumbnail" />
+								<?php wp_nonce_field( 'wphc_delete_thumbnail' ); ?>
+								<?php submit_button( __( 'Elimina e rigenera', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+							</form>
 						<?php else : ?>
 							<p class="description"><?php esc_html_e( 'non ancora generata (verra\' creata alla prossima chiamata /health)', 'wp-health-check' ); ?></p>
 						<?php endif; ?>
@@ -4221,6 +4254,46 @@ function wphc_handle_clear_caches() {
 	exit;
 }
 add_action( 'admin_post_wphc_clear_caches', 'wphc_handle_clear_caches' );
+
+/**
+ * Handler di admin-post.php per il pulsante "Elimina e rigenera" della
+ * riga "Anteprima sito": elimina l'attachment dal Media Library e le
+ * opzioni collegate, cosi' la prossima /health rigenera la thumbnail.
+ * Il delete_transient() finale rimuove anche l'eventuale cooldown residuo,
+ * per non far attendere l'utente che ha appena chiesto una rigenerazione.
+ */
+function wphc_handle_delete_thumbnail() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_delete_thumbnail' );
+
+	$attachment_id = (int) get_option( 'wp_health_check_thumb_id' );
+	if ( ! $attachment_id ) {
+		// Retrocompatibilita' con le thumbnail create dalla 1.27.0, che
+		// salvava solo l'URL (wp_health_check_thumb_id non esisteva ancora).
+		$attachment_id = attachment_url_to_postid( (string) get_option( 'wp_health_check_thumb' ) );
+	}
+	if ( $attachment_id ) {
+		wp_delete_attachment( $attachment_id, true );
+	}
+
+	delete_option( 'wp_health_check_thumb' );
+	delete_option( 'wp_health_check_thumb_id' );
+	delete_transient( 'wphc_thumb_retry_lock' );
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'                => 'wp-health-check',
+				'wphc_thumb_deleted' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_delete_thumbnail', 'wphc_handle_delete_thumbnail' );
 
 /**
  * Handler di admin-post.php per il pulsante di reset enrollment nella tab

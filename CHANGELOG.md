@@ -7,6 +7,34 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-07-23
+
+### Fixed
+
+- **`summary.thumbnail`**: il servizio thum.io, senza le opzioni `noanimate`
+  e `png`, risponde in streaming con un GIF animato (spinner + render
+  progressivo del sito) pensato per essere mostrato dal vivo, non salvato
+  come file — è per questo che la 1.27.0 salvava un `.gif` invece di
+  un'immagine statica. L'URL ora usa `noanimate`/`png` per ottenere il PNG
+  finale, e la generazione scarta esplicitamente un eventuale GIF residuo
+  (nuovo tentativo al prossimo cooldown scaduto). Anche l'URL sorgente è
+  cambiato da `get_site_url()` (indirizzo WordPress) a `get_home_url()` (home
+  pubblica del sito), quella effettivamente da fotografare. Rimossa
+  l'opzione `crop` (fraintesa come "ritaglio quadrato": è in realtà l'altezza
+  in pixel dello screenshot sorgente): l'immagine ora ha larghezza 400px e
+  altezza proporzionale; l'anteprima in admin non forza più un'altezza fissa,
+  per non deformarla.
+
+### Added
+
+- **Pulsante "Elimina e rigenera"** nella riga "Anteprima sito" della tabella
+  informativa del plugin (scheda Site Health): elimina l'attachment dal
+  Media Library e le opzioni `wp_health_check_thumb`/`wp_health_check_thumb_id`,
+  cosi' la thumbnail viene rigenerata alla prossima chiamata `/health` senza
+  attendere il cooldown. Nuova opzione `wp_health_check_thumb_id` (accanto
+  a `wp_health_check_thumb`) per permettere l'eliminazione affidabile
+  dell'attachment.
+
 ## [1.27.0] - 2026-07-23
 
 ### Added
