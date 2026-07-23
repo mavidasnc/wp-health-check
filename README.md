@@ -366,6 +366,16 @@ Risposta:
 sovrascriverlo): è un segnale di audit, "chi ha chiamato l'ultima volta prima di
 ora".
 
+**Screenshot del sito (dalla 1.27.0).** `summary.thumbnail` espone l'URL
+assoluto di uno screenshot 400×400 del sito, generato via
+[thum.io](https://thum.io/) e caricato nel Media Library. La generazione
+avviene **una sola volta**, alla prima `/health` con l'opzione
+`wp_health_check_thumb` vuota; le chiamate successive leggono solo
+quell'opzione (O(1), coerente col contratto economico della rotta). Se
+thum.io non risponde, un transient di cooldown (`wphc_thumb_retry_lock`, 1
+giorno) evita che ogni `/health` successiva ritenti la chiamata remota:
+`summary.thumbnail` resta `null` fino al prossimo tentativo.
+
 ### `GET /ping` — heartbeat leggero (dalla 1.26.0)
 
 `/health` è già pensata per il polling frequente, ma **non è un ping puro**:

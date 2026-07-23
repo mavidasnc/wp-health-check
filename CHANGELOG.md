@@ -7,6 +7,19 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-07-23
+
+### Added
+
+- **`summary.thumbnail` di `GET /health`**: screenshot 400×400 del sito,
+  generato via [thum.io](https://thum.io/) e caricato nel Media Library alla
+  prima chiamata con `wp_health_check_thumb` vuota; l'URL assoluto viene poi
+  persistito in quell'opzione, cosi' le chiamate successive restano O(1)
+  (nessuna nuova chiamata remota). Un transient di cooldown
+  (`wphc_thumb_retry_lock`, 1 giorno) protegge da retry-loop se thum.io non
+  risponde. Aggiunta anche una riga "Anteprima sito" (200×200) nella tabella
+  informativa del plugin nella scheda Site Health.
+
 ## [1.26.0] - 2026-07-22
 
 ### Added

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.26.0
+ * Version:     1.27.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.26.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.27.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -1056,6 +1056,92 @@ function wphc_restore_update_shortcircuit( $saved ) {
 }
 
 // -----------------------------------------------------------------------
+// HELPER: thumbnail del sito (thum.io)
+// -----------------------------------------------------------------------
+
+/**
+ * Scarica dal servizio thum.io uno screenshot 400x400 (crop quadrato)
+ * dell'homepage del sito e lo carica nel Media Library. Operazione remota
+ * e potenzialmente lenta: va chiamata solo tramite wphc_maybe_generate_thumbnail(),
+ * mai direttamente, per rispettare la guardia anti-retry-loop.
+ *
+ * @return string|null URL assoluto dell'attachment creato, o null su fallimento.
+ */
+function wphc_generate_site_thumbnail() {
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	require_once ABSPATH . 'wp-admin/includes/media.php';
+	require_once ABSPATH . 'wp-admin/includes/image.php';
+
+	$service_url = 'https://image.thum.io/get/width/400/crop/400/' . get_site_url();
+
+	$tmp_file = download_url( $service_url, 20 );
+	if ( is_wp_error( $tmp_file ) ) {
+		return null;
+	}
+
+	// thum.io non garantisce il Content-Type nell'header: si rileva il tipo
+	// reale dal file scaricato invece di assumere .png, cosi' media_handle_sideload()
+	// non rifiuta il file per estensione incoerente col contenuto.
+	$image_info = getimagesize( $tmp_file );
+	$extension  = ( false !== $image_info ) ? image_type_to_extension( $image_info[2] ) : false;
+	if ( false === $extension ) {
+		$extension = '.png';
+	}
+
+	$file_array = array(
+		'name'     => 'wp-health-check-site-thumb' . $extension,
+		'tmp_name' => $tmp_file,
+	);
+
+	// post_id = 0: l'attachment non appartiene a nessun post, e' solo un
+	// riferimento tenuto in wp_health_check_thumb.
+	$attachment_id = media_handle_sideload( $file_array, 0, 'WP Health Check site thumbnail' );
+
+	if ( is_wp_error( $attachment_id ) ) {
+		// media_handle_sideload() ripulisce $tmp_file solo in caso di successo.
+		wp_delete_file( $tmp_file );
+		return null;
+	}
+
+	$url = wp_get_attachment_url( $attachment_id );
+	return $url ? $url : null;
+}
+
+/**
+ * Ritorna l'URL della thumbnail del sito, generandola alla prima chiamata.
+ * Chiamate successive con l'opzione gia' valorizzata sono O(1) (una sola
+ * get_option). Un transient di cooldown (1 giorno) impedisce che un
+ * fallimento di thum.io trasformi ogni /health in un nuovo tentativo di
+ * chiamata remota.
+ *
+ * @return string|null URL assoluto della thumbnail, o null se non disponibile.
+ */
+function wphc_maybe_generate_thumbnail() {
+	$existing = get_option( 'wp_health_check_thumb' );
+	if ( $existing ) {
+		return $existing;
+	}
+
+	if ( false !== get_transient( 'wphc_thumb_retry_lock' ) ) {
+		return null;
+	}
+
+	// Impostato PRIMA del tentativo: se thum.io fallisce, il lock resta e
+	// blocca i ritentativi per il resto del TTL indipendentemente dall'esito.
+	set_transient( 'wphc_thumb_retry_lock', time(), DAY_IN_SECONDS );
+
+	$url = wphc_generate_site_thumbnail();
+	if ( ! $url ) {
+		return null;
+	}
+
+	update_option( 'wp_health_check_thumb', $url, false );
+	delete_transient( 'wphc_thumb_retry_lock' );
+
+	return $url;
+}
+
+// -----------------------------------------------------------------------
 // CALLBACK: GET /health
 // -----------------------------------------------------------------------
 
@@ -1176,6 +1262,12 @@ function wphc_route_health( WP_REST_Request $request ) {
 	$maintenance_stuck = file_exists( $maintenance_file ) && ( time() - (int) filemtime( $maintenance_file ) ) > 600;
 	$last_update       = get_option( 'wp_health_check_last_update' );
 
+	// Screenshot del sito (thum.io): generato e caricato nel Media Library
+	// una sola volta, alla prima /health con opzione vuota. Chiamate
+	// successive leggono solo wp_health_check_thumb (O(1)); vedi
+	// wphc_maybe_generate_thumbnail() per la guardia anti-retry-loop.
+	$thumbnail = wphc_maybe_generate_thumbnail();
+
 	$payload = array(
 		'site'                => wphc_normalize_site_url(),
 		'generated_at'        => gmdate( 'c' ),
@@ -1203,6 +1295,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'restrict_official_only'  => (bool) get_option( 'wp_health_check_restrict_official_only', false ),
 			'last_update'             => $last_update ? $last_update : null,
 			'maintenance_stuck'       => $maintenance_stuck,
+			'thumbnail'               => $thumbnail ? $thumbnail : null,
 		),
 		'last_access'         => array(
 			'at'          => $previous_access['at'],
@@ -3546,6 +3639,7 @@ function wphc_render_site_health_tab( $tab ) {
 	$last_enroll_error       = get_option( 'wp_health_check_last_enroll_error' );
 	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', true );
 	$restrict_official_only  = (bool) get_option( 'wp_health_check_restrict_official_only', false );
+	$thumbnail               = get_option( 'wp_health_check_thumb' );
 
 	$candidates       = wphc_candidate_site_urls();
 	$canonical_home   = wphc_normalize_site_url();
@@ -3621,6 +3715,16 @@ function wphc_render_site_health_tab( $tab ) {
 							<strong><?php esc_html_e( 'aggiornamento disponibile', 'wp-health-check' ); ?></strong>
 						<?php else : ?>
 							<code><?php echo esc_html( $latest_version ); ?></code> — <?php esc_html_e( 'aggiornato', 'wp-health-check' ); ?>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Anteprima sito', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( $thumbnail ) : ?>
+							<img src="<?php echo esc_url( $thumbnail ); ?>" width="200" height="200" alt="<?php esc_attr_e( 'Anteprima del sito', 'wp-health-check' ); ?>" style="border:1px solid #ccc;">
+						<?php else : ?>
+							<p class="description"><?php esc_html_e( 'non ancora generata (verra\' creata alla prossima chiamata /health)', 'wp-health-check' ); ?></p>
 						<?php endif; ?>
 					</td>
 				</tr>
