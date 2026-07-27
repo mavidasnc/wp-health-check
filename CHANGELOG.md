@@ -7,6 +7,60 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-07-27
+
+### Added
+
+- **`summary.public_ip` e `server.public_ip`** (`/health` e `/detail/server`):
+  IP pubblico di uscita del server, per i casi (dietro reverse proxy/load
+  balancer/container) in cui `server_ip` (letto da `SERVER_ADDR`) è un
+  indirizzo di rete interna (es. `192.168.60.40`), inutile per identificare
+  il sito dall'esterno. Se `SERVER_ADDR` è già pubblico viene riusato a
+  costo zero; altrimenti si risolve una sola volta via
+  [api.ipify.org](https://www.ipify.org/), con esito persistito in un
+  transient di 7 giorni e un cooldown di 1 giorno sui fallimenti (stesso
+  pattern anti-retry-loop già usato per la thumbnail del sito). Nuovo campo
+  booleano `summary.server_ip_is_private`/`server.server_ip_is_private` per
+  spiegare alla dashboard perché i due IP differiscono, senza dover
+  ripetere la logica di validazione lato client. Il pulsante "Svuota cache
+  e ricontrolla" ora cancella anche questi due transient, per forzare una
+  nuova risoluzione dopo una migrazione di hosting.
+- **Log degli aggiornamenti fatti da WordPress stesso**, non solo di quelli
+  passati dalla rotta REST: due colonne nuove nella tabella
+  `wphc_update_log`, `source` (`api` | `wp-admin` | `cron` | `wp-cli`) e
+  `actor` (lo `user_login` di chi ha avviato l'operazione, `null` per
+  cron/CLI). Plugin e temi si agganciano a `upgrader_pre_install`/
+  `upgrader_process_complete` (con un flag di richiesta che esclude gli
+  update già loggati dal flusso API, per non registrarli due volte); il
+  core, che non offre un hook altrettanto affidabile, si rileva per
+  divergenza fra la versione osservata e l'ultima vista, controllata a ogni
+  `init` (stesso pattern O(1) già usato per l'installazione dello schema) —
+  approccio che intercetta anche gli update core fatti via FTP o dal
+  pannello dell'hosting, non passati da nessun hook di WordPress. A
+  differenza del pattern a due righe del flusso API (che prova che un
+  update è stato *avviato* anche se PHP muore a metà), questi update sono
+  loggati con una sola riga `completed`, perché l'hook scatta a esito già
+  riuscito. `GET /update/log` accetta ora anche il filtro `?source=`, e
+  `wp_health_check_db_version` passa da `3` a `4` (`dbDelta()` applica il
+  `DEFAULT 'api'` delle due colonne a tutte le righe storiche esistenti,
+  nessuna migrazione dati manuale necessaria).
+- **`last_login`, `last_login_ip` e `registered`** in `GET /detail/users`:
+  data dell'ultimo accesso riuscito (in due user meta scritte sull'azione
+  `wp_login`), IP di quell'accesso (stessa fonte già usata per la colonna
+  `ip` della tabella di log, rispetta `wp_health_check_trust_proxy`) e data
+  di registrazione dell'account (già disponibile in `wp_users`, aggiunta
+  senza costo). `last_login` resta `null` finché un utente non effettua un
+  accesso dopo l'aggiornamento a questa versione dell'agent: non va letto
+  come "account dormiente" prima che sia passato abbastanza tempo da
+  escludere semplicemente questo caso.
+- **Pulsante "Visualizza log"** nella tab Site Health: apre in una modale
+  (la stessa già usata dal tester degli endpoint) la stessa tabella
+  restituita da `GET /update/log`, filtrabile per tipo e per origine, con
+  paginazione "Carica altri 50". Nuovo handler AJAX
+  `wphc_ajax_view_log` (nonce dedicato, `manage_options`), query diretta
+  sulla tabella (nessun loopback REST: l'utente è già autenticato in
+  wp-admin, non serve il bearer token).
+
 ## [1.28.0] - 2026-07-23
 
 ### Fixed
@@ -612,7 +666,15 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.21.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.29.0...HEAD
+[1.29.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.28.0...v1.29.0
+[1.28.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.27.0...v1.28.0
+[1.27.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.26.0...v1.27.0
+[1.26.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.25.0...v1.26.0
+[1.25.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.24.0...v1.25.0
+[1.24.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.23.0...v1.24.0
+[1.23.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.22.0...v1.23.0
+[1.22.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.19.0...v1.20.0
 [1.19.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.18.0...v1.19.0

@@ -334,6 +334,8 @@ Risposta:
     "php_version": "8.1.29",
     "php_memory_limit": "256M",
     "server_ip": "203.0.113.10",
+    "server_ip_is_private": false,
+    "public_ip": "203.0.113.10",
     "plugin_version": "1.0.0",
     "plugins_total": 18,
     "plugins_active": 14,
@@ -365,6 +367,21 @@ Risposta:
 `last_access` espone l'accesso **precedente** a questa chiamata (letto prima di
 sovrascriverlo): è un segnale di audit, "chi ha chiamato l'ultima volta prima di
 ora".
+
+**IP pubblico del server (dalla 1.29.0).** `summary.server_ip` resta
+l'indirizzo letto da `SERVER_ADDR`, che dietro un reverse proxy, un load
+balancer o un container può essere un indirizzo di rete interna (es.
+`192.168.60.40`), inutile per identificare il server dall'esterno.
+`summary.public_ip` espone invece l'IP pubblico di uscita: se `SERVER_ADDR` è
+già pubblico viene riusato senza costo aggiuntivo (nessuna chiamata remota,
+coerente col contratto economico di questa rotta); altrimenti si risolve una
+sola volta tramite il servizio esterno [api.ipify.org](https://www.ipify.org/),
+con l'esito persistito in un transient di 7 giorni (la scadenza intercetta un
+eventuale cambio IP dopo una migrazione di hosting) e un cooldown di 1 giorno
+sui fallimenti, per non ritentare a ogni chiamata. `summary.server_ip_is_private`
+è `true` quando i due valori divergono, così la dashboard sa perché mostrarli
+entrambi invece di uno solo. Il pulsante "Svuota cache e ricontrolla" nella tab
+Site Health cancella anche questi transient, forzando una nuova risoluzione.
 
 **Screenshot del sito (dalla 1.27.0, formato corretto nella 1.28.0).**
 `summary.thumbnail` espone l'URL assoluto di uno screenshot PNG (larghezza
@@ -525,6 +542,8 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/server' \
   "server": {
     "software": "nginx/1.24.0",
     "server_ip": "203.0.113.10",
+    "server_ip_is_private": false,
+    "public_ip": "203.0.113.10",
     "php_version": "8.1.29",
     "php_sapi": "fpm-fcgi",
     "php_memory_limit": "256M",
@@ -556,6 +575,10 @@ costruito con un **allowlist esplicito** di campi: i campi marcati `private` da
 `WP_Debug_Data` (utente e host del database) non possono finire nella risposta per
 costruzione, indipendentemente da come una futura versione del core li chiami.
 
+`server_ip_is_private` e `public_ip` (dalla 1.29.0) hanno la stessa semantica
+di `summary.server_ip_is_private`/`summary.public_ip` di `GET /health`: vedi
+la sezione "IP pubblico del server" sopra.
+
 ### `GET /detail/users` — amministratori del sito
 
 Elenco degli utenti con ruolo `administrator`, per censire dalla dashboard
@@ -574,13 +597,36 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/users' \
   "generated_at": "2026-07-19T08:00:00+00:00",
   "count": 1,
   "users": [
-    { "id": 1, "user_login": "admin", "display_name": "Amministratore", "email": "admin@esempio.com" }
+    {
+      "id": 1,
+      "user_login": "admin",
+      "display_name": "Amministratore",
+      "email": "admin@esempio.com",
+      "registered": "2025-03-10T09:00:00+00:00",
+      "last_login": "2026-07-27T07:45:00+00:00",
+      "last_login_ip": "203.0.113.7"
+    }
   ]
 }
 ```
 
 Nessuna cache transient: a differenza di `/detail/plugins` e `/detail/theme`,
 è un dato anagrafico interrogato raramente.
+
+**`registered`, `last_login`, `last_login_ip` (dalla 1.29.0).** `registered`
+è `user_registered` (già presente in `wp_users`, nessun costo aggiuntivo).
+`last_login`/`last_login_ip` vengono scritti in due user meta
+(`wphc_last_login`, `wphc_last_login_ip`) sull'azione `wp_login`; l'IP usa
+la stessa fonte di `wphc_get_client_ip()` già usata per la colonna `ip`
+della [tabella di log](#tracciamento-accessi), quindi rispetta
+`wp_health_check_trust_proxy`. `last_login` resta `null` finché un
+amministratore non effettua un accesso **dopo** l'aggiornamento a questa
+versione dell'agent: non va interpretato come "account dormiente" prima che
+sia passato abbastanza tempo da escludere semplicemente questo caso.
+Deliberatamente **nessuna riga** viene scritta nella tabella di log per un
+login ordinario (a differenza dell'audit dell'autologin, `type` =
+`token`/`login`): su un sito con accessi frequenti gonfierebbe la tabella
+senza aggiungere nulla rispetto alla user meta.
 
 ### `POST /update` — self-update da GitHub
 
@@ -636,10 +682,12 @@ l'elemento è aggiornabile, senza eseguire nulla).
 ### `GET /update/log` — storico degli aggiornamenti
 
 Sola lettura, paginata, **sempre accessibile anche a kill-switch spento**
-(protetta solo dal bearer token, come le altre rotte dati).
+(protetta solo dal bearer token, come le altre rotte dati). Dalla 1.29.0
+accetta anche il filtro `?source=` (`api` | `wp-admin` | `cron` | `wp-cli`,
+combinabile con `?type=`), speculare a quello già esistente per `type`.
 
 ```bash
-curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&limit=50' \
+curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&source=wp-admin&limit=50' \
   -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
 ```
 
@@ -653,11 +701,30 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/update/log?type=plugin&li
       "id": 1287, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:00+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.2", "version_to": "5.3.4",
-      "phase": "requested", "message": null, "ip": "203.0.113.7"
+      "phase": "requested", "message": null, "ip": "203.0.113.7",
+      "source": "api", "actor": null
     }
   ]
 }
 ```
+
+**`source`/`actor` (dalla 1.29.0).** `source` distingue chi ha avviato
+l'operazione: `api` (la stessa rotta REST di update di questo agent),
+`wp-admin` (bacheca di WordPress), `cron` (un auto-update in background) o
+`wp-cli`. `actor` è lo `user_login` di chi ha agito da wp-admin, `null`
+altrove. Le righe scritte prima della 1.29.0 hanno `source = "api"` per
+costruzione (valore di default applicato da `dbDelta()` a tutte le righe
+storiche) e `actor = null`. Per plugin e temi la rilevazione si aggancia
+agli hook `upgrader_pre_install`/`upgrader_process_complete` del core (un
+flag di richiesta esclude gli update già loggati dal flusso API, evitando
+il doppio log); per il core, che non offre un hook altrettanto affidabile,
+si rileva una divergenza fra la versione osservata e l'ultima vista — che
+intercetta anche un aggiornamento core fatto via FTP o dal pannello
+dell'hosting, non passato da nessun hook di WordPress. A differenza del
+pattern a due righe (`requested` + `completed`/`failed`/`rolled_back`) del
+flusso API — che prova che un update è stato *avviato* anche se PHP muore a
+metà — questi aggiornamenti sono loggati con una sola riga `completed`,
+perché l'hook scatta solo a esito già riuscito.
 
 ### `POST /update/reactivate` — riconciliazione dello stato attivo dei plugin
 
@@ -1079,31 +1146,44 @@ percorre).
 
 ### Tabella di log degli aggiornamenti
 
-Ogni operazione produce **due righe** nella tabella custom
+Ogni operazione avviata via API produce **due righe** nella tabella custom
 `{$wpdb->prefix}wphc_update_log` (`id`, `correlation_id`, `created_at`,
 `type`, `target`, `name`, `version_from`, `version_to`, `phase`, `message`,
-`ip`, `active`), legate dallo stesso `correlation_id`: una **prima** di
-toccare qualunque file (`phase = requested`, prova che un aggiornamento è
-stato avviato anche se PHP muore a metà), una al termine (`completed` /
-`failed` / `rolled_back`). La colonna `active` (dalla `1.21.0`) registra lo
-stato attivo osservato in quel momento — `true`/`false` solo sulle righe
-`plugin` (vedi [punto 7 del flusso](#flusso-comune-plugin-e-temi) sopra),
-sempre `NULL` per temi/core. La tabella non ha un hook di attivazione dedicato (i
-mu-plugin non ne hanno): viene creata/allineata con `dbDelta()` al primo
-caricamento in cui `wp_health_check_db_version` non combacia con lo schema
-atteso. Le righe più vecchie di 90 giorni (`WP_HEALTH_CHECK_LOG_RETENTION_DAYS`)
-vengono rimosse con un prune opportunistico (al massimo una volta al giorno,
-gate via transient), senza dipendere da un cron dedicato. Il reset
-enrollment (WP-CLI o tab Site Health) **non** cancella questo storico — solo
-il lock anti-concorrenza — perché è audit del sito, non stato di enrollment.
+`ip`, `active`, `source`, `actor`), legate dallo stesso `correlation_id`: una
+**prima** di toccare qualunque file (`phase = requested`, prova che un
+aggiornamento è stato avviato anche se PHP muore a metà), una al termine
+(`completed` / `failed` / `rolled_back`). La colonna `active` (dalla
+`1.21.0`) registra lo stato attivo osservato in quel momento — `true`/`false`
+solo sulle righe `plugin` (vedi [punto 7 del flusso](#flusso-comune-plugin-e-temi)
+sopra), sempre `NULL` per temi/core. La tabella non ha un hook di attivazione
+dedicato (i mu-plugin non ne hanno): viene creata/allineata con `dbDelta()`
+al primo caricamento in cui `wp_health_check_db_version` non combacia con lo
+schema atteso. Le righe più vecchie di 90 giorni
+(`WP_HEALTH_CHECK_LOG_RETENTION_DAYS`) vengono rimosse con un prune
+opportunistico (al massimo una volta al giorno, gate via transient), senza
+dipendere da un cron dedicato. Il reset enrollment (WP-CLI o tab Site
+Health) **non** cancella questo storico — solo il lock anti-concorrenza —
+perché è audit del sito, non stato di enrollment.
+
+**`source`/`actor` (dalla 1.29.0, schema versione 4).** Le colonne
+distinguono un aggiornamento avviato via API (`source = "api"`, il pattern a
+due righe qui sopra) da uno fatto direttamente da WordPress: `wp-admin`
+(bacheca), `cron` (auto-update in background) o `wp-cli`, tutti loggati con
+una **sola** riga `completed` (l'hook che li rileva scatta a esito già
+riuscito, non ha senso una riga `requested` che nessuno chiuderebbe).
+`actor` è lo `user_login` di chi ha agito da wp-admin, `null` per
+cron/wp-cli/api. Vedi il dettaglio del meccanismo di rilevazione nella
+sezione [`GET /update/log`](#get-updatelog--storico-degli-aggiornamenti)
+sopra.
 
 `GET /health` espone tre campi derivati da questa funzionalità nel blocco
 `summary`, tutti O(1) (coerenti col contratto economico della rotta):
 `updates_via_api_enabled` (stato del kill-switch), `last_update` (oggetto
-`{type, target, phase, at}` dell'ultima riga di log, letto da un'opzione
-autoloaded aggiornata ad ogni update, non da una query alla tabella) e
-`maintenance_stuck` (`true` se esiste un `.maintenance` più vecchio di 10
-minuti: segnala un upgrade interrotto).
+`{type, target, phase, source, at}` dell'ultima riga di log, letto da
+un'opzione autoloaded aggiornata ad ogni update, non da una query alla
+tabella — `source` incluso dalla 1.29.0) e `maintenance_stuck` (`true` se
+esiste un `.maintenance` più vecchio di 10 minuti: segnala un upgrade
+interrotto).
 
 ## Requisiti lato GitHub
 
@@ -1442,6 +1522,16 @@ Dalla `1.14.0`, sotto la tabella principale ci sono due sezioni in più:
   non viene mai esposto nel browser. `POST /update` e `POST /enroll` non sono nel
   tester (il primo ha il suo pulsante dedicato con effetti collaterali, il secondo
   richiede una busta firmata dal centro).
+- **Log degli aggiornamenti** (dalla `1.29.0`): un pulsante "Visualizza log"
+  apre nella stessa modale del tester una tabella con lo storico di
+  `{$wpdb->prefix}wphc_update_log`, filtrabile per tipo e per origine
+  (`api`/`wp-admin`/`cron`/`wp-cli`) e paginata con "Carica altri 50". A
+  differenza del tester degli endpoint, qui non c'è loopback REST: un nuovo
+  handler AJAX dedicato (`wphc_view_log`, `manage_options` + nonce) legge la
+  tabella direttamente, perché l'utente è già autenticato in wp-admin e non
+  serve il bearer token. Le righe sono renderizzate con `textContent`/
+  `createElement`, mai `innerHTML`, perché `message`/`actor`/`target` sono
+  dati che arrivano dal server.
 
 > **Nota (dalla `1.10.0`):** la sezione per modificare
 > `wp_health_check_dashboard_origin` dalla UI è stata rimossa, perché le

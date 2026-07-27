@@ -52,7 +52,8 @@ Authorization: Bearer {{token}}
 GET {{baseUrl}}/wp-json/health-check/v1/detail/server
 Authorization: Bearer {{token}}
 
-### GET /detail/users — amministratori del sito (dalla 1.23.0)
+### GET /detail/users — amministratori del sito (dalla 1.23.0; da 1.29.0
+# include anche registered/last_login/last_login_ip)
 GET {{baseUrl}}/wp-json/health-check/v1/detail/users
 Authorization: Bearer {{token}}
 
@@ -95,6 +96,11 @@ Authorization: Bearer {{token}}
 ### GET /update/log — storico degli aggiornamenti (paginato, sempre leggibile
 # anche a kill-switch spento)
 GET {{baseUrl}}/wp-json/health-check/v1/update/log?type=plugin&limit=50&offset=0
+Authorization: Bearer {{token}}
+
+### GET /update/log — filtro per origine (dalla 1.29.0): api | wp-admin |
+# cron | wp-cli, combinabile con ?type=
+GET {{baseUrl}}/wp-json/health-check/v1/update/log?source=wp-admin&limit=50&offset=0
 Authorization: Bearer {{token}}
 
 ### POST /update/reactivate — riconciliazione: riattiva i plugin risultati

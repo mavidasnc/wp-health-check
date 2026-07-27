@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.28.0
+ * Version:     1.29.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.28.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.29.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -87,7 +87,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
  * wphc_maybe_install_update_log_schema()).
  */
 if ( ! defined( 'WP_HEALTH_CHECK_DB_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_DB_VERSION', '3' );
+	define( 'WP_HEALTH_CHECK_DB_VERSION', '4' );
 }
 
 /** Giorni di conservazione delle righe della tabella di log update (§6.5). */
@@ -239,6 +239,73 @@ function wphc_get_server_ip() {
 	$server_addr = isset( $_SERVER['SERVER_ADDR'] ) ? sanitize_text_field( wp_unslash( $_SERVER['SERVER_ADDR'] ) ) : '';
 
 	return filter_var( $server_addr, FILTER_VALIDATE_IP ) ? $server_addr : '';
+}
+
+/**
+ * Vero se l'IP dato e' un indirizzo pubblico instradabile (non privato, non
+ * riservato, non loopback). Usata sia per decidere se SERVER_ADDR e' gia'
+ * sufficiente, sia per validare la risposta del servizio di risoluzione
+ * esterno prima di persisterla.
+ *
+ * @param string $ip Indirizzo IP da valutare.
+ * @return bool True se l'IP e' valido e pubblico.
+ */
+function wphc_ip_is_public( $ip ) {
+	return false !== filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE );
+}
+
+/**
+ * Determina l'IP pubblico di uscita del server, per i casi (dietro reverse
+ * proxy / load balancer / container) in cui SERVER_ADDR e' un indirizzo di
+ * rete interna (es. 192.168.x.x) e quindi inutile per identificare il sito
+ * dall'esterno. Cascata a tre livelli, dal piu' economico al piu' costoso:
+ *
+ * 1. Se SERVER_ADDR e' gia' un IP pubblico, lo si riusa: costo zero, nessuna
+ *    query ne' chiamata remota. E' il caso della maggior parte degli hosting
+ *    condivisi, quindi copre il percorso caldo di /health.
+ * 2. Altrimenti si legge il transient wphc_public_ip (7 giorni): la scadenza
+ *    intercetta un eventuale cambio IP dopo una migrazione di hosting senza
+ *    tenere un dato stantio per sempre.
+ * 3. A transient scaduto, guardia anti-retry-loop (wphc_public_ip_retry_lock,
+ *    1 giorno, stesso pattern di wphc_thumb_retry_lock) e chiamata a un
+ *    servizio "echo IP" esterno (api.ipify.org). L'esito viene validato con
+ *    wphc_ip_is_public() prima di essere persistito.
+ *
+ * @return string IP pubblico valido, oppure stringa vuota se non determinabile.
+ */
+function wphc_get_public_ip() {
+	$server_ip = wphc_get_server_ip();
+	if ( '' !== $server_ip && wphc_ip_is_public( $server_ip ) ) {
+		return $server_ip;
+	}
+
+	$cached = get_transient( 'wphc_public_ip' );
+	if ( is_string( $cached ) && '' !== $cached ) {
+		return $cached;
+	}
+
+	if ( false !== get_transient( 'wphc_public_ip_retry_lock' ) ) {
+		return '';
+	}
+
+	// Impostato PRIMA del tentativo: se il servizio esterno fallisce, il lock
+	// resta e blocca i ritentativi per il resto del TTL indipendentemente
+	// dall'esito, evitando un retry-loop ad ogni /health.
+	set_transient( 'wphc_public_ip_retry_lock', time(), DAY_IN_SECONDS );
+
+	$response = wp_remote_get( 'https://api.ipify.org', array( 'timeout' => 5 ) );
+	if ( is_wp_error( $response ) || 200 !== wp_remote_retrieve_response_code( $response ) ) {
+		return '';
+	}
+
+	$body = trim( wp_remote_retrieve_body( $response ) );
+	if ( ! wphc_ip_is_public( $body ) ) {
+		return '';
+	}
+
+	set_transient( 'wphc_public_ip', $body, 7 * DAY_IN_SECONDS );
+
+	return $body;
 }
 
 /**
@@ -1269,6 +1336,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 	$parent_theme_name = ( $parent_theme instanceof WP_Theme ) ? (string) $parent_theme->get( 'Name' ) : null;
 
 	$server_ip = wphc_get_server_ip();
+	$public_ip = wphc_get_public_ip();
 
 	// Segnali booleani (consent manager GDPR, page builder) calcolati dai
 	// plugin/temi attivi. Operazioni O(1) su liste gia' disponibili: coerente
@@ -1297,6 +1365,8 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'php_version'             => PHP_VERSION,
 			'php_memory_limit'        => (string) ini_get( 'memory_limit' ),
 			'server_ip'               => '' !== $server_ip ? $server_ip : null,
+			'server_ip_is_private'    => '' !== $server_ip && ! wphc_ip_is_public( $server_ip ),
+			'public_ip'               => '' !== $public_ip ? $public_ip : null,
 			'plugin_version'          => WP_HEALTH_CHECK_VERSION,
 			'plugins_total'           => count( $all_plugins ),
 			'plugins_active'          => count( $active_plugins ),
@@ -1640,23 +1710,26 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 	// pensati per essere ri-parsati programmaticamente; ini_get() da'
 	// invece lo stesso identico dato in forma stabile e diretta.
 	$server_ip = wphc_get_server_ip();
+	$public_ip = wphc_get_public_ip();
 
 	$payload = array(
 		'site'         => wphc_normalize_site_url(),
 		'generated_at' => gmdate( 'c' ),
 		'server'       => array(
-			'software'            => $software,
-			'server_ip'           => '' !== $server_ip ? $server_ip : null,
-			'php_version'         => PHP_VERSION,
-			'php_sapi'            => PHP_SAPI,
-			'php_memory_limit'    => (string) ini_get( 'memory_limit' ),
-			'max_execution_time'  => (string) ini_get( 'max_execution_time' ),
-			'max_input_vars'      => (string) ini_get( 'max_input_vars' ),
-			'upload_max_filesize' => (string) ini_get( 'upload_max_filesize' ),
-			'post_max_size'       => (string) ini_get( 'post_max_size' ),
-			'mysql_version'       => $mysql_version,
-			'https'               => is_ssl(),
-			'extensions'          => array(
+			'software'             => $software,
+			'server_ip'            => '' !== $server_ip ? $server_ip : null,
+			'server_ip_is_private' => '' !== $server_ip && ! wphc_ip_is_public( $server_ip ),
+			'public_ip'            => '' !== $public_ip ? $public_ip : null,
+			'php_version'          => PHP_VERSION,
+			'php_sapi'             => PHP_SAPI,
+			'php_memory_limit'     => (string) ini_get( 'memory_limit' ),
+			'max_execution_time'   => (string) ini_get( 'max_execution_time' ),
+			'max_input_vars'       => (string) ini_get( 'max_input_vars' ),
+			'upload_max_filesize'  => (string) ini_get( 'upload_max_filesize' ),
+			'post_max_size'        => (string) ini_get( 'post_max_size' ),
+			'mysql_version'        => $mysql_version,
+			'https'                => is_ssl(),
+			'extensions'           => array(
 				'curl'     => extension_loaded( 'curl' ),
 				'imagick'  => extension_loaded( 'imagick' ),
 				'gd'       => extension_loaded( 'gd' ),
@@ -1674,6 +1747,39 @@ function wphc_route_detail_server( WP_REST_Request $request ) {
 // -----------------------------------------------------------------------
 // CALLBACK: GET /detail/users
 // -----------------------------------------------------------------------
+
+/**
+ * Riga utente esposta da GET /detail/users. Il chiamante deve aver gia'
+ * innescato update_meta_cache('user', ...) per il gruppo di ID coinvolto,
+ * altrimenti le due get_user_meta() qui sotto eseguono una query per utente
+ * invece di leggere dalla cache gia' popolata in blocco.
+ *
+ * @param object|WP_User $user Utente da cui estrarre i campi (con almeno
+ *                             ID, user_login, display_name, user_email,
+ *                             user_registered).
+ * @return array<string, mixed>
+ */
+function wphc_build_user_summary( $user ) {
+	$last_login    = get_user_meta( $user->ID, 'wphc_last_login', true );
+	$last_login_ip = get_user_meta( $user->ID, 'wphc_last_login_ip', true );
+
+	return array(
+		'id'            => (int) $user->ID,
+		'user_login'    => $user->user_login,
+		'display_name'  => $user->display_name,
+		'email'         => $user->user_email,
+		// user_registered e' gia' salvato in UTC: il suffisso esplicito
+		// toglie ogni ambiguita' a strtotime(), come gia' fa
+		// wphc_get_update_log_entries() per created_at.
+		'registered'    => gmdate( 'c', strtotime( $user->user_registered . ' UTC' ) ),
+		// Null finche' l'utente non effettua un accesso DOPO l'aggiornamento
+		// a questa versione dell'agent (wphc_record_last_login() e' nuova
+		// dalla 1.29.0): non va letto come "account dormiente" finche' non
+		// e' passato abbastanza tempo da escludere semplicemente questo caso.
+		'last_login'    => $last_login ? gmdate( 'c', (int) $last_login ) : null,
+		'last_login_ip' => $last_login_ip ? $last_login_ip : null,
+	);
+}
 
 /**
  * Elenco degli amministratori del sito, per censire dalla dashboard
@@ -1696,19 +1802,22 @@ function wphc_route_detail_users( WP_REST_Request $request ) {
 	$admins = get_users(
 		array(
 			'role'   => 'administrator',
-			'fields' => array( 'ID', 'user_login', 'display_name', 'user_email' ),
+			'fields' => array( 'ID', 'user_login', 'display_name', 'user_email', 'user_registered' ),
 		)
 	);
+
+	// get_users() con 'fields' come array NON precarica la meta cache
+	// dell'utente (a differenza di un WP_User_Query "pieno"): senza questa
+	// chiamata, wphc_build_user_summary() farebbe una query di meta per
+	// ciascun amministratore invece di una sola query in blocco.
+	if ( $admins ) {
+		update_meta_cache( 'user', wp_list_pluck( $admins, 'ID' ) );
+	}
 
 	$users       = array();
 	$seen_logins = array();
 	foreach ( $admins as $user ) {
-		$users[]                          = array(
-			'id'           => (int) $user->ID,
-			'user_login'   => $user->user_login,
-			'display_name' => $user->display_name,
-			'email'        => $user->user_email,
-		);
+		$users[]                          = wphc_build_user_summary( $user );
 		$seen_logins[ $user->user_login ] = true;
 	}
 
@@ -1718,6 +1827,7 @@ function wphc_route_detail_users( WP_REST_Request $request ) {
 	// restituisce solo i login: si risolve ciascuno e si aggiunge solo se non
 	// gia' incluso sopra.
 	if ( is_multisite() ) {
+		$extra_users = array();
 		foreach ( get_super_admins() as $login ) {
 			if ( isset( $seen_logins[ $login ] ) ) {
 				continue;
@@ -1726,13 +1836,19 @@ function wphc_route_detail_users( WP_REST_Request $request ) {
 			if ( ! $user ) {
 				continue;
 			}
-			$users[]               = array(
-				'id'           => (int) $user->ID,
-				'user_login'   => $user->user_login,
-				'display_name' => $user->display_name,
-				'email'        => $user->user_email,
-			);
+			$extra_users[]         = $user;
 			$seen_logins[ $login ] = true;
+		}
+
+		// Stesso motivo della chiamata sopra: un solo giro di priming per
+		// tutto il gruppo di super admin risolti in questo blocco, invece di
+		// una query di meta per ciascuno dentro wphc_build_user_summary().
+		if ( $extra_users ) {
+			update_meta_cache( 'user', wp_list_pluck( $extra_users, 'ID' ) );
+		}
+
+		foreach ( $extra_users as $user ) {
+			$users[] = wphc_build_user_summary( $user );
 		}
 	}
 
@@ -2158,9 +2274,12 @@ function wphc_maybe_install_update_log_schema() {
 		message VARCHAR(255) DEFAULT NULL,
 		ip VARCHAR(45) DEFAULT NULL,
 		active TINYINT(1) DEFAULT NULL,
+		source VARCHAR(10) NOT NULL DEFAULT 'api',
+		actor VARCHAR(60) DEFAULT NULL,
 		PRIMARY KEY  (id),
 		KEY correlation_id (correlation_id),
-		KEY type_created_at (type, created_at)
+		KEY type_created_at (type, created_at),
+		KEY source_created_at (source, created_at)
 	) {$charset_collate};";
 
 	dbDelta( $sql );
@@ -2198,9 +2317,14 @@ add_action( 'init', 'wphc_maybe_install_update_log_schema' );
  * @param bool|null   $active         Stato attivo dell'elemento in questo momento
  *                                    (solo plugin: true/false; null per temi/core/token/login
  *                                    o quando non rilevato).
+ * @param string      $source         'api' | 'wp-admin' | 'cron' | 'wp-cli': chi ha avviato
+ *                                    l'operazione. Default 'api' per non toccare le chiamate
+ *                                    esistenti dal flusso REST di update.
+ * @param string|null $actor          user_login di chi ha avviato l'operazione da wp-admin;
+ *                                    null per cron, wp-cli e le operazioni via API.
  * @return int ID della riga inserita (0 se l'insert fallisce).
  */
-function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null, $active = null ) {
+function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null, $active = null, $source = 'api', $actor = null ) {
 	global $wpdb;
 
 	$wpdb->insert(
@@ -2220,8 +2344,10 @@ function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_f
 			// realmente null (usa NULL SQL a prescindere), quindi %d va bene
 			// anche per le righe temi/core dove $active resta null.
 			'active'         => null === $active ? null : (int) $active,
+			'source'         => $source,
+			'actor'          => $actor,
 		),
-		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d' )
+		array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s' )
 	);
 
 	return (int) $wpdb->insert_id;
@@ -2287,18 +2413,216 @@ function wphc_maybe_prune_update_log() {
  * @param string $type   'plugin' | 'theme' | 'core'.
  * @param string $target Plugin file, stylesheet, oppure 'core'.
  * @param string $phase  'completed' | 'failed' | 'rolled_back'.
+ * @param string $source 'api' | 'wp-admin' | 'cron' | 'wp-cli'. Default 'api' per non
+ *                       toccare le chiamate esistenti dal flusso REST di update.
  */
-function wphc_record_last_update( $type, $target, $phase ) {
+function wphc_record_last_update( $type, $target, $phase, $source = 'api' ) {
 	update_option(
 		'wp_health_check_last_update',
 		array(
 			'type'   => $type,
 			'target' => $target,
 			'phase'  => $phase,
+			'source' => $source,
 			'at'     => gmdate( 'c' ),
 		)
 	);
 }
+
+/**
+ * Determina chi ha avviato un aggiornamento non passato dalla rotta REST
+ * (quel caso resta sempre 'api', valore di default di wphc_log_update_row()).
+ * Distingue WP-CLI e i cron (dove ricadono gli auto-update in background di
+ * WordPress) da un'azione avviata a mano in wp-admin.
+ *
+ * @return string 'wp-cli' | 'cron' | 'wp-admin'.
+ */
+function wphc_detect_update_source() {
+	if ( defined( 'WP_CLI' ) && WP_CLI ) {
+		return 'wp-cli';
+	}
+
+	if ( wp_doing_cron() ) {
+		return 'cron';
+	}
+
+	return 'wp-admin';
+}
+
+/**
+ * Restituisce lo user_login dell'utente correntemente autenticato in
+ * wp-admin, da annotare nella riga di log come 'actor'. Null per cron e
+ * WP-CLI, dove non esiste un utente WordPress associato all'operazione.
+ *
+ * @return string|null
+ */
+function wphc_current_actor() {
+	$user = wp_get_current_user();
+
+	return ( $user instanceof WP_User && $user->exists() ) ? $user->user_login : null;
+}
+
+/**
+ * Cattura la versione installata di un plugin/tema PRIMA che
+ * Plugin_Upgrader/Theme_Upgrader la sovrascriva, cosi' wphc_log_wp_initiated_update()
+ * puo' usarla come version_from quando logga l'update a cose fatte (a quel
+ * punto, in upgrader_process_complete, la versione vecchia non e' piu'
+ * leggibile da nessuna parte). E' un *filter*: deve restituire $response
+ * invariato, non e' questo il suo compito.
+ *
+ * Scatta una volta per elemento anche negli aggiornamenti in blocco
+ * (Plugin_Upgrader::bulk_upgrade() invoca run() singolarmente per ciascun
+ * plugin), quindi copre correttamente anche "aggiorna tutti i plugin".
+ *
+ * @param bool|WP_Error $response   Risposta corrente del filtro (pass-through).
+ * @param array         $hook_extra Contesto dell'operazione corrente (chiavi 'plugin'/'theme').
+ * @return bool|WP_Error $response, invariato.
+ */
+function wphc_snapshot_version_before_upgrade( $response, $hook_extra ) {
+	if ( ! empty( $hook_extra['plugin'] ) ) {
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		$plugin_file = WP_PLUGIN_DIR . '/' . $hook_extra['plugin'];
+		if ( is_readable( $plugin_file ) ) {
+			$data = get_plugin_data( $plugin_file, false, false );
+			$GLOBALS['wphc_version_snapshots']['plugin'][ $hook_extra['plugin'] ] = $data['Version'];
+		}
+	} elseif ( ! empty( $hook_extra['theme'] ) ) {
+		$theme = wp_get_theme( $hook_extra['theme'] );
+		if ( $theme->exists() ) {
+			$GLOBALS['wphc_version_snapshots']['theme'][ $hook_extra['theme'] ] = (string) $theme->get( 'Version' );
+		}
+	}
+
+	return $response;
+}
+add_filter( 'upgrader_pre_install', 'wphc_snapshot_version_before_upgrade', 10, 2 );
+
+/**
+ * Logga un update di plugin/tema avviato da WordPress stesso (wp-admin,
+ * WP-CLI, oppure un auto-update in background via cron) invece che dalla
+ * rotta REST di questo agent. Aggancia upgrader_process_complete, che
+ * scatta a esito GIA' riuscito: si scrive quindi una sola riga 'completed'
+ * (il pattern a due righe richiesta/completamento resta esclusivo del
+ * flusso API, dove serve a provare che un update e' stato avviato anche se
+ * PHP muore a meta').
+ *
+ * @param WP_Upgrader $upgrader   Istanza dell'upgrader; i dati utili sono tutti in $hook_extra.
+ * @param array       $hook_extra Contesto dell'operazione completata.
+ */
+function wphc_log_wp_initiated_update( $upgrader, $hook_extra ) {
+	unset( $upgrader );
+
+	// Un update avviato da POST /update/plugin|/update/theme (che condivide
+	// Plugin_Upgrader/Theme_Upgrader) fa scattare comunque questo hook: il
+	// flag impostato attorno a $upgrader->upgrade() in
+	// wphc_perform_item_update() segnala di ignorarlo, altrimenti l'update
+	// risulterebbe loggato due volte.
+	if ( ! empty( $GLOBALS['wphc_api_update_in_progress'] ) ) {
+		return;
+	}
+
+	if ( ! isset( $hook_extra['action'], $hook_extra['type'] ) || 'update' !== $hook_extra['action'] ) {
+		return;
+	}
+
+	if ( ! in_array( $hook_extra['type'], array( 'plugin', 'theme' ), true ) ) {
+		return;
+	}
+
+	$type  = $hook_extra['type'];
+	$items = array();
+
+	if ( 'plugin' === $type ) {
+		if ( ! empty( $hook_extra['plugins'] ) && is_array( $hook_extra['plugins'] ) ) {
+			$items = $hook_extra['plugins']; // Aggiornamento in blocco.
+		} elseif ( ! empty( $hook_extra['plugin'] ) ) {
+			$items = array( $hook_extra['plugin'] ); // Aggiornamento singolo.
+		}
+	} elseif ( ! empty( $hook_extra['themes'] ) && is_array( $hook_extra['themes'] ) ) {
+			$items = $hook_extra['themes'];
+	} elseif ( ! empty( $hook_extra['theme'] ) ) {
+			$items = array( $hook_extra['theme'] );
+	}
+
+	if ( empty( $items ) ) {
+		return;
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+	$source = wphc_detect_update_source();
+	$actor  = wphc_current_actor();
+
+	foreach ( $items as $target ) {
+		if ( 'plugin' === $type ) {
+			$plugin_file = WP_PLUGIN_DIR . '/' . $target;
+			$data        = is_readable( $plugin_file ) ? get_plugin_data( $plugin_file, false, false ) : array();
+			$name        = ! empty( $data['Name'] ) ? $data['Name'] : $target;
+			$version_to  = isset( $data['Version'] ) ? $data['Version'] : null;
+			$active      = is_plugin_active( $target );
+		} else {
+			$theme      = wp_get_theme( $target );
+			$name       = $theme->exists() ? (string) $theme->get( 'Name' ) : $target;
+			$version_to = $theme->exists() ? (string) $theme->get( 'Version' ) : null;
+			// Nessun equivalente affidabile di "attivo" per un tema in un
+			// bulk update: per convenzione (vedi wphc_log_update_row())
+			// 'active' resta sempre null fuori dal caso plugin.
+			$active = null;
+		}
+
+		$version_from = isset( $GLOBALS['wphc_version_snapshots'][ $type ][ $target ] )
+			? $GLOBALS['wphc_version_snapshots'][ $type ][ $target ]
+			: null;
+		unset( $GLOBALS['wphc_version_snapshots'][ $type ][ $target ] );
+
+		$correlation_id = wphc_generate_correlation_id();
+		wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', null, $active, $source, $actor );
+		wphc_record_last_update( $type, $target, 'completed', $source );
+	}
+}
+add_action( 'upgrader_process_complete', 'wphc_log_wp_initiated_update', 10, 2 );
+
+/**
+ * Rileva un aggiornamento del core avviato fuori dal flusso API (wp-admin,
+ * WP-CLI, un auto-update in background, o perfino un update manuale via
+ * FTP/pannello hosting) confrontando la versione corrente con l'ultima
+ * vista, tenuta in un'opzione autoloaded. Core_Upgrader non fa scattare
+ * upgrader_pre_install e in upgrader_process_complete la versione vecchia
+ * non e' piu' leggibile: la divergenza rispetto al valore memorizzato e' il
+ * solo segnale disponibile, ed e' anche l'unico che intercetta pure gli
+ * update non passati da nessun hook di WordPress.
+ *
+ * Costo a regime: una sola get_option() autoloaded (zero query) piu' un
+ * confronto di stringhe ad ogni richiesta, stesso pattern O(1) gia' usato
+ * da wphc_maybe_install_update_log_schema().
+ */
+function wphc_maybe_log_core_version_change() {
+	$seen = (string) get_option( 'wp_health_check_core_version', '' );
+	$now  = (string) get_bloginfo( 'version' );
+
+	if ( '' === $seen ) {
+		// Prima esecuzione dopo il deploy di questa versione dell'agent: si
+		// limita a "seminare" il valore, senza loggare una falsa divergenza
+		// rispetto al nulla.
+		update_option( 'wp_health_check_core_version', $now );
+		return;
+	}
+
+	if ( $seen === $now ) {
+		return;
+	}
+
+	// wphc_perform_core_update() aggiorna gia' questa opzione subito dopo un
+	// update avviato via API: se si arriva qui con una divergenza reale, e'
+	// per costruzione un update NON passato da quel flusso.
+	update_option( 'wp_health_check_core_version', $now );
+
+	$source         = wphc_detect_update_source();
+	$correlation_id = wphc_generate_correlation_id();
+	wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $seen, $now, 'completed', null, null, $source, wphc_current_actor() );
+	wphc_record_last_update( 'core', 'core', 'completed', $source );
+}
+add_action( 'init', 'wphc_maybe_log_core_version_change' );
 
 /**
  * Rilascia il lock anti-concorrenza acquisito da wphc_update_preflight().
@@ -2683,7 +3007,15 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 
 	$skin     = new Automatic_Upgrader_Skin(); // Nessun output HTML: la richiesta e' REST, non una pagina admin.
 	$upgrader = ( 'plugin' === $type ) ? new Plugin_Upgrader( $skin ) : new Theme_Upgrader( $skin );
-	$result   = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
+
+	// Flag di richiesta (muore da sola a fine PHP, anche in caso di fatal):
+	// upgrade() scatena gli stessi hook upgrader_pre_install/
+	// upgrader_process_complete di un update fatto da wp-admin
+	// (wphc_log_wp_initiated_update()), che altrimenti loggerebbe due volte
+	// lo stesso update.
+	$GLOBALS['wphc_api_update_in_progress'] = true;
+	$result                                 = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
+	unset( $GLOBALS['wphc_api_update_in_progress'] );
 
 	$exists         = false;
 	$actual_version = null;
@@ -2877,9 +3209,27 @@ function wphc_perform_core_update( $dry_run = false ) {
 
 	$skin     = new Automatic_Upgrader_Skin();
 	$upgrader = new Core_Upgrader( $skin );
-	$result   = $upgrader->upgrade( $update );
+
+	// Flag di richiesta: Core_Upgrader non passa da upgrader_pre_install, ma
+	// wphc_maybe_log_core_version_change() (gated su init) confronterebbe
+	// comunque la versione con wp_health_check_core_version alla prossima
+	// richiesta. Aggiornando qui sotto quell'opzione SUBITO dopo l'esito
+	// reale (successo o fallimento) si evita quel doppio log a prescindere
+	// dal flag; il flag resta qui solo per uniformita' con il ramo
+	// plugin/tema sopra, nel caso in cui Core_Upgrader arrivi in futuro ad
+	// agganciare hook condivisi.
+	$GLOBALS['wphc_api_update_in_progress'] = true;
+	$result                                 = $upgrader->upgrade( $update );
+	unset( $GLOBALS['wphc_api_update_in_progress'] );
 
 	$actual_version = get_bloginfo( 'version' );
+
+	// Sincronizza SEMPRE l'opzione con la versione reale osservata ora,
+	// indipendentemente dall'esito: e' il valore che
+	// wphc_maybe_log_core_version_change() confrontera' al prossimo init,
+	// cosi' un update gia' loggato qui (successo, fallito o rolled_back) non
+	// viene ri-loggato come "divergenza" alla richiesta successiva.
+	update_option( 'wp_health_check_core_version', $actual_version );
 
 	if ( is_wp_error( $result ) || $actual_version !== $version_to ) {
 		$message = is_wp_error( $result ) ? $result->get_error_message() : __( 'Verifica post-aggiornamento fallita.', 'wp-health-check' );
@@ -3202,37 +3552,53 @@ function wphc_route_update_core( WP_REST_Request $request ) {
 }
 
 /**
- * Callback REST di GET /update/log: lettura paginata della tabella di log
- * update. Sola lettura, quindi accessibile anche a kill-switch spento
- * (nessuna chiamata a wphc_update_preflight() qui, deliberatamente).
+ * Query paginata sulla tabella di log update, con filtro opzionale per tipo
+ * e/o origine. Estratta dalla callback REST di GET /update/log perche' ha un
+ * secondo consumatore: l'handler AJAX del pulsante "Visualizza log" della
+ * tab Site Health (wphc_ajax_view_log()), che legge la stessa tabella senza
+ * passare da una richiesta REST autenticata col bearer token (l'utente e'
+ * gia' autenticato in wp-admin).
  *
- * @param WP_REST_Request $request Richiesta REST corrente.
- * @return WP_REST_Response
+ * @param string $type   Filtro 'type': 'plugin'|'theme'|'core'|'token'|'login', altrimenti ignorato.
+ * @param string $source Filtro 'source': 'api'|'wp-admin'|'cron'|'wp-cli', altrimenti ignorato.
+ * @param int    $limit  Righe per pagina (1-200, default 50 se fuori range).
+ * @param int    $offset Righe da saltare (min 0).
+ * @return array{entries: array<int, array<string, mixed>>, total: int}
  */
-function wphc_route_update_log( WP_REST_Request $request ) {
-	wphc_record_access();
-
+function wphc_get_update_log_entries( $type, $source, $limit, $offset ) {
 	global $wpdb;
 	$table = wphc_update_log_table();
 
-	$type   = (string) $request->get_param( 'type' );
-	$limit  = (int) $request->get_param( 'limit' );
-	$limit  = $limit > 0 ? min( 200, $limit ) : 50;
-	$offset = max( 0, (int) $request->get_param( 'offset' ) );
+	$limit  = $limit > 0 ? min( 200, (int) $limit ) : 50;
+	$offset = max( 0, (int) $offset );
 
-	$type_filter = in_array( $type, array( 'plugin', 'theme', 'core', 'token', 'login' ), true ) ? $type : '';
+	$type_filter   = in_array( $type, array( 'plugin', 'theme', 'core', 'token', 'login' ), true ) ? $type : '';
+	$source_filter = in_array( $source, array( 'api', 'wp-admin', 'cron', 'wp-cli' ), true ) ? $source : '';
 
+	// Le condizioni si combinano in AND: entrambe le whitelist sopra
+	// garantiscono che solo nomi di colonna fissi finiscano nella query,
+	// mai un valore preso direttamente dalla richiesta.
+	$where  = array();
+	$values = array();
 	if ( '' !== $type_filter ) {
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
-		$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} WHERE type = %s", $type_filter ) ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table e' un nome fisso ($wpdb->prefix), non input.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE type = %s ORDER BY id DESC LIMIT %d OFFSET %d", $type_filter, $limit, $offset ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$where[]  = 'type = %s';
+		$values[] = $type_filter;
+	}
+	if ( '' !== $source_filter ) {
+		$where[]  = 'source = %s';
+		$values[] = $source_filter;
+	}
+	$where_sql = $where ? ( 'WHERE ' . implode( ' AND ', $where ) ) : '';
+
+	if ( $values ) {
+		$total = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$table} {$where_sql}", $values ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- tabella custom non cacheata dall'object cache di WP; $table/$where_sql sono costruiti da un nome fisso e da una whitelist di nomi colonna, non da input diretto; l'ultimo codice e' un falso positivo dello sniff, che non riconosce i placeholder %s dentro $where_sql (una variabile, non un letterale) ne' $values passato come array (forma supportata da $wpdb->prepare()): il conteggio combacia a runtime.
 	} else {
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- tabella custom non cacheata dall'object cache di WP.
 		$total = (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- $table e' un nome fisso ($wpdb->prefix), non input; nessun altro dato in questo ramo.
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} ORDER BY id DESC LIMIT %d OFFSET %d", $limit, $offset ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 	}
+
+	$query_values = array_merge( $values, array( $limit, $offset ) );
+	$rows         = $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} {$where_sql} ORDER BY id DESC LIMIT %d OFFSET %d", $query_values ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber -- tabella custom non cacheata dall'object cache di WP; $table/$where_sql non sono input diretto (vedi nota sopra); l'ultimo codice e' un falso positivo, lo sniff conta "1 parametro" perche' $query_values e' un array passato come forma unica supportata da $wpdb->prepare(), non i suoi elementi: a runtime il numero di placeholder (0-2 di $where_sql + 2 di LIMIT/OFFSET) coincide sempre con count( $query_values ).
 
 	$entries = array();
 	foreach ( (array) $rows as $row ) {
@@ -3254,15 +3620,46 @@ function wphc_route_update_log( WP_REST_Request $request ) {
 			// per temi/core e per righe scritte prima della 1.21.0 (colonna
 			// aggiunta con dbDelta, valore NULL sulle righe preesistenti).
 			'active'         => isset( $row['active'] ) && null !== $row['active'] ? (bool) $row['active'] : null,
+			// 'source'/'actor' sono colonne aggiunte in 1.29.0: sulle righe
+			// preesistenti dbDelta() ha gia' valorizzato 'source' con il
+			// DEFAULT 'api' dello schema, quindi il fallback qui sotto copre
+			// solo l'improbabile riga con la colonna davvero NULL.
+			'source'         => isset( $row['source'] ) && '' !== $row['source'] ? $row['source'] : 'api',
+			'actor'          => isset( $row['actor'] ) && null !== $row['actor'] ? $row['actor'] : null,
 		);
 	}
+
+	return array(
+		'entries' => $entries,
+		'total'   => $total,
+	);
+}
+
+/**
+ * Callback REST di GET /update/log: lettura paginata della tabella di log
+ * update. Sola lettura, quindi accessibile anche a kill-switch spento
+ * (nessuna chiamata a wphc_update_preflight() qui, deliberatamente). La
+ * query vera e propria e' in wphc_get_update_log_entries().
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response
+ */
+function wphc_route_update_log( WP_REST_Request $request ) {
+	wphc_record_access();
+
+	$result = wphc_get_update_log_entries(
+		(string) $request->get_param( 'type' ),
+		(string) $request->get_param( 'source' ),
+		(int) $request->get_param( 'limit' ),
+		(int) $request->get_param( 'offset' )
+	);
 
 	return rest_ensure_response(
 		array(
 			'site'    => wphc_normalize_site_url(),
-			'count'   => count( $entries ),
-			'total'   => $total,
-			'entries' => $entries,
+			'count'   => count( $result['entries'] ),
+			'total'   => $result['total'],
+			'entries' => $result['entries'],
 		)
 	);
 }
@@ -3610,6 +4007,47 @@ function wphc_maybe_consume_autologin() {
 add_action( 'init', 'wphc_maybe_consume_autologin' );
 
 // -----------------------------------------------------------------------
+// TRACCIAMENTO ULTIMO LOGIN
+// -----------------------------------------------------------------------
+//
+// Data/IP dell'ultimo accesso di ciascun utente, esposti da GET /detail/users
+// (dalla 1.29.0). Deliberatamente NESSUNA riga nella tabella di log per un
+// login ordinario: su un sito con accessi frequenti gonfierebbe la tabella
+// senza aggiungere nulla rispetto alla user meta qui sotto. Il type =
+// 'login' della tabella resta riservato all'audit dell'autologin
+// (wphc_maybe_consume_autologin() sopra), che e' un evento raro e sensibile.
+
+/**
+ * Registra data (timestamp Unix, per poter ordinare/confrontare senza
+ * parsing) e IP dell'ultimo accesso riuscito di un utente, in due user meta
+ * dedicate. Agganciata a wp_login, che WordPress invoca gia' con lo
+ * user_login e l'oggetto WP_User risolto; il fallback su get_user_by()
+ * copre i rari casi (pluggable auth custom) in cui il secondo parametro non
+ * arrivasse.
+ *
+ * @param string       $user_login Login dell'utente autenticato.
+ * @param WP_User|null $user       Utente autenticato, se gia' risolto dal chiamante.
+ */
+function wphc_record_last_login( $user_login, $user = null ) {
+	if ( ! ( $user instanceof WP_User ) ) {
+		$user = get_user_by( 'login', $user_login );
+	}
+	if ( ! ( $user instanceof WP_User ) ) {
+		return;
+	}
+
+	update_user_meta( $user->ID, 'wphc_last_login', time() );
+
+	// wphc_get_client_ip() rispetta gia' l'opzione wp_health_check_trust_proxy:
+	// stessa fonte usata per la colonna 'ip' della tabella di log.
+	$ip = wphc_get_client_ip();
+	if ( '' !== $ip ) {
+		update_user_meta( $user->ID, 'wphc_last_login_ip', $ip );
+	}
+}
+add_action( 'wp_login', 'wphc_record_last_login', 10, 2 );
+
+// -----------------------------------------------------------------------
 // TAB SITE HEALTH: stato e configurazione da wp-admin
 // -----------------------------------------------------------------------
 //
@@ -3921,6 +4359,29 @@ function wphc_render_site_health_tab( $tab ) {
 			<button type="button" class="button wphc-test-btn" data-endpoint="detail_server_fresh">GET /detail/server?fresh=1</button>
 		</div>
 
+		<h3><?php esc_html_e( 'Log degli aggiornamenti', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'Consultazione dello storico registrato nella tabella di log (stessi dati di GET /update/log), filtrabile per tipo e per origine: distingue gli aggiornamenti avviati via API da quelli fatti dalla bacheca di WordPress, da un auto-update in background o da WP-CLI.', 'wp-health-check' ); ?>
+		</p>
+		<div id="wphc-log-viewer" data-nonce="<?php echo esc_attr( wp_create_nonce( 'wphc_view_log' ) ); ?>">
+			<select id="wphc-log-type">
+				<option value=""><?php esc_html_e( 'Tutti i tipi', 'wp-health-check' ); ?></option>
+				<option value="plugin"><?php esc_html_e( 'Plugin', 'wp-health-check' ); ?></option>
+				<option value="theme"><?php esc_html_e( 'Temi', 'wp-health-check' ); ?></option>
+				<option value="core"><?php esc_html_e( 'Core', 'wp-health-check' ); ?></option>
+				<option value="token"><?php esc_html_e( 'Token autologin', 'wp-health-check' ); ?></option>
+				<option value="login"><?php esc_html_e( 'Accesso autologin', 'wp-health-check' ); ?></option>
+			</select>
+			<select id="wphc-log-source">
+				<option value=""><?php esc_html_e( 'Tutte le origini', 'wp-health-check' ); ?></option>
+				<option value="api"><?php esc_html_e( 'API', 'wp-health-check' ); ?></option>
+				<option value="wp-admin"><?php esc_html_e( 'wp-admin', 'wp-health-check' ); ?></option>
+				<option value="cron"><?php esc_html_e( 'Cron (auto-update)', 'wp-health-check' ); ?></option>
+				<option value="wp-cli"><?php esc_html_e( 'WP-CLI', 'wp-health-check' ); ?></option>
+			</select>
+			<button type="button" class="button" id="wphc-log-view-btn"><?php esc_html_e( 'Visualizza log', 'wp-health-check' ); ?></button>
+		</div>
+
 		<div id="wphc-modal" class="wphc-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="wphc-modal-title">
 			<div class="wphc-modal-box">
 				<div class="wphc-modal-head">
@@ -3929,6 +4390,26 @@ function wphc_render_site_health_tab( $tab ) {
 				</div>
 				<p id="wphc-modal-meta" class="description" style="margin:.5em 0;word-break:break-all;"></p>
 				<pre id="wphc-modal-body"></pre>
+				<div id="wphc-modal-table" style="display:none;">
+					<table class="widefat striped">
+						<thead>
+							<tr>
+								<th><?php esc_html_e( 'Data', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Tipo', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Elemento', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Versione', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Esito', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Origine', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'Attore', 'wp-health-check' ); ?></th>
+								<th><?php esc_html_e( 'IP', 'wp-health-check' ); ?></th>
+							</tr>
+						</thead>
+						<tbody id="wphc-log-tbody"></tbody>
+					</table>
+					<p style="margin-top:10px;">
+						<button type="button" class="button" id="wphc-log-load-more" style="display:none;"><?php esc_html_e( 'Carica altri 50', 'wp-health-check' ); ?></button>
+					</p>
+				</div>
 			</div>
 		</div>
 
@@ -3938,26 +4419,34 @@ function wphc_render_site_health_tab( $tab ) {
 			.wphc-modal-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dcdcde;padding-bottom:8px;margin-bottom:6px;}
 			.wphc-modal-close{font-size:22px;line-height:1;text-decoration:none;color:#646970;}
 			#wphc-modal-body{background:#1d2327;color:#f0f0f1;padding:12px;border-radius:3px;overflow:auto;max-height:60vh;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;margin:0;}
+			#wphc-modal-table table{font-size:12px;}
+			#wphc-modal-table td, #wphc-modal-table th{word-break:break-word;}
 			#wphc-endpoint-tester .button{margin:0 6px 6px 0;}
+			#wphc-log-viewer{margin-bottom:10px;}
+			#wphc-log-viewer select{margin:0 6px 6px 0;}
 			.wphc-status-ok{color:#008a20;font-weight:600;}
 			.wphc-status-bad{color:#d63638;font-weight:600;}
 		</style>
 
 		<script>
 			( function () {
-				var wrap = document.getElementById( 'wphc-endpoint-tester' );
-				if ( ! wrap ) { return; }
-				var nonce   = wrap.dataset.nonce;
-				var modal   = document.getElementById( 'wphc-modal' );
-				var titleEl = document.getElementById( 'wphc-modal-title' );
-				var metaEl  = document.getElementById( 'wphc-modal-meta' );
-				var bodyEl  = document.getElementById( 'wphc-modal-body' );
+				var modal     = document.getElementById( 'wphc-modal' );
+				var titleEl   = document.getElementById( 'wphc-modal-title' );
+				var metaEl    = document.getElementById( 'wphc-modal-meta' );
+				var bodyEl    = document.getElementById( 'wphc-modal-body' );
+				var tableWrap = document.getElementById( 'wphc-modal-table' );
+				var tbody     = document.getElementById( 'wphc-log-tbody' );
 
-				function openModal( title ) {
-					titleEl.textContent = title;
-					metaEl.textContent  = 'Chiamata in corso…';
-					bodyEl.textContent  = '';
-					modal.style.display = 'flex';
+				// mode 'table' mostra la tabella del log e nasconde il <pre> del
+				// tester endpoint (e viceversa): la modale e' condivisa fra le due
+				// funzionalita', non duplicata.
+				function openModal( title, mode ) {
+					titleEl.textContent      = title;
+					metaEl.textContent       = 'Chiamata in corso…';
+					bodyEl.textContent       = '';
+					bodyEl.style.display     = ( 'table' === mode ) ? 'none' : '';
+					tableWrap.style.display  = ( 'table' === mode ) ? '' : 'none';
+					modal.style.display      = 'flex';
 				}
 				function closeModal() { modal.style.display = 'none'; }
 				function prettify( txt ) {
@@ -3965,29 +4454,97 @@ function wphc_render_site_health_tab( $tab ) {
 				}
 				function escapeHtml( s ) { var d = document.createElement( 'div' ); d.textContent = s; return d.innerHTML; }
 
-				wrap.querySelectorAll( '.wphc-test-btn' ).forEach( function ( btn ) {
-					btn.addEventListener( 'click', function () {
-						openModal( btn.textContent.trim() );
+				var wrap = document.getElementById( 'wphc-endpoint-tester' );
+				if ( wrap ) {
+					var nonce = wrap.dataset.nonce;
+					wrap.querySelectorAll( '.wphc-test-btn' ).forEach( function ( btn ) {
+						btn.addEventListener( 'click', function () {
+							openModal( btn.textContent.trim(), 'json' );
+							var fd = new FormData();
+							fd.append( 'action', 'wphc_test_endpoint' );
+							fd.append( 'endpoint', btn.getAttribute( 'data-endpoint' ) );
+							fd.append( '_ajax_nonce', nonce );
+							fetch( ajaxurl, { method: 'POST', body: fd, credentials: 'same-origin' } )
+								.then( function ( r ) { return r.json(); } )
+								.then( function ( res ) {
+									if ( res && res.success ) {
+										var d = res.data;
+										var cls = ( d.status >= 200 && d.status < 300 ) ? 'wphc-status-ok' : 'wphc-status-bad';
+										metaEl.innerHTML = 'HTTP <span class="' + cls + '">' + d.status + '</span> · ' + d.took_ms + ' ms<br>' + escapeHtml( d.url );
+										bodyEl.textContent = prettify( d.body );
+									} else {
+										metaEl.textContent = 'Errore';
+										bodyEl.textContent = JSON.stringify( res );
+									}
+								} )
+								.catch( function ( e ) { metaEl.textContent = 'Errore di rete'; bodyEl.textContent = String( e ); } );
+						} );
+					} );
+				}
+
+				// Visualizzatore del log: stessa modale, contenuto tabellare
+				// costruito con createElement/textContent (mai innerHTML) perche'
+				// 'message'/'actor'/'target' sono dati che arrivano dal server.
+				var logWrap = document.getElementById( 'wphc-log-viewer' );
+				if ( logWrap ) {
+					var logNonce    = logWrap.dataset.nonce;
+					var typeSelect  = document.getElementById( 'wphc-log-type' );
+					var srcSelect   = document.getElementById( 'wphc-log-source' );
+					var viewBtn     = document.getElementById( 'wphc-log-view-btn' );
+					var loadMoreBtn = document.getElementById( 'wphc-log-load-more' );
+					var state       = { type: '', source: '', offset: 0, total: 0, shown: 0 };
+
+					function renderRows( entries ) {
+						entries.forEach( function ( entry ) {
+							var tr     = document.createElement( 'tr' );
+							var vers   = ( entry.version_from || '—' ) + ' → ' + ( entry.version_to || '—' );
+							var cells  = [ entry.created_at, entry.type, entry.target, vers, entry.phase, entry.source, entry.actor || '—', entry.ip || '—' ];
+							cells.forEach( function ( val ) {
+								var td = document.createElement( 'td' );
+								td.textContent = val;
+								tr.appendChild( td );
+							} );
+							tbody.appendChild( tr );
+						} );
+						state.shown += entries.length;
+					}
+
+					function loadPage() {
+						metaEl.textContent = 'Caricamento…';
 						var fd = new FormData();
-						fd.append( 'action', 'wphc_test_endpoint' );
-						fd.append( 'endpoint', btn.getAttribute( 'data-endpoint' ) );
-						fd.append( '_ajax_nonce', nonce );
+						fd.append( 'action', 'wphc_view_log' );
+						fd.append( 'type', state.type );
+						fd.append( 'source', state.source );
+						fd.append( 'offset', state.offset );
+						fd.append( '_ajax_nonce', logNonce );
 						fetch( ajaxurl, { method: 'POST', body: fd, credentials: 'same-origin' } )
 							.then( function ( r ) { return r.json(); } )
 							.then( function ( res ) {
 								if ( res && res.success ) {
-									var d = res.data;
-									var cls = ( d.status >= 200 && d.status < 300 ) ? 'wphc-status-ok' : 'wphc-status-bad';
-									metaEl.innerHTML = 'HTTP <span class="' + cls + '">' + d.status + '</span> · ' + d.took_ms + ' ms<br>' + escapeHtml( d.url );
-									bodyEl.textContent = prettify( d.body );
+									state.total = res.data.total;
+									renderRows( res.data.entries );
+									state.offset += res.data.entries.length;
+									metaEl.textContent = state.shown + ' di ' + state.total + ' righe';
+									loadMoreBtn.style.display = ( state.offset < state.total ) ? 'inline-block' : 'none';
 								} else {
 									metaEl.textContent = 'Errore';
-									bodyEl.textContent = JSON.stringify( res );
 								}
 							} )
-							.catch( function ( e ) { metaEl.textContent = 'Errore di rete'; bodyEl.textContent = String( e ); } );
+							.catch( function () { metaEl.textContent = 'Errore di rete'; } );
+					}
+
+					viewBtn.addEventListener( 'click', function () {
+						state.type   = typeSelect.value;
+						state.source = srcSelect.value;
+						state.offset = 0;
+						state.shown  = 0;
+						tbody.innerHTML = '';
+						openModal( 'Log degli aggiornamenti', 'table' );
+						loadPage();
 					} );
-				} );
+
+					loadMoreBtn.addEventListener( 'click', loadPage );
+				}
 
 				modal.addEventListener( 'click', function ( e ) { if ( e.target === modal ) { closeModal(); } } );
 				document.querySelector( '.wphc-modal-close' ).addEventListener( 'click', closeModal );
@@ -4170,6 +4727,33 @@ function wphc_ajax_test_endpoint() {
 add_action( 'wp_ajax_wphc_test_endpoint', 'wphc_ajax_test_endpoint' );
 
 /**
+ * Handler AJAX (admin) del pulsante "Visualizza log" della tab Site Health:
+ * legge la stessa tabella di GET /update/log tramite wphc_get_update_log_entries(),
+ * ma con una query diretta invece che via loopback REST, perche' qui
+ * l'utente e' gia' autenticato in wp-admin e non serve il bearer token.
+ */
+function wphc_ajax_view_log() {
+	check_ajax_referer( 'wphc_view_log' );
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+	}
+
+	$type   = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
+	$source = isset( $_POST['source'] ) ? sanitize_key( wp_unslash( $_POST['source'] ) ) : '';
+	$offset = isset( $_POST['offset'] ) ? (int) $_POST['offset'] : 0;
+
+	$result = wphc_get_update_log_entries( $type, $source, 50, $offset );
+
+	wp_send_json_success(
+		array(
+			'entries' => $result['entries'],
+			'total'   => $result['total'],
+		)
+	);
+}
+add_action( 'wp_ajax_wphc_view_log', 'wphc_ajax_view_log' );
+
+/**
  * Handler di admin-post.php per il pulsante di self-update nella tab Site
  * Health: esegue lo stesso flusso condiviso di POST /update
  * (wphc_perform_self_update()) e reindirizza alla tab con l'esito
@@ -4231,6 +4815,8 @@ function wphc_handle_clear_caches() {
 	delete_transient( 'wphc_detail_theme_cache' );
 	delete_transient( 'wphc_detail_server_cache' );
 	delete_transient( 'wphc_latest_version_cache' );
+	delete_transient( 'wphc_public_ip' );
+	delete_transient( 'wphc_public_ip_retry_lock' );
 
 	// 2. Ricontrollo completo degli aggiornamenti. wp_clean_*_cache( true )
 	// svuota sia la lista sia il transient degli update, cosi' wp_update_*()

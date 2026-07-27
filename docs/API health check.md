@@ -22,8 +22,13 @@ l'agent **1.25.0**; `GET /ping`, aggiunta con l'agent **1.26.0**; il campo
 alla prima chiamata e poi persistito), introdotto con l'agent **1.27.0** e
 corretto nell'agent **1.28.0** (PNG statico invece del GIF animato di
 default di thum.io, home pubblica del sito invece dell'indirizzo WordPress,
-pulsante di eliminazione/rigenerazione in admin); sono documentate nelle
-sezioni dedicate in fondo.
+pulsante di eliminazione/rigenerazione in admin); i campi
+`summary.public_ip`/`summary.server_ip_is_private` di `/health` (e i loro
+equivalenti in `server.*` di `/detail/server`), i campi
+`registered`/`last_login`/`last_login_ip` di `/detail/users`, le colonne
+`source`/`actor` di `GET /update/log` (con il nuovo filtro `?source=`) e il
+campo `source` di `summary.last_update`, tutti introdotti con l'agent
+**1.29.0**; sono documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -58,7 +63,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.28.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.29.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -297,13 +302,15 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 {
   "site": "https://esempio.com",
   "generated_at": "2026-07-09T08:00:00+00:00",
-  "fleet_agent_version": "1.28.0",
+  "fleet_agent_version": "1.29.0",
   "summary": {
     "wp_version": "7.0",
     "php_version": "8.3.30",
     "php_memory_limit": "2G",
     "server_ip": "203.0.113.10",
-    "plugin_version": "1.28.0",
+    "server_ip_is_private": false,
+    "public_ip": "203.0.113.10",
+    "plugin_version": "1.29.0",
     "plugins_total": 21,
     "plugins_active": 14,
     "plugins_updates": 1,
@@ -323,6 +330,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
       "type": "plugin",
       "target": "akismet/akismet.php",
       "phase": "completed",
+      "source": "api",
       "at": "2026-07-14T10:00:03+00:00"
     },
     "maintenance_stuck": false,
@@ -348,7 +356,9 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.wp_version` | string | Versione di WordPress |
 | `summary.php_version` | string | Versione di PHP |
 | `summary.php_memory_limit` | string | `memory_limit` di PHP (`ini_get`) |
-| `summary.server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile |
+| `summary.server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile; può essere un indirizzo di rete interna dietro reverse proxy/load balancer, vedi `server_ip_is_private` |
+| `summary.server_ip_is_private` | bool | `true` se `server_ip` non è un indirizzo pubblico instradabile; dall'agent **1.29.0** |
+| `summary.public_ip` | string \| null | IP pubblico di uscita del server: riusa `server_ip` se già pubblico, altrimenti risolto via [api.ipify.org](https://www.ipify.org/) e persistito 7 giorni; `null` se non ancora determinabile; dall'agent **1.29.0** |
 | `summary.plugin_version` | string | Versione di questo agent |
 | `summary.plugins_total` | int | Plugin installati (attivi + inattivi) |
 | `summary.plugins_active` | int | Plugin attivi |
@@ -369,6 +379,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.last_update.type` | string | `plugin` \| `theme` \| `core` |
 | `summary.last_update.target` | string | Plugin file, stylesheet, oppure `core` |
 | `summary.last_update.phase` | string | `completed` \| `failed` \| `rolled_back` (le fasi terminali di un update; non include `requested`/`reactivated`/`reactivation_failed`) |
+| `summary.last_update.source` | string | `api` \| `wp-admin` \| `cron` \| `wp-cli`: chi ha avviato l'operazione; dall'agent **1.29.0** |
 | `summary.last_update.at` | string | Timestamp ISO 8601 UTC dell'esito |
 | `summary.maintenance_stuck` | bool | `true` se il file `.maintenance` del core è presente da più di 10 minuti (segnale di un update interrotto a metà, mai ripulito) |
 | `summary.thumbnail` | string \| null | URL assoluto dello screenshot PNG della home pubblica del sito (`get_home_url()`, larghezza 400px, altezza proporzionale, via thum.io), caricato nel Media Library alla prima chiamata e poi persistito in `wp_health_check_thumb`; `null` se non ancora generato o se la generazione è temporaneamente in cooldown dopo un fallimento (dall'agent **1.27.0**; formato e sorgente corretti nella **1.28.0**) |
@@ -601,6 +612,8 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
   "server": {
     "software": "LiteSpeed",
     "server_ip": "203.0.113.10",
+    "server_ip_is_private": false,
+    "public_ip": "203.0.113.10",
     "php_version": "8.3.30",
     "php_sapi": "litespeed",
     "php_memory_limit": "2G",
@@ -626,7 +639,9 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/server' \
 | Campo | Tipo | Note |
 |---|---|---|
 | `software` | string | Software del server (es. `LiteSpeed`, `nginx/1.24.0`) |
-| `server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile |
+| `server_ip` | string \| null | IP del server WordPress (`SERVER_ADDR`), `null` se non determinabile; può essere un indirizzo di rete interna dietro reverse proxy/load balancer, vedi `server_ip_is_private` |
+| `server_ip_is_private` | bool | `true` se `server_ip` non è un indirizzo pubblico instradabile; dall'agent **1.29.0** |
+| `public_ip` | string \| null | IP pubblico di uscita del server (stessa risoluzione di `summary.public_ip` di `/health`); dall'agent **1.29.0** |
 | `php_version` | string | Versione PHP |
 | `php_sapi` | string | SAPI PHP (es. `fpm-fcgi`, `litespeed`) |
 | `php_memory_limit` | string | `memory_limit` (`ini_get`) |
@@ -673,13 +688,19 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/users' \
       "id": 1,
       "user_login": "admin",
       "display_name": "Amministratore",
-      "email": "admin@esempio.com"
+      "email": "admin@esempio.com",
+      "registered": "2025-03-10T09:00:00+00:00",
+      "last_login": "2026-07-27T07:45:00+00:00",
+      "last_login_ip": "203.0.113.7"
     },
     {
       "id": 4,
       "user_login": "maurizio",
       "display_name": "Maurizio",
-      "email": "maurizio@mavida.com"
+      "email": "maurizio@mavida.com",
+      "registered": "2026-01-05T11:20:00+00:00",
+      "last_login": null,
+      "last_login_ip": null
     }
   ]
 }
@@ -693,6 +714,9 @@ curl 'https://esempio.com/wp-json/health-check/v1/detail/users' \
 | `user_login` | string | Username |
 | `display_name` | string | Nome visualizzato |
 | `email` | string | Indirizzo email |
+| `registered` | string | Data di registrazione dell'account (`user_registered`, ISO 8601 UTC); dall'agent **1.29.0** |
+| `last_login` | string \| null | Timestamp ISO 8601 UTC dell'ultimo accesso riuscito; `null` se l'utente non ha ancora effettuato un accesso dopo l'aggiornamento a questa versione dell'agent (non è un segnale di "account dormiente" di per sé); dall'agent **1.29.0** |
+| `last_login_ip` | string \| null | IP dell'ultimo accesso (stessa fonte di `wphc_get_client_ip()`, rispetta `wp_health_check_trust_proxy`); `null` se non ancora determinato; dall'agent **1.29.0** |
 
 ---
 
@@ -919,7 +943,8 @@ Lettura paginata della tabella di log degli aggiornamenti (plugin, temi,
 core). Sola lettura: **sempre accessibile anche a kill-switch spento**.
 
 **Auth:** Bearer token. **Query:** `type` (`plugin`\|`theme`\|`core`\|`token`\|`login`,
-opzionale), `limit` (default 50, max 200), `offset` (default 0). **Cache:** nessuna.
+opzionale), `source` (`api`\|`wp-admin`\|`cron`\|`wp-cli`, opzionale, dall'agent
+**1.29.0**), `limit` (default 50, max 200), `offset` (default 0). **Cache:** nessuna.
 
 ### Esempio di richiesta
 
@@ -933,42 +958,63 @@ curl 'https://esempio.com/wp-json/health-check/v1/update/log?type=plugin&limit=5
 ```json
 {
   "site": "https://esempio.com",
-  "count": 5,
-  "total": 140,
+  "count": 6,
+  "total": 141,
   "entries": [
+    {
+      "id": 1308, "correlation_id": "d4e5f6a1b2c30718", "created_at": "2026-07-27T07:30:00+00:00",
+      "type": "plugin", "target": "wordfence/wordfence.php", "name": "Wordfence Security",
+      "version_from": "8.0.1", "version_to": "8.0.3",
+      "phase": "completed", "message": null, "ip": null, "active": true,
+      "source": "wp-admin", "actor": "maurizio"
+    },
     {
       "id": 1307, "correlation_id": "c3d4e5f6a1b20718", "created_at": "2026-07-20T09:10:05+00:00",
       "type": "login", "target": "admin", "name": "Amministratore",
       "version_from": null, "version_to": null,
-      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null,
+      "source": "api", "actor": null
     },
     {
       "id": 1306, "correlation_id": "c3d4e5f6a1b20718", "created_at": "2026-07-20T09:10:00+00:00",
       "type": "token", "target": "admin", "name": "Amministratore",
       "version_from": null, "version_to": null,
-      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": null,
+      "source": "api", "actor": null
     },
     {
       "id": 1305, "correlation_id": "b2c3d4e5f6071829", "created_at": "2026-07-19T08:05:10+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.4", "version_to": null,
-      "phase": "reactivated", "message": null, "ip": "203.0.113.7", "active": true
+      "phase": "reactivated", "message": null, "ip": "203.0.113.7", "active": true,
+      "source": "api", "actor": null
     },
     {
       "id": 1288, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:03+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.2", "version_to": "5.3.4",
-      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": true
+      "phase": "completed", "message": null, "ip": "203.0.113.7", "active": true,
+      "source": "api", "actor": null
     },
     {
       "id": 1287, "correlation_id": "a1b2c3d4e5f60718", "created_at": "2026-07-14T10:00:00+00:00",
       "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet",
       "version_from": "5.3.2", "version_to": "5.3.4",
-      "phase": "requested", "message": null, "ip": "203.0.113.7", "active": true
+      "phase": "requested", "message": null, "ip": "203.0.113.7", "active": true,
+      "source": "api", "actor": null
     }
   ]
 }
 ```
+
+La riga `id: 1308` (dall'agent **1.29.0**) è un aggiornamento avviato dalla
+bacheca di WordPress, non dalla rotta REST: `source: "wp-admin"`, `actor` con
+lo `user_login` di chi lo ha eseguito, `ip: null` (nessuna richiesta HTTP a
+questo agent da cui leggerlo) e una **sola** riga `completed` (l'hook che lo
+rileva scatta a esito già riuscito, non ha senso una riga `requested` che
+nessuno chiuderebbe). Un update fatto da `wp-cli` o da un auto-update in
+background avrebbe rispettivamente `source: "wp-cli"` e `source: "cron"`,
+entrambi con `actor: null`.
 
 Le righe `id: 1306`/`1307` sono l'audit trail dell'autologin (dall'agent
 **1.25.0**, vedi [`POST /autologin/token`](#post-autologintoken)):
@@ -1006,6 +1052,8 @@ condiviso con l'operazione di update originaria.
 | `message` | string \| null | Dettaglio in caso di errore/rollback/riattivazione fallita, o motivo di un consumo autologin fallito |
 | `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
 | `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core`/`token`/`login`; sulle righe `reactivation_failed` è sempre `null` anziché `false` (vedi [`POST /update/reactivate`](#post-updatereactivate)) |
+| `source` | string | `api` \| `wp-admin` \| `cron` \| `wp-cli`: chi ha avviato l'operazione; le righe scritte prima dell'agent **1.29.0** hanno `"api"` per costruzione (default applicato da `dbDelta()` a tutto lo storico esistente) |
+| `actor` | string \| null | `user_login` di chi ha agito da wp-admin; `null` per `cron`/`wp-cli`/`api`; dall'agent **1.29.0** |
 
 ---
 
