@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.29.0
+ * Version:     1.30.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.29.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.30.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -110,6 +110,69 @@ if ( ! defined( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL' ) ) {
  */
 if ( ! defined( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL' ) ) {
 	define( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL', 20 );
+}
+
+/**
+ * Slot per una seconda chiave pubblica Ed25519 del centro (kid "k2"), vuoto
+ * finche' non serve. Permette di far convivere due chiavi durante una
+ * rotazione della chiave di firma del centro, senza un redeploy simultaneo
+ * dell'agent su tutta la flotta (dalla 1.30.0). "k1" e' sempre
+ * WP_HEALTH_CHECK_CENTRAL_PUBKEY qui sopra: vedi wphc_verify_central_signature().
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2' ) ) {
+	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2', '' );
+}
+
+/**
+ * Finestra di freschezza (secondi, +/-) per il timestamp delle richieste
+ * firmate (protocollo v2: /rotate, /revoke, /enroll v2) e per l'header
+ * X-WPHC-Timestamp delle chiamate operative firmate. Dalla 1.30.0.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_REPLAY_WINDOW' ) ) {
+	define( 'WP_HEALTH_CHECK_REPLAY_WINDOW', 300 );
+}
+
+/**
+ * TTL (secondi) del transient che ricorda un nonce gia' visto: il doppio di
+ * WP_HEALTH_CHECK_REPLAY_WINDOW, cosi' un nonce non puo' essere riproposto
+ * nemmeno subito dopo la scadenza del proprio record. Dalla 1.30.0.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_NONCE_TTL' ) ) {
+	define( 'WP_HEALTH_CHECK_NONCE_TTL', 600 );
+}
+
+/**
+ * Finestra di grazia (secondi) dopo una rotazione del segreto, durante la
+ * quale wphc_require_token() accetta ancora wp_health_check_token_prev.
+ * Copre il caso in cui la conferma di /rotate all'hub vada persa pur avendo
+ * il sito gia' scritto il segreto nuovo. Dalla 1.30.0.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_ROTATION_GRACE' ) ) {
+	define( 'WP_HEALTH_CHECK_ROTATION_GRACE', 900 );
+}
+
+/**
+ * Soglia e finestra (secondi) del rate limit sui tentativi di autenticazione
+ * falliti (§3.12): oltre WP_HEALTH_CHECK_RATE_MAX_FAILS fallimenti dallo
+ * stesso IP entro WP_HEALTH_CHECK_RATE_WINDOW secondi, le rotte dati
+ * rispondono 429. Incrementato solo sui fallimenti, mai sulle richieste
+ * autenticate con successo. Dalla 1.30.0.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_RATE_MAX_FAILS' ) ) {
+	define( 'WP_HEALTH_CHECK_RATE_MAX_FAILS', 10 );
+}
+if ( ! defined( 'WP_HEALTH_CHECK_RATE_WINDOW' ) ) {
+	define( 'WP_HEALTH_CHECK_RATE_WINDOW', 300 );
+}
+
+/**
+ * URL base del servizio di screenshot usato per generare la thumbnail del
+ * sito (vedi wphc_generate_site_thumbnail()). Costante per permettere a un
+ * singolo sito di puntare a un renderer diverso da wp-config.php, senza
+ * toccare questo file. Dalla 1.30.0 (prima era inline nella funzione).
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_THUMB_SERVICE' ) ) {
+	define( 'WP_HEALTH_CHECK_THUMB_SERVICE', 'https://image.thum.io/get/noanimate/png/width/400/' );
 }
 
 // -----------------------------------------------------------------------
@@ -385,6 +448,18 @@ function wphc_reset_enrollment() {
 		'wp_health_check_last_request_at',
 		'wp_health_check_last_request_ip',
 		'wp_health_check_last_enroll_error',
+		// Protocollo v2 (dalla 1.30.0): stato di rotazione/revoca/firma.
+		'wp_health_check_token_prev',
+		'wp_health_check_token_rotated_at',
+		'wp_health_check_protocol',
+		'wp_health_check_revoked_at',
+		'wp_health_check_secret_kid',
+		'wp_health_check_autologin_pending',
+		// wp_health_check_last_autologin sopravviveva erroneamente al reset
+		// prima della 1.30.0 (§3.16 dell'analisi di sicurezza): un audit di
+		// enrollment resettato non deve conservare l'ultimo autologin del
+		// vecchio enrollment.
+		'wp_health_check_last_autologin',
 	);
 	foreach ( $options as $option_name ) {
 		delete_option( $option_name );
@@ -628,7 +703,9 @@ function wphc_maybe_send_cors_headers() {
 
 	header( 'Access-Control-Allow-Origin: ' . $request_origin );
 	header( 'Access-Control-Allow-Methods: GET, POST, OPTIONS' );
-	header( 'Access-Control-Allow-Headers: Authorization, Content-Type' );
+	// X-WPHC-*: header di firma anti-replay del protocollo v2 (dalla 1.30.0),
+	// vedi wphc_verify_request_signature().
+	header( 'Access-Control-Allow-Headers: Authorization, Content-Type, X-WPHC-Timestamp, X-WPHC-Nonce, X-WPHC-Signature' );
 	// Vary: Origin evita che una cache intermedia (CDN/proxy) serva la
 	// risposta CORS di un'origin ad un'altra origin diversa.
 	header( 'Vary: Origin' );
@@ -692,16 +769,271 @@ function wphc_handle_options_preflight( $result, $server, $request ) {
 add_filter( 'rest_pre_dispatch', 'wphc_handle_options_preflight', 10, 3 );
 
 // -----------------------------------------------------------------------
+// PROTOCOLLO V2: FIRMA DEL CENTRO (kid), ANTI-REPLAY, RATE LIMIT, HTTPS
+// -----------------------------------------------------------------------
+//
+// Blocco di funzioni condivise dalla 1.30.0 fra /enroll (v2), le nuove rotte
+// /rotate e /revoke (firmate Ed25519 come /enroll) e le rotte dati esistenti
+// (che aggiungono la firma HMAC anti-replay quando il sito e' su protocollo
+// 2). Nessuna di queste funzioni e' invocata qui: sono solo definite prima
+// del punto in cui servono, per lo stesso ordine logico gia' seguito dal
+// resto del file (helper condivisi prima, callback dopo).
+
+/**
+ * Encoding base64url (RFC 4648 §5) senza padding, usato per la firma HMAC
+ * delle richieste operative (X-WPHC-Signature): evita i caratteri '+', '/'
+ * e '=' che altrimenti andrebbero percent-encoded in un header HTTP.
+ *
+ * @param string $binary Dati binari da codificare.
+ * @return string Stringa base64url.
+ */
+function wphc_base64url_encode( $binary ) {
+	return rtrim( strtr( base64_encode( $binary ), '+/', '-_' ), '=' ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_encode -- encoding di una firma HMAC, non offuscamento.
+}
+
+/**
+ * Decodifica base64url -> binario, inverso di wphc_base64url_encode().
+ * Ripristina il padding '=' prima di richiamare base64_decode() in modalita'
+ * strict, cosi' un input malformato ritorna false invece di un valore
+ * troncato/silenziosamente sbagliato.
+ *
+ * @param string $data Stringa base64url da decodificare.
+ * @return string|false Dati binari, o false se non decodificabile.
+ */
+function wphc_base64url_decode( $data ) {
+	$data      = strtr( (string) $data, '-_', '+/' );
+	$remainder = strlen( $data ) % 4;
+	if ( 0 !== $remainder ) {
+		$data .= str_repeat( '=', 4 - $remainder );
+	}
+
+	return base64_decode( $data, true );
+}
+
+/**
+ * Verifica una firma Ed25519 del sistema centrale, con le stesse tre
+ * guardie gia' corrette che erano inline in wphc_route_enroll() prima della
+ * 1.30.0: base64_decode(..., true) strict, controllo esplicito delle
+ * lunghezze attese (SODIUM_CRYPTO_SIGN_*), fail-closed su SodiumException.
+ * Condivisa da /enroll, /rotate e /revoke.
+ *
+ * Il kid seleziona quale chiave pubblica di flotta usare (WP_HEALTH_CHECK_CENTRAL_PUBKEY
+ * per "k1", WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2 per "k2"): permette di far
+ * convivere due chiavi durante una rotazione della chiave di firma del
+ * centro. Un payload senza kid (buste v1 di /enroll) assume "k1" di default,
+ * quindi le buste esistenti continuano a verificare senza modifiche.
+ *
+ * @param string $message       Messaggio canonico firmato.
+ * @param string $signature_b64 Firma Ed25519, base64 standard.
+ * @param string $kid           Identificativo della chiave ("k1" o "k2").
+ * @return bool True se la firma e' valida per quella chiave.
+ */
+function wphc_verify_central_signature( $message, $signature_b64, $kid = 'k1' ) {
+	$keys = array(
+		'k1' => WP_HEALTH_CHECK_CENTRAL_PUBKEY,
+		'k2' => WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2,
+	);
+
+	if ( ! isset( $keys[ $kid ] ) || '' === $keys[ $kid ] ) {
+		return false;
+	}
+
+	$pubkey_raw    = base64_decode( $keys[ $kid ], true );
+	$signature_raw = base64_decode( (string) $signature_b64, true );
+
+	if (
+		false === $pubkey_raw || false === $signature_raw
+		|| SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES !== strlen( $pubkey_raw )
+		|| SODIUM_CRYPTO_SIGN_BYTES !== strlen( $signature_raw )
+	) {
+		return false;
+	}
+
+	try {
+		return sodium_crypto_sign_verify_detached( $signature_raw, $message, $pubkey_raw );
+	} catch ( SodiumException $e ) {
+		return false;
+	}
+}
+
+/**
+ * Costruisce il messaggio canonico firmato per le buste centro->sito diverse
+ * da /enroll v1 (che mantiene il proprio formato storico, vedi
+ * wphc_build_enroll_signing_payload()). Il primo componente e' un prefisso
+ * di dominio letterale ("rotate", "revoke", "enroll") che impedisce di
+ * riusare una busta firmata valida per un'operazione contro un'operazione
+ * diversa: senza di esso i payload di /rotate e /revoke sarebbero
+ * strutturalmente confondibili (entrambi iniziano con site_url).
+ *
+ * @param string   $kind  Prefisso di dominio ("rotate", "revoke", "enroll").
+ * @param string[] $parts Componenti del payload, nell'ordine da firmare.
+ * @return string Messaggio canonico.
+ */
+function wphc_build_signed_payload( $kind, array $parts ) {
+	return $kind . "\n" . implode( "\n", $parts );
+}
+
+/**
+ * True se il nonce indicato risulta gia' registrato (quindi la richiesta
+ * e' un replay). Sola lettura: la registrazione (scrittura) avviene solo
+ * DOPO che la firma e' stata verificata, vedi wphc_remember_nonce().
+ *
+ * @param string $nonce Nonce fornito dal chiamante.
+ * @return bool True se gia' visto.
+ */
+function wphc_nonce_seen( $nonce ) {
+	return false !== get_transient( 'wphc_nonce_' . hash( 'sha256', (string) $nonce ) );
+}
+
+/**
+ * Registra un nonce come "usato" per WP_HEALTH_CHECK_NONCE_TTL secondi.
+ * Chiamata SOLO dopo che la firma della richiesta e' gia' stata verificata:
+ * un chiamante non autenticato che prova nonce a caso non puo' quindi
+ * gonfiare wp_options sui siti senza object cache persistente. Chiave
+ * indicizzata sull'hash SHA-256 del nonce, mai il valore in chiaro — stesso
+ * pattern gia' collaudato dal token di autologin.
+ *
+ * @param string $nonce Nonce da registrare.
+ */
+function wphc_remember_nonce( $nonce ) {
+	set_transient( 'wphc_nonce_' . hash( 'sha256', (string) $nonce ), time(), WP_HEALTH_CHECK_NONCE_TTL );
+}
+
+/**
+ * Verifica la firma anti-replay di una richiesta operativa (protocollo v2):
+ * header X-WPHC-Timestamp, X-WPHC-Nonce, X-WPHC-Signature. La stringa
+ * canonica firma il METODO e la ROTTA REST (mai l'URL completo, per restare
+ * compatibile con reverse proxy e varianti www/non-www, come gia' fa
+ * wphc_candidate_site_urls() per l'enroll), l'hash del corpo, il timestamp e
+ * il nonce. La query string NON entra nella firma (?fresh=1, ?check=1 non
+ * sono sicurezza). Ogni passo che fallisce ritorna lo stesso WP_Error
+ * generico, per non rivelare al chiamante quale controllo sia fallito.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @param string          $secret  Segreto (corrente o precedente) con cui verificare l'HMAC.
+ * @return true|WP_Error True se la firma e' valida, altrimenti WP_Error 401.
+ */
+function wphc_verify_request_signature( WP_REST_Request $request, $secret ) {
+	$unauthorized = new WP_Error( 'wphc_unauthorized', __( 'Non autorizzato.', 'wp-health-check' ), array( 'status' => 401 ) );
+
+	$timestamp_header = $request->get_header( 'x-wphc-timestamp' );
+	$nonce            = $request->get_header( 'x-wphc-nonce' );
+	$signature        = $request->get_header( 'x-wphc-signature' );
+
+	if ( empty( $timestamp_header ) || empty( $nonce ) || empty( $signature ) ) {
+		return $unauthorized;
+	}
+
+	if ( abs( time() - (int) $timestamp_header ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
+		return $unauthorized;
+	}
+
+	if ( wphc_nonce_seen( $nonce ) ) {
+		return $unauthorized;
+	}
+
+	$canonical = $request->get_method() . "\n"
+		. $request->get_route() . "\n"
+		. hash( 'sha256', (string) $request->get_body() ) . "\n"
+		. $timestamp_header . "\n"
+		. $nonce;
+
+	$expected = wphc_base64url_encode( hash_hmac( 'sha256', $canonical, (string) $secret, true ) );
+
+	if ( ! hash_equals( $expected, (string) $signature ) ) {
+		return $unauthorized;
+	}
+
+	// Registrata SOLO ora: la firma e' gia' valida, quindi il chiamante e'
+	// autenticato (vedi il commento di wphc_remember_nonce()).
+	wphc_remember_nonce( $nonce );
+
+	return true;
+}
+
+/**
+ * Rate limit sui tentativi di autenticazione falliti (§3.12): transient
+ * indicizzato sull'hash dell'IP del chiamante, incrementato SOLO dai
+ * fallimenti (wphc_throttle_register_failure()), mai dalle richieste
+ * autenticate con successo — per non gonfiare wp_options con traffico
+ * legittimo sui siti privi di object cache persistente.
+ *
+ * @return true|WP_Error True se sotto soglia, altrimenti WP_Error 429.
+ */
+function wphc_throttle_check() {
+	$fails = (int) get_transient( 'wphc_fail_' . hash( 'sha1', wphc_get_client_ip() ) );
+
+	if ( $fails >= WP_HEALTH_CHECK_RATE_MAX_FAILS ) {
+		header( 'Retry-After: ' . WP_HEALTH_CHECK_RATE_WINDOW );
+
+		return new WP_Error(
+			'wphc_rate_limited',
+			__( 'Troppi tentativi falliti: riprova piu\' tardi.', 'wp-health-check' ),
+			array( 'status' => 429 )
+		);
+	}
+
+	return true;
+}
+
+/**
+ * Incrementa il contatore dei tentativi falliti per l'IP del chiamante
+ * corrente. Va invocata da ogni ramo di autenticazione fallita delle rotte
+ * protette da wphc_throttle_check() (dati, /rotate, /revoke).
+ */
+function wphc_throttle_register_failure() {
+	$key   = 'wphc_fail_' . hash( 'sha1', wphc_get_client_ip() );
+	$fails = (int) get_transient( $key );
+	set_transient( $key, $fails + 1, WP_HEALTH_CHECK_RATE_WINDOW );
+}
+
+/**
+ * Impone HTTPS sulle rotte che trasportano credenziali (/enroll, /rotate,
+ * /revoke, /autologin/token). Dietro un reverse proxy is_ssl() puo' risultare
+ * falso pur essendo il traffico reale in HTTPS: l'opt-out riusa lo stesso
+ * meccanismo gia' previsto per wphc_get_client_ip() (wp_health_check_trust_proxy),
+ * invece di introdurne uno nuovo.
+ *
+ * @return true|WP_Error True se la richiesta e' su HTTPS (o il proxy e' fidato).
+ */
+function wphc_require_https() {
+	if ( is_ssl() || (bool) get_option( 'wp_health_check_trust_proxy', false ) ) {
+		return true;
+	}
+
+	return new WP_Error(
+		'wphc_https_required',
+		__( 'HTTPS obbligatorio per questa rotta.', 'wp-health-check' ),
+		array( 'status' => 403 )
+	);
+}
+
+// -----------------------------------------------------------------------
 // AUTENTICAZIONE DELLE ROTTE DATI
 // -----------------------------------------------------------------------
 
 /**
- * Permission_callback condiviso da /health, /detail/* e /update.
- * Legge il token salvato in wp_health_check_token (assegnato una volta
- * dall'enroll) e lo confronta in tempo costante con il bearer token
- * fornito. Header mancante e token errato restituiscono lo STESSO errore
- * (stesso codice, stesso messaggio) per non rivelare a un chiamante non
- * autenticato quale dei due casi si sia verificato.
+ * Permission_callback condiviso da /health, /detail/*, /update* e /thumbnail.
+ * Legge il token salvato in wp_health_check_token (assegnato dall'enroll o
+ * dall'ultima rotazione) e lo confronta in tempo costante con il bearer
+ * token fornito. Header mancante e token errato restituiscono lo STESSO
+ * errore (stesso codice, stesso messaggio) per non rivelare a un chiamante
+ * non autenticato quale dei due casi si sia verificato.
+ *
+ * Dalla 1.30.0 (protocollo v2):
+ * - un sito revocato (wp_health_check_revoked_at valorizzata) rifiuta ogni
+ *   chiamata con 403, indipendentemente dal token fornito;
+ * - un rate limit sui fallimenti (wphc_throttle_check()) risponde 429 prima
+ *   ancora di leggere l'header Authorization;
+ * - se il token corrente non combacia, si ritenta con wp_health_check_token_prev
+ *   ma SOLO dentro la finestra di grazia WP_HEALTH_CHECK_ROTATION_GRACE dalla
+ *   rotazione: e' cio' che rende una rotazione senza downtime per la flotta;
+ * - se il sito e' su wp_health_check_protocol >= 2, la richiesta deve anche
+ *   portare una firma anti-replay valida (X-WPHC-*, vedi
+ *   wphc_verify_request_signature()); se il protocollo e' ancora 1 ma la
+ *   firma e' comunque presente, viene verificata lo stesso (dual-stack: un
+ *   centro aggiornato puo' iniziare a firmare prima che il sito completi la
+ *   rotazione a protocollo 2).
  *
  * @param WP_REST_Request $request Richiesta REST corrente.
  * @return true|WP_Error True se autorizzato, altrimenti WP_Error con lo status corretto.
@@ -720,14 +1052,28 @@ function wphc_require_token( WP_REST_Request $request ) {
 		);
 	}
 
-	$auth_header  = $request->get_header( 'authorization' );
+	if ( ! empty( get_option( 'wp_health_check_revoked_at' ) ) ) {
+		return new WP_Error(
+			'wphc_revoked',
+			__( 'Segreto revocato dal sistema centrale.', 'wp-health-check' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	$throttled = wphc_throttle_check();
+	if ( is_wp_error( $throttled ) ) {
+		return $throttled;
+	}
+
 	$unauthorized = new WP_Error(
 		'wphc_unauthorized',
 		__( 'Non autorizzato.', 'wp-health-check' ),
 		array( 'status' => 401 )
 	);
 
+	$auth_header = $request->get_header( 'authorization' );
 	if ( empty( $auth_header ) || 0 !== stripos( $auth_header, 'Bearer ' ) ) {
+		wphc_throttle_register_failure();
 		return $unauthorized;
 	}
 
@@ -736,8 +1082,46 @@ function wphc_require_token( WP_REST_Request $request ) {
 	// hash_equals: confronto in tempo costante, indispensabile per un
 	// segreto (previene timing attack che dedurrebbero il token byte per
 	// byte misurando quanto a lungo dura il confronto).
-	if ( ! hash_equals( (string) $stored_token, $provided_token ) ) {
+	$prev_token = get_option( 'wp_health_check_token_prev' );
+	$rotated_at = (int) get_option( 'wp_health_check_token_rotated_at' );
+	$using_prev = false;
+
+	if ( hash_equals( (string) $stored_token, $provided_token ) ) {
+		$using_prev = false;
+	} elseif (
+		! empty( $prev_token )
+		&& $rotated_at > 0
+		&& ( time() - $rotated_at ) <= WP_HEALTH_CHECK_ROTATION_GRACE
+		&& hash_equals( (string) $prev_token, $provided_token )
+	) {
+		$using_prev = true;
+	} else {
+		wphc_throttle_register_failure();
 		return $unauthorized;
+	}
+
+	$protocol      = (int) get_option( 'wp_health_check_protocol', 1 );
+	$signature_hdr = $request->get_header( 'x-wphc-signature' );
+
+	if ( $protocol >= 2 || ! empty( $signature_hdr ) ) {
+		$secret_for_signature = $using_prev ? $prev_token : $stored_token;
+		$signature_check      = wphc_verify_request_signature( $request, (string) $secret_for_signature );
+		if ( is_wp_error( $signature_check ) ) {
+			wphc_throttle_register_failure();
+			return $unauthorized;
+		}
+	}
+
+	if ( $using_prev ) {
+		// Riga di log dedicata (§5.B): il segreto precedente e' ancora
+		// dentro la finestra di grazia, ma va tracciato che e' stato usato.
+		wphc_log_update_row( wphc_generate_correlation_id(), 'token', 'rotation', __( 'Segreto precedente', 'wp-health-check' ), null, null, 'completed', 'grace_window_hit' );
+	} elseif ( ! empty( $prev_token ) ) {
+		// Primo uso riuscito del segreto NUOVO dopo una rotazione: il
+		// precedente decade subito, non solo al tempo (la finestra di
+		// grazia si chiude all'evento).
+		delete_option( 'wp_health_check_token_prev' );
+		delete_option( 'wp_health_check_token_rotated_at' );
 	}
 
 	return true;
@@ -767,6 +1151,33 @@ function wphc_register_routes() {
 			// Nessun permission_callback basato su token: l'enroll e' il
 			// bootstrap stesso del token. L'autenticazione qui e' la
 			// firma Ed25519, verificata dentro il callback.
+			'permission_callback' => '__return_true',
+		)
+	);
+
+	// Rotazione del segreto (dalla 1.30.0, §5.B): come /enroll, l'autenticazione
+	// e' la firma Ed25519 del centro verificata dentro il callback, non un
+	// permission_callback basato su token — il sito non possiede ancora il
+	// segreto nuovo nel momento in cui la richiesta arriva.
+	register_rest_route(
+		'health-check/v1',
+		'/rotate',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_rotate',
+			'permission_callback' => '__return_true',
+		)
+	);
+
+	// Revoca del segreto corrente (dalla 1.30.0, §5.B): stessa autenticazione
+	// firmata di /rotate. A differenza di /rotate non consegna nulla di
+	// nuovo: azzera lo stato di autenticazione del sito.
+	register_rest_route(
+		'health-check/v1',
+		'/revoke',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_revoke',
 			'permission_callback' => '__return_true',
 		)
 	);
@@ -902,6 +1313,29 @@ function wphc_register_routes() {
 		)
 	);
 
+	// Stato/rigenerazione della thumbnail del sito (dalla 1.30.0): stessa
+	// autenticazione a bearer delle altre rotte dati. GET restituisce solo lo
+	// stato corrente (economico, nessuna chiamata remota); POST forza una
+	// rigenerazione ignorando il cooldown, vedi wphc_maybe_generate_thumbnail().
+	register_rest_route(
+		'health-check/v1',
+		'/thumbnail',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_thumbnail_status',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+	register_rest_route(
+		'health-check/v1',
+		'/thumbnail',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_thumbnail_regenerate',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
 	// Rotta diagnostica: gated su manage_options (autenticazione WordPress,
 	// quindi chiamabile con una application password), NON sul bearer token.
 	// E' uno strumento per l'operatore: aiuta a capire discrepanze fra i
@@ -943,16 +1377,35 @@ add_action( 'rest_api_init', 'wphc_register_routes' );
  * Bootstrap firmato: consegna al sito il proprio token la prima volta,
  * senza toccare wp-config.php. Il sito non deriva mai il token (non
  * possiede il MASTER_SECRET): lo riceve gia' calcolato e lo conserva
- * come valore opaco. Una ripetizione dell'enroll con lo stesso URL
- * produce sempre lo stesso token (derivazione deterministica lato
- * centro), quindi un replay e' innocuo: riscrive lo stesso valore.
- * Per questo non serve alcun controllo anti-replay (nonce, contatore).
+ * come valore opaco.
+ *
+ * Due formati, distinti dal campo "protocol" del body (default 1 se assente):
+ * - protocol 1 (storico): una ripetizione dell'enroll con lo stesso URL
+ *   produce sempre lo stesso token (derivazione deterministica lato centro),
+ *   quindi un replay e' innocuo, riscrive lo stesso valore. Nessun controllo
+ *   anti-replay per questo formato.
+ * - protocol 2 (dalla 1.30.0, §3.7/§5.B): il token non e' piu' derivato ma
+ *   assegnato dal centro e ruotabile, quindi un replay di una busta vecchia
+ *   potrebbe riportare il sito a un segreto gia' ruotato. Aggiunge percio'
+ *   "nonce" al payload e una finestra di freschezza su "issued_at"
+ *   (+/- WP_HEALTH_CHECK_REPLAY_WINDOW secondi): qui la busta e' quindi
+ *   single-use quanto le rotte /rotate e /revoke.
  *
  * @param WP_REST_Request $request Richiesta REST con il payload di enroll.
  * @return WP_REST_Response|WP_Error Esito dell'enroll.
  */
 function wphc_route_enroll( WP_REST_Request $request ) {
 	wphc_maybe_send_cors_headers();
+
+	$throttled = wphc_throttle_check();
+	if ( is_wp_error( $throttled ) ) {
+		return $throttled;
+	}
+
+	$https_check = wphc_require_https();
+	if ( is_wp_error( $https_check ) ) {
+		return $https_check;
+	}
 
 	$body = json_decode( $request->get_body(), true );
 	if ( ! is_array( $body ) ) {
@@ -964,9 +1417,15 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	// URL inviato, se presente: usato solo per diagnostica nel log errori.
 	$reported_site_url = isset( $body['site_url'] ) ? (string) $body['site_url'] : '';
 
-	// 1. Presenza dei campi obbligatori (dashboard_origin e' l'unico
-	// campo opzionale/nullable del payload).
-	foreach ( array( 'site_url', 'token', 'issued_at', 'signature' ) as $field ) {
+	// 1. Presenza dei campi obbligatori (dashboard_origin e' l'unico campo
+	// sempre opzionale/nullable; "nonce" e' obbligatorio solo in protocol 2).
+	$protocol        = isset( $body['protocol'] ) ? (int) $body['protocol'] : 1;
+	$required_fields = array( 'site_url', 'token', 'issued_at', 'signature' );
+	if ( $protocol >= 2 ) {
+		$required_fields[] = 'nonce';
+	}
+
+	foreach ( $required_fields as $field ) {
 		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
 			/* translators: %s: nome del campo mancante. */
 			$reason = sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field );
@@ -981,36 +1440,56 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	$dashboard_origin = array_key_exists( 'dashboard_origin', $body ) ? $body['dashboard_origin'] : null;
 	$issued_at        = (int) $body['issued_at'];
 	$signature        = (string) $body['signature'];
+	$kid              = isset( $body['kid'] ) ? sanitize_key( (string) $body['kid'] ) : 'k1';
+	$nonce            = isset( $body['nonce'] ) ? (string) $body['nonce'] : '';
 
-	// 2. Verifica della firma con la chiave pubblica incorporata nel file.
-	$message       = wphc_build_enroll_signing_payload( $site_url, $token, $dashboard_origin, $issued_at );
-	$pubkey_raw    = base64_decode( WP_HEALTH_CHECK_CENTRAL_PUBKEY, true );
-	$signature_raw = base64_decode( $signature, true );
+	// 2. Freschezza e anti-replay, solo per protocol 2 (vedi il docblock).
+	if ( $protocol >= 2 ) {
+		if ( abs( time() - $issued_at ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
+			wphc_throttle_register_failure();
+			wphc_record_enroll_error( 'wphc_enroll_stale', __( 'Busta di enroll scaduta (issued_at fuori dalla finestra di freschezza).', 'wp-health-check' ), $reported_site_url );
 
-	$signature_valid = false;
-	if (
-		false !== $pubkey_raw && false !== $signature_raw
-		&& SODIUM_CRYPTO_SIGN_PUBLICKEYBYTES === strlen( $pubkey_raw )
-		&& SODIUM_CRYPTO_SIGN_BYTES === strlen( $signature_raw )
-	) {
-		try {
-			$signature_valid = sodium_crypto_sign_verify_detached( $signature_raw, $message, $pubkey_raw );
-		} catch ( SodiumException $e ) {
-			$signature_valid = false;
+			return new WP_Error( 'wphc_enroll_stale', __( 'Richiesta di enroll scaduta.', 'wp-health-check' ), array( 'status' => 401 ) );
+		}
+		if ( wphc_nonce_seen( $nonce ) ) {
+			wphc_throttle_register_failure();
+			wphc_record_enroll_error( 'wphc_enroll_replay', __( 'Nonce di enroll gia\' utilizzato.', 'wp-health-check' ), $reported_site_url );
+
+			return new WP_Error( 'wphc_enroll_replay', __( 'Richiesta di enroll gia\' processata.', 'wp-health-check' ), array( 'status' => 401 ) );
 		}
 	}
 
-	if ( ! $signature_valid ) {
+	// 3. Verifica della firma con la chiave pubblica incorporata nel file
+	// (kid "k1" o "k2", vedi wphc_verify_central_signature()). Il messaggio
+	// canonico dipende dal protocollo: protocol 1 e' il formato storico
+	// (wphc_build_enroll_signing_payload()); protocol 2 aggiunge il prefisso
+	// di dominio "enroll", il nonce e il numero di protocollo alla firma.
+	$message = ( $protocol >= 2 )
+		? wphc_build_signed_payload(
+			'enroll',
+			array(
+				$site_url,
+				$token,
+				null === $dashboard_origin ? '' : (string) $dashboard_origin,
+				$nonce,
+				(string) $issued_at,
+				(string) $protocol,
+			)
+		)
+		: wphc_build_enroll_signing_payload( $site_url, $token, $dashboard_origin, $issued_at );
+
+	if ( ! wphc_verify_central_signature( $message, $signature, $kid ) ) {
 		// Messaggio unico e generico verso il chiamante: non distingue
 		// "firma non valida" da "chiave malformata" o altro, per non offrire
 		// informazioni utili a chi tenta richieste non autorizzate. La
 		// diagnostica interna (tab admin) registra invece un motivo esplicito.
+		wphc_throttle_register_failure();
 		wphc_record_enroll_error( 'wphc_enroll_unauthorized', __( 'Firma non valida (busta non prodotta dal sistema centrale).', 'wp-health-check' ), $reported_site_url );
 
 		return new WP_Error( 'wphc_enroll_unauthorized', __( 'Richiesta di enroll non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
 	}
 
-	// 3. Il payload firmato deve riguardare uno degli URL canonici di questo
+	// 4. Il payload firmato deve riguardare uno degli URL canonici di questo
 	// sito: impedisce di riusare una busta firmata valida ma destinata a un
 	// altro dominio della flotta contro un sito diverso. Il confronto e'
 	// TOLLERANTE (set di candidati home/site/network_* x www/non-www,
@@ -1052,7 +1531,7 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 		);
 	}
 
-	// 4. Persistenza in wp_options (mai in wp-config.php). Si memorizza
+	// 5. Persistenza in wp_options (mai in wp-config.php). Si memorizza
 	// ESATTAMENTE il site_url firmato ricevuto (autenticato dalla firma):
 	// e' la chiave a cui il centro ha legato il token e che riusera' identica.
 	update_option( 'wp_health_check_token', $token, false );
@@ -1063,15 +1542,248 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	// issued_at e' solo memorizzato come metadato operativo (non usato
 	// per alcuna logica di scadenza, che per progetto non esiste).
 	update_option( 'wp_health_check_enroll_issued_at', $issued_at, false );
+	update_option( 'wp_health_check_secret_kid', $kid, false );
+	if ( $protocol >= 2 ) {
+		// Un enroll v2 riuscito porta gia' il sito a protocollo 2: le rotte
+		// dati inizieranno a pretendere la firma anti-replay. Il nonce va
+		// registrato solo ORA che la firma e' verificata (stesso principio
+		// di wphc_verify_request_signature()).
+		update_option( 'wp_health_check_protocol', 2, false );
+		wphc_remember_nonce( $nonce );
+	}
 	// Enroll riuscito: azzera l'eventuale ultimo errore diagnostico.
 	delete_option( 'wp_health_check_last_enroll_error' );
 
-	// 5. Conferma: si restituisce il site_url firmato realmente registrato.
+	// 6. Conferma: si restituisce il site_url firmato realmente registrato.
 	return rest_ensure_response(
 		array(
 			'enrolled'      => true,
 			'site'          => $received_site_url,
 			'agent_version' => WP_HEALTH_CHECK_VERSION,
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: POST /rotate
+// -----------------------------------------------------------------------
+
+/**
+ * Rotazione firmata del segreto (dalla 1.30.0, §5.B): il centro consegna un
+ * segreto nuovo; il sito sposta l'attuale in wp_health_check_token_prev (per
+ * la finestra di grazia, vedi wphc_require_token()) e adotta il nuovo come
+ * wp_health_check_token. Autenticazione identica a /enroll: firma Ed25519
+ * del centro verificata qui dentro, MAI un permission_callback basato sul
+ * token corrente (il sito non deve poter rifiutare la propria rotazione solo
+ * perche' e' proprio il token in uso quello che sta per essere sostituito).
+ *
+ * Messaggio canonico: "rotate" \n site_url \n new_token \n nonce \n
+ * issued_at \n protocol. Richiede un enrollment gia' completato: non e' un
+ * bootstrap, e' un'operazione su un sito gia' noto al centro.
+ *
+ * @param WP_REST_Request $request Richiesta REST con il payload di rotazione.
+ * @return WP_REST_Response|WP_Error Esito della rotazione.
+ */
+function wphc_route_rotate( WP_REST_Request $request ) {
+	wphc_maybe_send_cors_headers();
+
+	$throttled = wphc_throttle_check();
+	if ( is_wp_error( $throttled ) ) {
+		return $throttled;
+	}
+
+	$https_check = wphc_require_https();
+	if ( is_wp_error( $https_check ) ) {
+		return $https_check;
+	}
+
+	$current_token = get_option( 'wp_health_check_token' );
+	if ( empty( $current_token ) ) {
+		return new WP_Error(
+			'wphc_not_enrolled',
+			__( 'Sito non ancora registrato presso il sistema centrale (enroll mancante).', 'wp-health-check' ),
+			array( 'status' => 503 )
+		);
+	}
+
+	$body = json_decode( $request->get_body(), true );
+	if ( ! is_array( $body ) ) {
+		return new WP_Error( 'wphc_rotate_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
+	}
+
+	foreach ( array( 'site_url', 'new_token', 'nonce', 'issued_at', 'signature' ) as $field ) {
+		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
+			return new WP_Error(
+				'wphc_rotate_missing_field',
+				/* translators: %s: nome del campo mancante. */
+				sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field ),
+				array( 'status' => 400 )
+			);
+		}
+	}
+
+	$site_url  = (string) $body['site_url'];
+	$new_token = (string) $body['new_token'];
+	$nonce     = (string) $body['nonce'];
+	$issued_at = (int) $body['issued_at'];
+	$signature = (string) $body['signature'];
+	$kid       = isset( $body['kid'] ) ? sanitize_key( (string) $body['kid'] ) : 'k1';
+	$protocol  = isset( $body['protocol'] ) ? (int) $body['protocol'] : 2;
+
+	if ( abs( time() - $issued_at ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_rotate_stale', __( 'Richiesta di rotazione scaduta.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+	if ( wphc_nonce_seen( $nonce ) ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_rotate_replay', __( 'Richiesta di rotazione gia\' processata.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+
+	$message = wphc_build_signed_payload( 'rotate', array( $site_url, $new_token, $nonce, (string) $issued_at, (string) $protocol ) );
+	if ( ! wphc_verify_central_signature( $message, $signature, $kid ) ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_rotate_unauthorized', __( 'Richiesta di rotazione non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+
+	// La busta e' valida per QUESTO sito solo se riguarda uno dei suoi URL
+	// canonici — stesso confronto tollerante gia' usato da /enroll, per non
+	// rifiutare a torto su siti WPML/reverse proxy/varianti www.
+	if ( ! in_array( wphc_normalize_url( $site_url ), wphc_candidate_site_urls(), true ) ) {
+		return new WP_Error(
+			'wphc_rotate_url_mismatch',
+			__( 'URL della busta di rotazione non corrispondente a questo sito.', 'wp-health-check' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	wphc_remember_nonce( $nonce );
+
+	// Sposta l'attuale in _prev (apre la finestra di grazia) e adotta il nuovo.
+	update_option( 'wp_health_check_token_prev', $current_token, false );
+	update_option( 'wp_health_check_token_rotated_at', time(), false );
+	update_option( 'wp_health_check_token', $new_token, false );
+	update_option( 'wp_health_check_protocol', max( 2, $protocol ), false );
+	update_option( 'wp_health_check_secret_kid', $kid, false );
+
+	wphc_log_update_row( wphc_generate_correlation_id(), 'token', 'rotation', __( 'Segreto ruotato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
+
+	return rest_ensure_response(
+		array(
+			'rotated'       => true,
+			'site'          => $site_url,
+			'protocol'      => (int) get_option( 'wp_health_check_protocol', 2 ),
+			'grace_seconds' => WP_HEALTH_CHECK_ROTATION_GRACE,
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: POST /revoke
+// -----------------------------------------------------------------------
+
+/**
+ * Revoca firmata del segreto corrente (dalla 1.30.0, §5.B): cancella sia il
+ * segreto corrente che l'eventuale precedente e registra il timestamp di
+ * revoca, cosi' wphc_require_token() rifiuta ogni chiamata successiva con
+ * 403 indipendentemente dal token fornito. Invalida anche i token di
+ * autologin gia' emessi e non ancora consumati (tramite l'elenco tenuto da
+ * wphc_track_pending_autologin()): un segreto compromesso non deve poter
+ * aprire wp-admin tramite un token pendente.
+ *
+ * Autenticazione identica a /enroll e /rotate: firma Ed25519 del centro.
+ * Messaggio canonico: "revoke" \n site_url \n nonce \n issued_at.
+ *
+ * @param WP_REST_Request $request Richiesta REST con il payload di revoca.
+ * @return WP_REST_Response|WP_Error Esito della revoca.
+ */
+function wphc_route_revoke( WP_REST_Request $request ) {
+	wphc_maybe_send_cors_headers();
+
+	$throttled = wphc_throttle_check();
+	if ( is_wp_error( $throttled ) ) {
+		return $throttled;
+	}
+
+	$https_check = wphc_require_https();
+	if ( is_wp_error( $https_check ) ) {
+		return $https_check;
+	}
+
+	if ( empty( get_option( 'wp_health_check_token' ) ) ) {
+		return new WP_Error(
+			'wphc_not_enrolled',
+			__( 'Sito non ancora registrato presso il sistema centrale (enroll mancante).', 'wp-health-check' ),
+			array( 'status' => 503 )
+		);
+	}
+
+	$body = json_decode( $request->get_body(), true );
+	if ( ! is_array( $body ) ) {
+		return new WP_Error( 'wphc_revoke_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
+	}
+
+	foreach ( array( 'site_url', 'nonce', 'issued_at', 'signature' ) as $field ) {
+		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
+			return new WP_Error(
+				'wphc_revoke_missing_field',
+				/* translators: %s: nome del campo mancante. */
+				sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field ),
+				array( 'status' => 400 )
+			);
+		}
+	}
+
+	$site_url  = (string) $body['site_url'];
+	$nonce     = (string) $body['nonce'];
+	$issued_at = (int) $body['issued_at'];
+	$signature = (string) $body['signature'];
+	$kid       = isset( $body['kid'] ) ? sanitize_key( (string) $body['kid'] ) : 'k1';
+
+	if ( abs( time() - $issued_at ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_revoke_stale', __( 'Richiesta di revoca scaduta.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+	if ( wphc_nonce_seen( $nonce ) ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_revoke_replay', __( 'Richiesta di revoca gia\' processata.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+
+	$message = wphc_build_signed_payload( 'revoke', array( $site_url, $nonce, (string) $issued_at ) );
+	if ( ! wphc_verify_central_signature( $message, $signature, $kid ) ) {
+		wphc_throttle_register_failure();
+		return new WP_Error( 'wphc_revoke_unauthorized', __( 'Richiesta di revoca non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+
+	if ( ! in_array( wphc_normalize_url( $site_url ), wphc_candidate_site_urls(), true ) ) {
+		return new WP_Error(
+			'wphc_revoke_url_mismatch',
+			__( 'URL della busta di revoca non corrispondente a questo sito.', 'wp-health-check' ),
+			array( 'status' => 403 )
+		);
+	}
+
+	wphc_remember_nonce( $nonce );
+
+	update_option( 'wp_health_check_revoked_at', gmdate( 'c' ), false );
+	delete_option( 'wp_health_check_token_prev' );
+	delete_option( 'wp_health_check_token_rotated_at' );
+
+	// Invalida ogni token di autologin gia' emesso e non ancora consumato:
+	// delete_transient() (non una query diretta su wp_options) e' l'unico
+	// modo corretto di rimuovere un transient anche quando il sito usa un
+	// object cache persistente (Redis/Memcached).
+	$pending_autologins = (array) get_option( 'wp_health_check_autologin_pending', array() );
+	foreach ( $pending_autologins as $pending_key ) {
+		delete_transient( $pending_key );
+	}
+	delete_option( 'wp_health_check_autologin_pending' );
+
+	wphc_log_update_row( wphc_generate_correlation_id(), 'token', 'revocation', __( 'Segreto revocato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
+
+	return rest_ensure_response(
+		array(
+			'revoked' => true,
+			'site'    => $site_url,
 		)
 	);
 }
@@ -1127,40 +1839,83 @@ function wphc_restore_update_shortcircuit( $saved ) {
 // -----------------------------------------------------------------------
 
 /**
- * Scarica dal servizio thum.io uno screenshot PNG (larghezza 400, altezza
- * proporzionale) della home pubblica del sito e lo carica nel Media Library.
- * Operazione remota e potenzialmente lenta: va chiamata solo tramite
- * wphc_maybe_generate_thumbnail(), mai direttamente, per rispettare la
- * guardia anti-retry-loop.
+ * Scarica dal servizio configurato (WP_HEALTH_CHECK_THUMB_SERVICE, thum.io di
+ * default) uno screenshot PNG (larghezza 400, altezza proporzionale) della
+ * home pubblica del sito e lo carica nel Media Library. Operazione remota e
+ * potenzialmente lenta: va chiamata solo tramite wphc_maybe_generate_thumbnail(),
+ * mai direttamente, per rispettare la guardia anti-retry-loop.
  *
- * @return int|null ID dell'attachment creato, o null su fallimento.
+ * Dalla 1.30.0 ritorna un array strutturato invece di un int|null silenzioso:
+ * ogni punto di fallimento (prima tutti indistinguibili, un semplice "non
+ * generata") produce un codice diagnostico esplicito, che
+ * wphc_maybe_generate_thumbnail() persiste in wp_health_check_thumb_error e
+ * che GET /thumbnail e la tab Site Health espongono.
+ *
+ * @return array{attachment_id: int|null, error: array{code: string, message: string}|null} Esito della generazione.
  */
 function wphc_generate_site_thumbnail() {
 	require_once ABSPATH . 'wp-admin/includes/file.php';
 	require_once ABSPATH . 'wp-admin/includes/media.php';
 	require_once ABSPATH . 'wp-admin/includes/image.php';
 
+	// Preflight sulla scrivibilita' di uploads/: e' la causa di fallimento
+	// piu' frequente e, prima della 1.30.0, non era distinguibile da un
+	// fallimento di rete (entrambi tornavano semplicemente null).
+	$upload_dir = wp_upload_dir();
+	if ( ! empty( $upload_dir['error'] ) ) {
+		return array(
+			'attachment_id' => null,
+			'error'         => array(
+				'code'    => 'wphc_thumb_uploads_not_writable',
+				'message' => (string) $upload_dir['error'],
+			),
+		);
+	}
+
 	// noanimate+png: senza queste due opzioni thum.io risponde in streaming
 	// con un GIF animato (spinner + render progressivo), pensato per essere
-	// mostrato dal vivo in una pagina, non per essere salvato come file.
+	// mostrato dal vivo, non per essere salvato come file.
 	// get_home_url() (non get_site_url()): la home PUBBLICA del sito, non
 	// l'indirizzo WordPress (che puo' differire, es. installazioni in una
 	// sottocartella tecnica).
-	$service_url = 'https://image.thum.io/get/noanimate/png/width/400/' . get_home_url();
+	$service_url = WP_HEALTH_CHECK_THUMB_SERVICE . get_home_url();
 
 	$tmp_file = download_url( $service_url, 20 );
 	if ( is_wp_error( $tmp_file ) ) {
-		return null;
+		return array(
+			'attachment_id' => null,
+			'error'         => array(
+				'code'    => 'wphc_thumb_download_failed',
+				'message' => $tmp_file->get_error_message(),
+			),
+		);
 	}
 
 	// thum.io non garantisce il Content-Type nell'header: si rileva il tipo
-	// reale dal file scaricato invece di assumere .png. Un GIF qui
-	// significherebbe che noanimate/png non hanno avuto effetto (es. sito
-	// non ancora renderizzato): si scarta, il cooldown gestira' il retry.
+	// reale dal file scaricato invece di assumere .png.
 	$image_info = getimagesize( $tmp_file );
-	if ( false === $image_info || IMAGETYPE_GIF === $image_info[2] ) {
+	if ( false === $image_info ) {
 		wp_delete_file( $tmp_file );
-		return null;
+		return array(
+			'attachment_id' => null,
+			'error'         => array(
+				'code'    => 'wphc_thumb_not_an_image',
+				'message' => __( 'La risposta del servizio di screenshot non e\' un\'immagine valida.', 'wp-health-check' ),
+			),
+		);
+	}
+	if ( IMAGETYPE_GIF === $image_info[2] ) {
+		// Un GIF qui significa che noanimate/png non hanno avuto effetto
+		// (es. sito non ancora renderizzato): si scarta, il cooldown
+		// gestira' il retry.
+		wp_delete_file( $tmp_file );
+		return array(
+			'attachment_id' => null,
+			'error'         => array(
+				'code'    => 'wphc_thumb_animated_gif',
+				'message' => __( 'Il servizio ha risposto con un GIF animato invece del PNG atteso.', 'wp-health-check' ),
+			),
+		);
 	}
 
 	$extension = image_type_to_extension( $image_info[2] );
@@ -1180,42 +1935,99 @@ function wphc_generate_site_thumbnail() {
 	if ( is_wp_error( $attachment_id ) ) {
 		// media_handle_sideload() ripulisce $tmp_file solo in caso di successo.
 		wp_delete_file( $tmp_file );
-		return null;
+		return array(
+			'attachment_id' => null,
+			'error'         => array(
+				'code'    => 'wphc_thumb_sideload_failed',
+				'message' => $attachment_id->get_error_message(),
+			),
+		);
 	}
 
-	return $attachment_id;
+	return array(
+		'attachment_id' => $attachment_id,
+		'error'         => null,
+	);
 }
 
 /**
- * Ritorna l'URL della thumbnail del sito, generandola alla prima chiamata.
- * Chiamate successive con l'opzione gia' valorizzata sono O(1) (una sola
- * get_option). Un transient di cooldown (1 giorno) impedisce che un
- * fallimento di thum.io trasformi ogni /health in un nuovo tentativo di
- * chiamata remota.
+ * Ritorna l'URL della thumbnail del sito, generandola alla prima chiamata (o
+ * on-demand con $force=true, vedi POST /thumbnail e il pulsante "Rigenera
+ * anteprima" della tab Site Health). Chiamate successive con l'opzione gia'
+ * valorizzata e $force=false sono O(1) (una sola get_option): /health la
+ * chiama sempre con $force=false, quindi non paga mai il costo di una
+ * rigenerazione nel suo percorso caldo. Un transient di cooldown (1 giorno)
+ * impedisce che un fallimento del servizio trasformi ogni /health in un
+ * nuovo tentativo di chiamata remota; $force=true lo ignora esplicitamente.
  *
+ * Ogni fallimento e' persistito in wp_health_check_thumb_error (dalla
+ * 1.30.0): mai piu' un null silenzioso senza diagnosi, vedi
+ * wphc_generate_site_thumbnail().
+ *
+ * @param bool $force Se true, ignora cooldown e attachment esistente e rigenera comunque.
  * @return string|null URL assoluto della thumbnail, o null se non disponibile.
  */
-function wphc_maybe_generate_thumbnail() {
-	$existing = get_option( 'wp_health_check_thumb' );
-	if ( $existing ) {
-		return $existing;
+function wphc_maybe_generate_thumbnail( $force = false ) {
+	if ( ! $force ) {
+		$existing = get_option( 'wp_health_check_thumb' );
+		if ( $existing ) {
+			return $existing;
+		}
+
+		if ( false !== get_transient( 'wphc_thumb_retry_lock' ) ) {
+			return null;
+		}
 	}
 
-	if ( false !== get_transient( 'wphc_thumb_retry_lock' ) ) {
-		return null;
-	}
-
-	// Impostato PRIMA del tentativo: se thum.io fallisce, il lock resta e
-	// blocca i ritentativi per il resto del TTL indipendentemente dall'esito.
+	// Impostato PRIMA del tentativo (anche quando $force=true): se il
+	// servizio fallisce, il lock resta per il resto del TTL indipendentemente
+	// dall'esito, cosi' anche una rigenerazione forzata non puo' trasformarsi
+	// in un ciclo di retry ravvicinati contro il servizio remoto.
 	set_transient( 'wphc_thumb_retry_lock', time(), DAY_IN_SECONDS );
 
-	$attachment_id = wphc_generate_site_thumbnail();
-	if ( ! $attachment_id ) {
+	if ( $force ) {
+		// Rigenerazione esplicita: elimina l'attachment precedente (se
+		// esiste) prima di generarne uno nuovo, stessa pulizia gia' fatta dal
+		// pulsante admin "Elimina e rigenera", vedi wphc_handle_delete_thumbnail().
+		$previous_id = (int) get_option( 'wp_health_check_thumb_id' );
+		if ( $previous_id ) {
+			wp_delete_attachment( $previous_id, true );
+		}
+		delete_option( 'wp_health_check_thumb' );
+		delete_option( 'wp_health_check_thumb_id' );
+	}
+
+	$result = wphc_generate_site_thumbnail();
+
+	if ( ! empty( $result['error'] ) ) {
+		update_option(
+			'wp_health_check_thumb_error',
+			array(
+				'at'       => gmdate( 'c' ),
+				'code'     => $result['error']['code'],
+				'message'  => $result['error']['message'],
+				'provider' => WP_HEALTH_CHECK_THUMB_SERVICE,
+			),
+			false
+		);
+
 		return null;
 	}
 
-	$url = wp_get_attachment_url( $attachment_id );
+	$attachment_id = $result['attachment_id'];
+	$url           = wp_get_attachment_url( $attachment_id );
 	if ( ! $url ) {
+		update_option(
+			'wp_health_check_thumb_error',
+			array(
+				'at'       => gmdate( 'c' ),
+				'code'     => 'wphc_thumb_sideload_failed',
+				'message'  => __( 'Attachment creato ma senza un URL recuperabile.', 'wp-health-check' ),
+				'provider' => WP_HEALTH_CHECK_THUMB_SERVICE,
+			),
+			false
+		);
+
 		return null;
 	}
 
@@ -1223,9 +2035,67 @@ function wphc_maybe_generate_thumbnail() {
 	// affidabile dell'attachment dal pulsante "Elimina e rigenera" in admin.
 	update_option( 'wp_health_check_thumb', $url, false );
 	update_option( 'wp_health_check_thumb_id', $attachment_id, false );
+	update_option( 'wp_health_check_thumb_at', time(), false );
+	delete_option( 'wp_health_check_thumb_error' );
 	delete_transient( 'wphc_thumb_retry_lock' );
 
 	return $url;
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: GET|POST /thumbnail
+// -----------------------------------------------------------------------
+
+/**
+ * GET /thumbnail — stato corrente della thumbnail del sito: URL (se
+ * disponibile), timestamp dell'ultima generazione riuscita ed eventuale
+ * ultimo errore diagnostico completo. Economica quanto /health: legge solo
+ * opzioni gia' mantenute, nessuna chiamata remota (vedi wphc_maybe_generate_thumbnail()).
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente (nessun payload richiesto).
+ * @return WP_REST_Response Stato della thumbnail.
+ */
+function wphc_route_thumbnail_status( WP_REST_Request $request ) {
+	unset( $request );
+
+	wphc_record_access();
+
+	$thumbnail = get_option( 'wp_health_check_thumb' );
+	$error     = get_option( 'wp_health_check_thumb_error' );
+
+	return rest_ensure_response(
+		array(
+			'thumbnail'    => $thumbnail ? $thumbnail : null,
+			'generated_at' => ( $thumbnail && get_option( 'wp_health_check_thumb_at' ) ) ? gmdate( 'c', (int) get_option( 'wp_health_check_thumb_at' ) ) : null,
+			'error'        => is_array( $error ) ? $error : null,
+		)
+	);
+}
+
+/**
+ * POST /thumbnail — rigenera la thumbnail on demand, ignorando il cooldown
+ * di un giorno (ma comunque impostandolo per il tentativo appena fatto, vedi
+ * wphc_maybe_generate_thumbnail( true )). Risponde con lo stesso esito o
+ * errore strutturato, cosi' un fallimento e' diagnosticabile immediatamente
+ * invece di scoprirlo solo alla prossima /health.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente (nessun payload richiesto).
+ * @return WP_REST_Response Esito della rigenerazione.
+ */
+function wphc_route_thumbnail_regenerate( WP_REST_Request $request ) {
+	unset( $request );
+
+	wphc_record_access();
+
+	$thumbnail = wphc_maybe_generate_thumbnail( true );
+	$error     = get_option( 'wp_health_check_thumb_error' );
+
+	return rest_ensure_response(
+		array(
+			'thumbnail' => $thumbnail ? $thumbnail : null,
+			'error'     => ( ! $thumbnail && is_array( $error ) ) ? $error : null,
+		)
+	);
 }
 
 // -----------------------------------------------------------------------
@@ -1355,6 +2225,11 @@ function wphc_route_health( WP_REST_Request $request ) {
 	// successive leggono solo wp_health_check_thumb (O(1)); vedi
 	// wphc_maybe_generate_thumbnail() per la guardia anti-retry-loop.
 	$thumbnail = wphc_maybe_generate_thumbnail();
+	// Solo il codice, non il messaggio completo (che puo' contenere l'esito
+	// grezzo di un WP_Error di rete): il payload di /health e' polled di
+	// frequente e non deve gonfiarsi con diagnostica estesa, disponibile
+	// invece per intero su GET /thumbnail e nella tab Site Health.
+	$thumbnail_error = get_option( 'wp_health_check_thumb_error' );
 
 	$payload = array(
 		'site'                => wphc_normalize_site_url(),
@@ -1386,6 +2261,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'last_update'             => $last_update ? $last_update : null,
 			'maintenance_stuck'       => $maintenance_stuck,
 			'thumbnail'               => $thumbnail ? $thumbnail : null,
+			'thumbnail_error'         => ( ! $thumbnail && is_array( $thumbnail_error ) && ! empty( $thumbnail_error['code'] ) ) ? $thumbnail_error['code'] : null,
 		),
 		'last_access'         => array(
 			'at'          => $previous_access['at'],
@@ -3850,6 +4726,44 @@ function wphc_route_debug( WP_REST_Request $request ) {
 // passo, agganciata su 'init' e volutamente FUORI dalla REST API).
 
 /**
+ * Aggiunge una chiave di transient di autologin all'elenco di quelle
+ * pendenti (dalla 1.30.0), cosi' POST /revoke puo' invalidarle tutte in
+ * blocco tramite delete_transient() — l'unico modo corretto di rimuovere un
+ * transient anche quando il sito usa un object cache persistente (Redis/
+ * Memcached), dove una DELETE diretta su wp_options non basterebbe.
+ * L'elenco resta volutamente corto (il TTL dei token e' di pochi secondi):
+ * scarta le chiavi piu' vecchie oltre un tetto, per non far crescere
+ * l'opzione se qualcosa lasciasse residui non consumati.
+ *
+ * @param string $key Chiave del transient da tracciare.
+ */
+function wphc_track_pending_autologin( $key ) {
+	$pending   = (array) get_option( 'wp_health_check_autologin_pending', array() );
+	$pending[] = $key;
+	if ( count( $pending ) > 20 ) {
+		$pending = array_slice( $pending, -20 );
+	}
+	update_option( 'wp_health_check_autologin_pending', $pending, false );
+}
+
+/**
+ * Rimuove una chiave dall'elenco dei token di autologin pendenti, dopo che
+ * e' stata consumata (o invalidata da una revoca). Controparte di
+ * wphc_track_pending_autologin().
+ *
+ * @param string $key Chiave del transient da rimuovere dall'elenco.
+ */
+function wphc_untrack_pending_autologin( $key ) {
+	$pending = (array) get_option( 'wp_health_check_autologin_pending', array() );
+	$pending = array_values( array_diff( $pending, array( $key ) ) );
+	if ( empty( $pending ) ) {
+		delete_option( 'wp_health_check_autologin_pending' );
+	} else {
+		update_option( 'wp_health_check_autologin_pending', $pending, false );
+	}
+}
+
+/**
  * POST /autologin/token — genera un token one-time per aprire wp-admin gia'
  * autenticati come l'utente corrente. L'identita' e' quella che WordPress
  * stesso ha gia' risolto per questa richiesta (tipicamente una Application
@@ -3887,6 +4801,10 @@ function wphc_route_autologin_token( WP_REST_Request $request ) {
 		),
 		WP_HEALTH_CHECK_AUTOLOGIN_TTL
 	);
+	// Registrato anche in un piccolo elenco di chiavi pendenti (dalla 1.30.0):
+	// e' cio' che permette a POST /revoke di invalidare i token di autologin
+	// gia' emessi e non ancora consumati, vedi wphc_track_pending_autologin().
+	wphc_track_pending_autologin( $key );
 
 	// Audit minimo pre-esistente (non una tabella dedicata): solo l'ultimo
 	// autologin richiesto, sullo stesso spirito di wphc_record_access().
@@ -3958,6 +4876,7 @@ function wphc_maybe_consume_autologin() {
 	// lettura, indipendentemente dall'esito, per chiudere la finestra di
 	// replay al primo utilizzo anche se l'utente risultasse poi invalido.
 	delete_transient( $key );
+	wphc_untrack_pending_autologin( $key );
 
 	if ( ! is_array( $data ) || empty( $data['user_id'] ) ) {
 		// Token sconosciuto, scaduto o gia' consumato: nessuna identita'
@@ -4098,6 +5017,26 @@ function wphc_render_site_health_tab( $tab ) {
 	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', true );
 	$restrict_official_only  = (bool) get_option( 'wp_health_check_restrict_official_only', false );
 	$thumbnail               = get_option( 'wp_health_check_thumb' );
+	$current_secret          = (string) get_option( 'wp_health_check_token', '' );
+	$secret_kid              = (string) get_option( 'wp_health_check_secret_kid', '' );
+	$secret_rotated_at       = get_option( 'wp_health_check_token_rotated_at' );
+	$secret_revoked_at       = get_option( 'wp_health_check_revoked_at' );
+	$protocol_version        = (int) get_option( 'wp_health_check_protocol', 1 );
+
+	// Il segreto non viene MAI stampato per intero nell'HTML della pagina
+	// (finirebbe in cache di pagina, view-source, screenshot automatici):
+	// qui solo una versione mascherata e un fingerprint, sufficienti a
+	// verificare "e' il segreto giusto?" senza esporlo. Il valore completo
+	// arriva al browser solo in risposta al pulsante "Mostra" (vedi
+	// wphc_ajax_reveal_secret()).
+	$secret_masked = '';
+	if ( '' !== $current_secret ) {
+		$secret_masked = ( strlen( $current_secret ) > 10 )
+			? substr( $current_secret, 0, 6 ) . str_repeat( '•', 8 ) . substr( $current_secret, -4 )
+			: str_repeat( '•', strlen( $current_secret ) );
+	}
+	$secret_fingerprint = ( '' !== $current_secret ) ? substr( hash( 'sha256', $current_secret ), 0, 12 ) : '';
+	$thumb_error        = get_option( 'wp_health_check_thumb_error' );
 
 	$candidates       = wphc_candidate_site_urls();
 	$canonical_home   = wphc_normalize_site_url();
@@ -4156,6 +5095,12 @@ function wphc_render_site_health_tab( $tab ) {
 			<div class="notice notice-success"><p><?php esc_html_e( 'Preferenza sugli aggiornamenti via API salvata.', 'wp-health-check' ); ?></p></div>
 		<?php elseif ( isset( $_GET['wphc_thumb_deleted'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima del sito eliminata: verra\' rigenerata alla prossima chiamata /health.', 'wp-health-check' ); ?></p></div>
+		<?php elseif ( isset( $_GET['wphc_thumb_regenerated'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<?php if ( get_option( 'wp_health_check_thumb' ) ) : ?>
+				<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima rigenerata con successo.', 'wp-health-check' ); ?></p></div>
+			<?php else : ?>
+				<div class="notice notice-error"><p><?php esc_html_e( 'Rigenerazione non riuscita: vedi il dettaglio dell\'errore nella riga "Anteprima sito" qui sotto.', 'wp-health-check' ); ?></p></div>
+			<?php endif; ?>
 		<?php endif; ?>
 
 		<table class="widefat striped" style="max-width: 800px;">
@@ -4195,7 +5140,29 @@ function wphc_render_site_health_tab( $tab ) {
 								<?php submit_button( __( 'Elimina e rigenera', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
 							</form>
 						<?php else : ?>
-							<p class="description"><?php esc_html_e( 'non ancora generata (verra\' creata alla prossima chiamata /health)', 'wp-health-check' ); ?></p>
+							<p class="description"><?php esc_html_e( 'non ancora generata', 'wp-health-check' ); ?></p>
+						<?php endif; ?>
+						<form
+							method="post"
+							action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>"
+							style="margin-top:6px;"
+						>
+							<input type="hidden" name="action" value="wphc_regenerate_thumbnail" />
+							<?php wp_nonce_field( 'wphc_regenerate_thumbnail' ); ?>
+							<?php submit_button( __( 'Rigenera anteprima ora', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+						</form>
+						<?php if ( is_array( $thumb_error ) && ! empty( $thumb_error['code'] ) ) : ?>
+							<p class="description" style="color:#d63638;">
+								<?php
+								printf(
+									/* translators: 1: codice macchina dell'errore, 2: messaggio diagnostico, 3: data/ora ISO 8601. */
+									esc_html__( 'Ultimo errore: %1$s — %2$s (%3$s)', 'wp-health-check' ),
+									esc_html( $thumb_error['code'] ),
+									esc_html( isset( $thumb_error['message'] ) ? $thumb_error['message'] : '' ),
+									esc_html( isset( $thumb_error['at'] ) ? $thumb_error['at'] : '' )
+								);
+								?>
+							</p>
 						<?php endif; ?>
 					</td>
 				</tr>
@@ -4220,6 +5187,44 @@ function wphc_render_site_health_tab( $tab ) {
 							<?php endif; ?>
 						<?php else : ?>
 							<?php esc_html_e( 'Non registrato (in attesa di /enroll)', 'wp-health-check' ); ?>
+						<?php endif; ?>
+					</td>
+				</tr>
+				<tr>
+					<td><?php esc_html_e( 'Segreto di flotta', 'wp-health-check' ); ?></td>
+					<td>
+						<?php if ( ! empty( $secret_revoked_at ) ) : ?>
+							<strong style="color:#d63638;"><?php esc_html_e( 'Revocato', 'wp-health-check' ); ?></strong>
+							<?php
+							printf(
+								/* translators: %s: data/ora ISO 8601 della revoca. */
+								esc_html__( '(il %s)', 'wp-health-check' ),
+								esc_html( $secret_revoked_at )
+							);
+							?>
+						<?php elseif ( '' !== $secret_masked ) : ?>
+							<code id="wphc-secret-masked"><?php echo esc_html( $secret_masked ); ?></code>
+							<button type="button" class="button button-small" id="wphc-secret-reveal-btn" data-nonce="<?php echo esc_attr( wp_create_nonce( 'wphc_reveal_secret' ) ); ?>">
+								<?php esc_html_e( 'Mostra', 'wp-health-check' ); ?>
+							</button>
+							<input type="text" id="wphc-secret-full" readonly style="display:none;width:26em;" />
+							<button type="button" class="button button-small" id="wphc-secret-copy-btn" style="display:none;">
+								<?php esc_html_e( 'Copia', 'wp-health-check' ); ?>
+							</button>
+							<p class="description">
+								<?php
+								printf(
+									/* translators: 1: fingerprint SHA-256 troncato, 2: protocollo (1 o 2), 3: data di rotazione o "mai". */
+									esc_html__( 'Fingerprint: %1$s — protocollo: %2$d — ultima rotazione: %3$s.', 'wp-health-check' ),
+									esc_html( $secret_fingerprint ),
+									(int) $protocol_version,
+									esc_html( $secret_rotated_at ? gmdate( 'c', (int) $secret_rotated_at ) : __( 'mai', 'wp-health-check' ) )
+								);
+								?>
+								<?php esc_html_e( 'E\' la credenziale con cui il sistema centrale governa questo sito: chi la legge puo\' impersonarlo fino alla prossima rotazione. La rotazione e la revoca sono operazioni del centro, non disponibili da qui.', 'wp-health-check' ); ?>
+							</p>
+						<?php else : ?>
+							&mdash;
 						<?php endif; ?>
 					</td>
 				</tr>
@@ -4552,6 +5557,50 @@ function wphc_render_site_health_tab( $tab ) {
 			}() );
 		</script>
 
+		<script>
+			// Pulsanti "Mostra"/"Copia" della riga "Segreto di flotta" (dalla
+			// 1.30.0): il valore in chiaro arriva SOLO qui, via AJAX, mai
+			// stampato nel markup della pagina.
+			( function () {
+				var revealBtn = document.getElementById( 'wphc-secret-reveal-btn' );
+				if ( ! revealBtn ) {
+					return;
+				}
+				var fullField = document.getElementById( 'wphc-secret-full' );
+				var copyBtn   = document.getElementById( 'wphc-secret-copy-btn' );
+
+				revealBtn.addEventListener( 'click', function () {
+					var body = new FormData();
+					body.append( 'action', 'wphc_reveal_secret' );
+					body.append( '_ajax_nonce', revealBtn.dataset.nonce );
+
+					fetch( ajaxurl, { method: 'POST', credentials: 'same-origin', body: body } )
+						.then( function ( r ) { return r.json(); } )
+						.then( function ( data ) {
+							if ( ! data.success ) {
+								window.alert( ( data.data && data.data.message ) || 'Errore' );
+								return;
+							}
+							fullField.value = data.data.secret;
+							fullField.style.display = 'inline-block';
+							copyBtn.style.display = 'inline-block';
+							revealBtn.style.display = 'none';
+						} );
+				} );
+
+				if ( copyBtn ) {
+					copyBtn.addEventListener( 'click', function () {
+						fullField.select();
+						if ( navigator.clipboard ) {
+							navigator.clipboard.writeText( fullField.value );
+						} else {
+							document.execCommand( 'copy' );
+						}
+					} );
+				}
+			}() );
+		</script>
+
 		<h3><?php esc_html_e( 'Aggiornamento del plugin', 'wp-health-check' ); ?></h3>
 		<p class="description">
 			<?php esc_html_e( 'Scarica e installa l\'ultima release firmata da GitHub (stesso flusso di POST /update: verifica integrita\' SHA-256, backup e ripristino automatico in caso di errore).', 'wp-health-check' ); ?>
@@ -4754,6 +5803,46 @@ function wphc_ajax_view_log() {
 add_action( 'wp_ajax_wphc_view_log', 'wphc_ajax_view_log' );
 
 /**
+ * Handler AJAX (admin) del pulsante "Mostra" nella riga "Segreto di flotta"
+ * (dalla 1.30.0): l'unico punto in cui il segreto in chiaro raggiunge il
+ * browser, e solo in risposta a questa chiamata esplicita — mai stampato
+ * nell'HTML della pagina, per non finire in cache di pagina, view-source o
+ * screenshot automatici. Su multisite richiede anche manage_network: su una
+ * rete il segreto e' condiviso da tutti i siti, non del singolo sito, quindi
+ * la sola capacita' locale manage_options non basta. Ogni reveal lascia una
+ * riga nella tabella di log (type='token', message='secret_revealed').
+ */
+function wphc_ajax_reveal_secret() {
+	check_ajax_referer( 'wphc_reveal_secret' );
+	if ( ! current_user_can( 'manage_options' ) || ( is_multisite() && ! current_user_can( 'manage_network' ) ) ) {
+		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+	}
+
+	$secret = (string) get_option( 'wp_health_check_token', '' );
+	if ( '' === $secret ) {
+		wp_send_json_error( array( 'message' => __( 'Nessun segreto registrato.', 'wp-health-check' ) ), 404 );
+	}
+
+	$user = wp_get_current_user();
+	wphc_log_update_row(
+		wphc_generate_correlation_id(),
+		'token',
+		'reveal',
+		$user->display_name ? $user->display_name : $user->user_login,
+		null,
+		null,
+		'completed',
+		'secret_revealed',
+		null,
+		'wp-admin',
+		$user->user_login
+	);
+
+	wp_send_json_success( array( 'secret' => $secret ) );
+}
+add_action( 'wp_ajax_wphc_reveal_secret', 'wphc_ajax_reveal_secret' );
+
+/**
  * Handler di admin-post.php per il pulsante di self-update nella tab Site
  * Health: esegue lo stesso flusso condiviso di POST /update
  * (wphc_perform_self_update()) e reindirizza alla tab con l'esito
@@ -4866,6 +5955,8 @@ function wphc_handle_delete_thumbnail() {
 
 	delete_option( 'wp_health_check_thumb' );
 	delete_option( 'wp_health_check_thumb_id' );
+	delete_option( 'wp_health_check_thumb_error' );
+	delete_option( 'wp_health_check_thumb_at' );
 	delete_transient( 'wphc_thumb_retry_lock' );
 
 	wp_safe_redirect(
@@ -4880,6 +5971,35 @@ function wphc_handle_delete_thumbnail() {
 	exit;
 }
 add_action( 'admin_post_wphc_delete_thumbnail', 'wphc_handle_delete_thumbnail' );
+
+/**
+ * Handler di admin-post.php per il pulsante "Rigenera anteprima ora" (dalla
+ * 1.30.0): a differenza di "Elimina e rigenera" (che si limita a cancellare
+ * e demanda la rigenerazione alla prossima /health), questo chiama
+ * wphc_maybe_generate_thumbnail( true ) sincronamente nella stessa richiesta
+ * admin, cosi' un eventuale errore e' visibile subito nella riga "Anteprima
+ * sito" invece di scoprirlo solo al prossimo polling.
+ */
+function wphc_handle_regenerate_thumbnail() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_regenerate_thumbnail' );
+
+	wphc_maybe_generate_thumbnail( true );
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'                    => 'wp-health-check',
+				'wphc_thumb_regenerated' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_regenerate_thumbnail', 'wphc_handle_regenerate_thumbnail' );
 
 /**
  * Handler di admin-post.php per il pulsante di reset enrollment nella tab
@@ -4938,7 +6058,7 @@ function wphc_handle_toggle_updates() {
 add_action( 'admin_post_wphc_toggle_updates', 'wphc_handle_toggle_updates' );
 
 // -----------------------------------------------------------------------
-// COMANDO WP-CLI: wp health-check reset
+// COMANDI WP-CLI: wp health-check reset | secret | status
 // -----------------------------------------------------------------------
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
@@ -4975,6 +6095,80 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			wphc_reset_enrollment();
 
 			WP_CLI::success( 'Enrollment resettato: il sito e\' tornato allo stato "non registrato".' );
+		}
+
+		/**
+		 * Mostra fingerprint, protocollo, data di rotazione e stato di revoca
+		 * del segreto di flotta corrente, senza aprire wp-admin.
+		 *
+		 * Con --show stampa il segreto per intero, in chiaro: utile per un
+		 * recupero d'emergenza da shell (es. per confrontarlo manualmente con
+		 * quanto conservato dal centro), dove non c'e' un browser da cui il
+		 * valore potrebbe essere esfiltrato via XSS.
+		 *
+		 * ## OPTIONS
+		 *
+		 * [--show]
+		 * : Stampa anche il segreto in chiaro, non solo il fingerprint.
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     wp health-check secret
+		 *     wp health-check secret --show
+		 *
+		 * @when after_wp_load
+		 *
+		 * @param array $args       Argomenti posizionali (non usati).
+		 * @param array $assoc_args Argomenti nominali (--show).
+		 */
+		public function secret( $args, $assoc_args ) {
+			unset( $args );
+
+			$current = (string) get_option( 'wp_health_check_token', '' );
+			if ( '' === $current ) {
+				WP_CLI::error( 'Nessun segreto registrato (sito non ancora enrollato).' );
+			}
+
+			$revoked_at = get_option( 'wp_health_check_revoked_at' );
+			$rotated_at = get_option( 'wp_health_check_token_rotated_at' );
+
+			WP_CLI::log( 'Fingerprint: ' . substr( hash( 'sha256', $current ), 0, 12 ) );
+			WP_CLI::log( 'Protocollo: ' . (int) get_option( 'wp_health_check_protocol', 1 ) );
+			WP_CLI::log( 'Ultima rotazione: ' . ( $rotated_at ? gmdate( 'c', (int) $rotated_at ) : 'mai' ) );
+			WP_CLI::log( 'Revocato: ' . ( $revoked_at ? $revoked_at : 'no' ) );
+
+			if ( ! empty( $assoc_args['show'] ) ) {
+				WP_CLI::log( 'Segreto: ' . $current );
+			}
+		}
+
+		/**
+		 * Riepilogo diagnostico dello stato del sito: enrollment, versione,
+		 * protocollo, ultimo errore di enroll e stato della thumbnail. Quanto
+		 * serve per diagnosticare un sito senza aprire wp-admin.
+		 *
+		 * ## EXAMPLES
+		 *
+		 *     wp health-check status
+		 *
+		 * @when after_wp_load
+		 *
+		 * @param array $args       Argomenti posizionali (non usati).
+		 * @param array $assoc_args Argomenti nominali (non usati).
+		 */
+		public function status( $args, $assoc_args ) {
+			unset( $args, $assoc_args );
+
+			$is_enrolled = ! empty( get_option( 'wp_health_check_token' ) );
+			$last_error  = get_option( 'wp_health_check_last_enroll_error' );
+			$thumb_error = get_option( 'wp_health_check_thumb_error' );
+
+			WP_CLI::log( 'Versione agent: ' . WP_HEALTH_CHECK_VERSION );
+			WP_CLI::log( 'Enrollment: ' . ( $is_enrolled ? 'registrato' : 'non registrato' ) );
+			WP_CLI::log( 'Protocollo: ' . (int) get_option( 'wp_health_check_protocol', 1 ) );
+			WP_CLI::log( 'Revocato: ' . ( get_option( 'wp_health_check_revoked_at' ) ? 'si\'' : 'no' ) );
+			WP_CLI::log( 'Ultimo enroll fallito: ' . ( is_array( $last_error ) ? ( $last_error['code'] . ' — ' . $last_error['reason'] ) : 'nessuno' ) );
+			WP_CLI::log( 'Thumbnail: ' . ( get_option( 'wp_health_check_thumb' ) ? 'presente' : ( is_array( $thumb_error ) ? ( 'errore: ' . $thumb_error['code'] ) : 'non ancora generata' ) ) );
 		}
 	}
 

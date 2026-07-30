@@ -28,7 +28,11 @@ equivalenti in `server.*` di `/detail/server`), i campi
 `registered`/`last_login`/`last_login_ip` di `/detail/users`, le colonne
 `source`/`actor` di `GET /update/log` (con il nuovo filtro `?source=`) e il
 campo `source` di `summary.last_update`, tutti introdotti con l'agent
-**1.29.0**; sono documentate nelle sezioni dedicate in fondo.
+**1.29.0**; le rotte `POST /rotate`, `POST /revoke` e `GET|POST /thumbnail`,
+il protocollo v2 (segreto ruotabile/revocabile, anti-replay `X-WPHC-*` sulle
+rotte dati, `nonce`/`protocol` su `/enroll`), il campo `summary.thumbnail_error`
+di `/health` e il `kid` sulla chiave pubblica Ed25519 del centro, introdotti
+con l'agent **1.30.0**; sono documentate nelle sezioni dedicate in fondo.
 
 Per il razionale di progetto (perché mu-plugin, modello del token, flusso di
 self-update, considerazioni di sicurezza) vedi [README.md](../README.md):
@@ -52,7 +56,10 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 14. [`GET /update/log`](#get-updatelog)
 15. [`POST /update/reactivate`](#post-updatereactivate)
 16. [`POST /autologin/token`](#post-autologintoken)
-17. [Riferimento codici di errore](#riferimento-codici-di-errore)
+17. [`POST /rotate`](#post-rotate)
+18. [`POST /revoke`](#post-revoke)
+19. [`GET|POST /thumbnail`](#getpost-thumbnail)
+20. [Riferimento codici di errore](#riferimento-codici-di-errore)
 
 ---
 
@@ -63,7 +70,7 @@ questo documento è la sola scheda operativa delle chiamate e delle risposte.
 | **Base URL** | `https://<sito>/wp-json/health-check/v1` |
 | **Namespace REST** | `health-check/v1` |
 | **Formato** | JSON in richiesta e risposta (`Content-Type: application/json`) |
-| **Versione agent** | `1.29.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
+| **Versione agent** | `1.30.0` (esposta in `fleet_agent_version` / `agent_version` / `plugin_version`) |
 | **Preflight CORS** | Ogni rotta gestisce `OPTIONS` senza autenticazione (solo header CORS, `200`) |
 
 Sintesi delle rotte:
@@ -84,6 +91,14 @@ Sintesi delle rotte:
 | `GET` | `/update/log` | Bearer token | `type`, `limit`, `offset` | nessuna |
 | `POST` | `/update/reactivate` | Bearer token + kill-switch (salvo `?check=1`) | `?check=1` | nessuna |
 | `POST` | `/autologin/token` | `manage_options` (Application Password) | — | nessuna |
+| `POST` | `/rotate` | Firma Ed25519 (nel body) | — | nessuna |
+| `POST` | `/revoke` | Firma Ed25519 (nel body) | — | nessuna |
+| `GET` | `/thumbnail` | Bearer token | — | nessuna |
+| `POST` | `/thumbnail` | Bearer token | — | nessuna |
+
+Dalla 1.30.0, quando un sito è su `wp_health_check_protocol = 2`, le rotte dati
+(`/health`, `/ping`, `/detail/*`, `/update*`, `/thumbnail`) richiedono anche la
+firma anti-replay `X-WPHC-*`, vedi [Autenticazione](#autenticazione).
 
 ---
 
@@ -119,6 +134,41 @@ rivelare quale dei due casi si sia verificato.
 | Sito mai registrato (nessun token salvato) | `503` | `wphc_not_enrolled` |
 | Header `Authorization` assente o non `Bearer` | `401` | `wphc_unauthorized` |
 | Token errato | `401` | `wphc_unauthorized` |
+
+### Anti-replay `X-WPHC-*` (dalla 1.30.0, protocol 2)
+
+Quando il sito è su `wp_health_check_protocol = 2` (dopo un `POST /rotate`
+riuscito), le rotte dati richiedono, oltre al Bearer, tre header aggiuntivi:
+
+```
+X-WPHC-Timestamp: <unix seconds>
+X-WPHC-Nonce:     <32 caratteri hex casuali>
+X-WPHC-Signature: <base64url( hmac_sha256( secret, canonical ) )>
+```
+
+dove:
+
+```
+canonical = METODO + "\n" + ROTTA + "\n" + sha256_hex(body) + "\n" + timestamp + "\n" + nonce
+```
+
+- `METODO` è `GET` o `POST`; `ROTTA` è il path REST **senza** `/wp-json`
+  (es. `/health-check/v1/health`) — la stessa restituita da
+  `$request->get_route()`, non l'URL completo: resta valida dietro reverse
+  proxy e varianti www/non-www;
+- `sha256_hex(body)` è l'hash SHA-256 esadecimale del corpo grezzo della
+  richiesta (stringa vuota per le `GET`);
+- il timestamp deve cadere entro ±300 secondi (`WP_HEALTH_CHECK_REPLAY_WINDOW`);
+- il nonce non deve essere già stato usato (finestra di 600s,
+  `WP_HEALTH_CHECK_NONCE_TTL`);
+- la query string **non** entra nella firma (`?fresh=1`/`?check=1` non sono
+  sicurezza).
+
+Su un sito ancora a `protocol = 1` questi header sono **verificati se
+presenti** ma non obbligatori (rollout dual-stack, per-sito). Qualunque
+fallimento (timestamp fuori finestra, nonce già visto, firma non valida)
+restituisce lo stesso `401 wphc_unauthorized` delle altre rotte dati, per non
+rivelare al chiamante quale controllo sia fallito.
 
 ### `/autologin/token` — autenticazione WordPress (`manage_options`)
 
@@ -383,6 +433,7 @@ curl 'https://esempio.com/wp-json/health-check/v1/health' \
 | `summary.last_update.at` | string | Timestamp ISO 8601 UTC dell'esito |
 | `summary.maintenance_stuck` | bool | `true` se il file `.maintenance` del core è presente da più di 10 minuti (segnale di un update interrotto a metà, mai ripulito) |
 | `summary.thumbnail` | string \| null | URL assoluto dello screenshot PNG della home pubblica del sito (`get_home_url()`, larghezza 400px, altezza proporzionale, via thum.io), caricato nel Media Library alla prima chiamata e poi persistito in `wp_health_check_thumb`; `null` se non ancora generato o se la generazione è temporaneamente in cooldown dopo un fallimento (dall'agent **1.27.0**; formato e sorgente corretti nella **1.28.0**) |
+| `summary.thumbnail_error` | string \| null | Solo il **codice** dell'ultimo errore diagnostico di generazione della thumbnail (non il messaggio completo, per non gonfiare il payload polled); vedi [`GET|POST /thumbnail`](#getpost-thumbnail) per il dettaglio completo. `null` se l'ultima generazione è riuscita. Dall'agent **1.30.0** |
 | `last_access.at` | string \| null | Timestamp dell'accesso **precedente** (segnale di audit) |
 | `last_access.ip` | string \| null | IP dell'accesso precedente |
 | `last_access.enrolled_at` | string \| null | Timestamp dell'enroll |
@@ -1259,6 +1310,218 @@ richiesta (non uno storico).
 
 ---
 
+## `POST /rotate`
+
+Dall'agent **1.30.0** (§5.B). Consegna un segreto nuovo, generato dal centro:
+il sito sposta l'attuale in `wp_health_check_token_prev` (finestra di grazia
+`WP_HEALTH_CHECK_ROTATION_GRACE`, 900s di default, durante la quale
+[`wphc_require_token()`](#healthdetailupdate--bearer-token) accetta entrambi i
+segreti) e adotta il nuovo come `wp_health_check_token`, alzando
+`wp_health_check_protocol` a `2`. Richiede un enrollment già completato:
+`503 wphc_not_enrolled` altrimenti, stesso codice delle rotte dati.
+
+**Auth:** firma Ed25519 nel body (nessun token — il sito non può ancora
+provare di possedere un segreto che sta per essere sostituito).
+
+### Payload
+
+```json
+{
+  "site_url": "https://esempio.com",
+  "new_token": "<segreto casuale, generato dal centro>",
+  "nonce": "<32 caratteri hex casuali>",
+  "issued_at": 1735689600,
+  "signature": "<firma base64 standard>",
+  "protocol": 2
+}
+```
+
+| Campo | Tipo | Obbligatorio | Note |
+|---|---|---|---|
+| `site_url` | string | sì | URL normalizzato del sito, come per `/enroll` |
+| `new_token` | string | sì | Nuovo segreto, generato dal centro (non derivato da `MASTER_SECRET`) |
+| `nonce` | string | sì | Valore casuale ad alta entropia, mai riusato |
+| `issued_at` | int | sì | Timestamp Unix di emissione, entro ±300s dal momento della verifica |
+| `signature` | string | sì | Firma Ed25519 (base64) del messaggio canonico |
+| `protocol` | int | no | Default `2` se assente |
+| `kid` | string | no | Identificativo della chiave pubblica del centro (`"k1"` di default) |
+
+La `signature` copre, con `"\n"` come separatore e il prefisso di dominio
+`"rotate"` (impedisce di riusare la busta per un'operazione diversa):
+
+```
+"rotate" + "\n" + site_url + "\n" + new_token + "\n" + nonce + "\n" + issued_at + "\n" + protocol
+```
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/rotate' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "site_url": "https://esempio.com",
+    "new_token": "<nuovo-segreto-casuale>",
+    "nonce": "<32-hex-casuali>",
+    "issued_at": 1735689600,
+    "signature": "<base64>",
+    "protocol": 2
+  }'
+```
+
+### Risposta `200`
+
+```json
+{
+  "rotated": true,
+  "site": "https://esempio.com",
+  "protocol": 2,
+  "grace_seconds": 900
+}
+```
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `400` | `wphc_rotate_missing_field` | Manca un campo obbligatorio |
+| `401` | `wphc_rotate_stale` | `issued_at` fuori dalla finestra di freschezza |
+| `401` | `wphc_rotate_replay` | `nonce` già utilizzato |
+| `401` | `wphc_rotate_unauthorized` | Firma non valida (messaggio generico) |
+| `403` | `wphc_rotate_url_mismatch` | `site_url` firmato non tra le varianti canoniche del sito |
+| `403` | `wphc_https_required` | Richiesta non su HTTPS (salvo `wp_health_check_trust_proxy`) |
+| `429` | `wphc_rate_limited` | Troppi tentativi falliti dallo stesso IP |
+| `503` | `wphc_not_enrolled` | Sito non ancora registrato |
+
+---
+
+## `POST /revoke`
+
+Dall'agent **1.30.0** (§5.B). Cancella `wp_health_check_token` e l'eventuale
+`wp_health_check_token_prev`, scrive `wp_health_check_revoked_at`, e invalida
+ogni token di autologin già emesso e non ancora consumato. Da quel momento
+**ogni** rotta dati risponde `403 wphc_revoked`, indipendentemente dal token
+fornito, senza distinguere ulteriormente il motivo.
+
+**Auth:** firma Ed25519 nel body (stessa autenticazione di `/rotate`).
+
+### Payload
+
+```json
+{
+  "site_url": "https://esempio.com",
+  "nonce": "<32 caratteri hex casuali>",
+  "issued_at": 1735689600,
+  "signature": "<firma base64 standard>"
+}
+```
+
+La `signature` copre, con prefisso di dominio `"revoke"`:
+
+```
+"revoke" + "\n" + site_url + "\n" + nonce + "\n" + issued_at
+```
+
+### Esempio di richiesta
+
+```bash
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/revoke' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "site_url": "https://esempio.com",
+    "nonce": "<32-hex-casuali>",
+    "issued_at": 1735689600,
+    "signature": "<base64>"
+  }'
+```
+
+### Risposta `200`
+
+```json
+{
+  "revoked": true,
+  "site": "https://esempio.com"
+}
+```
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `400` | `wphc_revoke_missing_field` | Manca un campo obbligatorio |
+| `401` | `wphc_revoke_stale` | `issued_at` fuori dalla finestra di freschezza |
+| `401` | `wphc_revoke_replay` | `nonce` già utilizzato |
+| `401` | `wphc_revoke_unauthorized` | Firma non valida (messaggio generico) |
+| `403` | `wphc_revoke_url_mismatch` | `site_url` firmato non tra le varianti canoniche del sito |
+| `403` | `wphc_https_required` | Richiesta non su HTTPS (salvo `wp_health_check_trust_proxy`) |
+| `503` | `wphc_not_enrolled` | Sito non ancora registrato |
+
+---
+
+## `GET|POST /thumbnail`
+
+Dall'agent **1.30.0**. Stato e rigenerazione on-demand della thumbnail del
+sito (lo stesso screenshot esposto in `summary.thumbnail` su `/health`).
+`GET` restituisce solo lo stato corrente (economico, nessuna chiamata
+remota); `POST` forza una rigenerazione ignorando il cooldown di un giorno.
+
+**Auth:** Bearer token (stessa autenticazione delle altre rotte dati).
+
+### Esempio di richiesta
+
+```bash
+curl 'https://esempio.com/wp-json/health-check/v1/thumbnail' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+
+curl -X POST 'https://esempio.com/wp-json/health-check/v1/thumbnail' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+### Risposta `200`
+
+```json
+{
+  "thumbnail": "https://esempio.com/wp-content/uploads/2026/07/wp-health-check-site-thumb.png",
+  "generated_at": "2026-07-30T09:00:00+00:00",
+  "error": null
+}
+```
+
+Su fallimento (sia `GET` che `POST`, entrambe rispondono comunque `200`: non è
+un errore del proxy, è un esito diagnostico del sito):
+
+```json
+{
+  "thumbnail": null,
+  "error": {
+    "code": "wphc_thumb_uploads_not_writable",
+    "message": "Impossibile scrivere nella cartella uploads/",
+    "provider": "https://image.thum.io/get/noanimate/png/width/400/",
+    "at": "2026-07-30T09:00:00+00:00"
+  }
+}
+```
+
+`GET` non include `generated_at` quando `thumbnail` è `null`.
+
+### Campi
+
+| Campo | Tipo | Note |
+|---|---|---|
+| `thumbnail` | string \| null | URL assoluto della thumbnail corrente, o `null` |
+| `generated_at` | string \| null | Timestamp ISO 8601 UTC dell'ultima generazione riuscita (solo `GET`) |
+| `error` | object \| null | Ultimo errore diagnostico (`code`, `message`, `provider`, `at`), o `null` se l'ultima generazione è riuscita |
+| `error.code` | string | `wphc_thumb_uploads_not_writable` \| `wphc_thumb_download_failed` \| `wphc_thumb_not_an_image` \| `wphc_thumb_animated_gif` \| `wphc_thumb_sideload_failed` |
+
+### Errori
+
+| Status | `code` | Caso |
+|---|---|---|
+| `401` | `wphc_unauthorized` | Bearer mancante o errato |
+| `429` | `wphc_rate_limited` | Troppi tentativi falliti dallo stesso IP |
+| `503` | `wphc_not_enrolled` | Sito non ancora registrato |
+
+---
+
 ## Riferimento codici di errore
 
 Tutti i `code` restituiti dall'API, raggruppati per rotta.
@@ -1267,8 +1530,11 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 
 | `code` | Status | Rotte |
 |---|---|---|
-| `wphc_not_enrolled` | `503` | `/health`, `/ping`, `/detail/*`, `/update` |
-| `wphc_unauthorized` | `401` | `/health`, `/ping`, `/detail/*`, `/update` |
+| `wphc_not_enrolled` | `503` | `/health`, `/ping`, `/detail/*`, `/update*`, `/thumbnail` |
+| `wphc_unauthorized` | `401` | `/health`, `/ping`, `/detail/*`, `/update*`, `/thumbnail` |
+| `wphc_revoked` | `403` | Tutte le rotte dati, dalla 1.30.0: sito con `wp_health_check_revoked_at` valorizzata |
+| `wphc_rate_limited` | `429` | Tutte le rotte dati e `/enroll`/`/rotate`/`/revoke`, dalla 1.30.0: troppi tentativi falliti dallo stesso IP |
+| `wphc_https_required` | `403` | `/enroll`, `/rotate`, `/revoke`, dalla 1.30.0: richiesta non su HTTPS |
 
 ### `/enroll`
 
@@ -1277,7 +1543,29 @@ Tutti i `code` restituiti dall'API, raggruppati per rotta.
 | `wphc_enroll_invalid_body` | `400` |
 | `wphc_enroll_missing_field` | `400` |
 | `wphc_enroll_unauthorized` | `401` |
+| `wphc_enroll_stale` | `401` (protocol 2, dalla 1.30.0: `issued_at` fuori dalla finestra di freschezza) |
+| `wphc_enroll_replay` | `401` (protocol 2, dalla 1.30.0: `nonce` già utilizzato) |
 | `wphc_enroll_url_mismatch` | `403` |
+
+### `/rotate` (dalla 1.30.0)
+
+| `code` | Status |
+|---|---|
+| `wphc_rotate_missing_field` | `400` |
+| `wphc_rotate_stale` | `401` |
+| `wphc_rotate_replay` | `401` |
+| `wphc_rotate_unauthorized` | `401` |
+| `wphc_rotate_url_mismatch` | `403` |
+
+### `/revoke` (dalla 1.30.0)
+
+| `code` | Status |
+|---|---|
+| `wphc_revoke_missing_field` | `400` |
+| `wphc_revoke_stale` | `401` |
+| `wphc_revoke_replay` | `401` |
+| `wphc_revoke_unauthorized` | `401` |
+| `wphc_revoke_url_mismatch` | `403` |
 
 ### `/update`
 

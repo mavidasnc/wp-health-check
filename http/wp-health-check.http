@@ -128,3 +128,40 @@ Authorization: Basic {{appUser}} {{appPassword}}
 # (TTL), una sola volta (single-use).
 POST {{baseUrl}}/wp-json/health-check/v1/autologin/token
 Authorization: Basic {{appUser}} {{appPassword}}
+
+### POST /rotate — rotazione firmata del segreto (dalla 1.30.0, §5.B). Come
+# /enroll, nessun bearer: site_url, new_token, nonce, issued_at e signature
+# vanno calcolati lato centro. Vedi README.md, sezione "Rotazione e revoca
+# del segreto".
+POST {{baseUrl}}/wp-json/health-check/v1/rotate
+Content-Type: application/json
+
+{
+  "site_url": "{{baseUrl}}",
+  "new_token": "INSERISCI_NUOVO_SEGRETO_CASUALE",
+  "nonce": "INSERISCI_32_HEX_CASUALI",
+  "issued_at": 1735689600,
+  "signature": "INSERISCI_FIRMA_ED25519_BASE64",
+  "protocol": 2
+}
+
+### POST /revoke — revoca firmata del segreto (dalla 1.30.0, §5.B). Come
+# /rotate, nessun bearer.
+POST {{baseUrl}}/wp-json/health-check/v1/revoke
+Content-Type: application/json
+
+{
+  "site_url": "{{baseUrl}}",
+  "nonce": "INSERISCI_32_HEX_CASUALI",
+  "issued_at": 1735689600,
+  "signature": "INSERISCI_FIRMA_ED25519_BASE64"
+}
+
+### GET /thumbnail — stato corrente della thumbnail del sito (dalla 1.30.0)
+GET {{baseUrl}}/wp-json/health-check/v1/thumbnail
+Authorization: Bearer {{token}}
+
+### POST /thumbnail — forza la rigenerazione, ignorando il cooldown di un
+# giorno (dalla 1.30.0)
+POST {{baseUrl}}/wp-json/health-check/v1/thumbnail
+Authorization: Bearer {{token}}

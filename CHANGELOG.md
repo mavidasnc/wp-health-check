@@ -7,6 +7,122 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.30.0] - 2026-07-30
+
+### Added
+
+- **Protocollo v2: segreto per-sito ruotabile e revocabile** (§5.B di
+  `docs/sicurezza-autenticazione-analisi.md`). Fino a oggi il bearer verso il
+  plugin era `HMAC-SHA256(url_normalizzato, MASTER_SECRET)`, deterministico e
+  identico per tutta la flotta: l'unico modo di invalidare un token trapelato
+  era ruotare `MASTER_SECRET`, il che invalidava contemporaneamente ogni sito
+  e imponeva un re-enroll globale sincronizzato (§3.4). Due nuove rotte
+  firmate Ed25519 come `/enroll` (nessun `permission_callback` a token, la
+  firma è verificata nel callback): `POST /rotate` consegna un segreto nuovo
+  e sposta l'attuale in `wp_health_check_token_prev` per una finestra di
+  grazia di `WP_HEALTH_CHECK_ROTATION_GRACE` secondi (900, nuova costante) —
+  senza downtime per la flotta, dato che `wphc_require_token()` accetta
+  entrambi i segreti finché la finestra resta aperta; `POST /revoke` cancella
+  entrambi i segreti e scrive `wp_health_check_revoked_at`, dopo la quale
+  ogni rotta dati risponde `403 wphc_revoked` indipendentemente dal token
+  fornito, e invalida anche i token di autologin già emessi e non ancora
+  consumati (nuovo elenco `wp_health_check_autologin_pending`, tracciato da
+  `wphc_track_pending_autologin()`/`wphc_untrack_pending_autologin()`, così
+  la revoca può usare `delete_transient()` anche su siti con object cache
+  persistente, dove una query diretta su `wp_options` non basterebbe).
+- **Anti-replay sulle chiamate operative** (§3.6): tre header nuovi,
+  `X-WPHC-Timestamp`/`X-WPHC-Nonce`/`X-WPHC-Signature`
+  (`HMAC-SHA256(secret, METODO \n ROTTA \n sha256(body) \n timestamp \n nonce)`,
+  base64url), verificati da `wphc_verify_request_signature()` con finestra di
+  freschezza `WP_HEALTH_CHECK_REPLAY_WINDOW` (±300s) e nonce indicizzato per
+  hash SHA-256 in un transient dedicato (`WP_HEALTH_CHECK_NONCE_TTL`, 600s) —
+  stesso pattern già collaudato dal token di autologin. Obbligatori quando
+  `wp_health_check_protocol` (nuova opzione per-sito, default `1`) è `2`;
+  verificati comunque se presenti anche a protocollo `1`, per un rollout
+  dual-stack: un centro aggiornato può iniziare a firmare prima che il sito
+  completi la rotazione. `/enroll` guadagna un secondo formato (`protocol: 2`
+  nel body) con `nonce` e finestra di freschezza su `issued_at`: con la
+  rotazione introdotta, questo non è più l'irrobustimento "opzionale e non
+  implementato" del README — una busta di enroll vecchia riprodotta potrebbe
+  riportare il sito a un segreto già ruotato.
+- **Rate limiting sui tentativi di autenticazione falliti** (§3.12): nuova
+  `wphc_throttle_check()`, transient `wphc_fail_<sha1(ip)>` incrementato solo
+  sui fallimenti (mai sulle richieste autenticate con successo, per non
+  gonfiare `wp_options` sui siti senza object cache persistente), soglia
+  `WP_HEALTH_CHECK_RATE_MAX_FAILS` (10) in `WP_HEALTH_CHECK_RATE_WINDOW`
+  secondi (300) oltre la quale si risponde `429` con header `Retry-After`.
+- **Gate HTTPS su `/enroll`, `/rotate`, `/revoke`**: nuova `wphc_require_https()`,
+  `403 wphc_https_required` se `! is_ssl()`, con lo stesso opt-out già
+  previsto per l'IP dietro proxy fidato (`wp_health_check_trust_proxy`) —
+  dietro un reverse proxy `is_ssl()` può risultare falso pur essendo il
+  traffico reale in HTTPS.
+- **`kid` sulla chiave pubblica Ed25519 del centro** (§3.15): la costante
+  storica `WP_HEALTH_CHECK_CENTRAL_PUBKEY` diventa il kid `"k1"`, affiancata
+  da `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2` (vuota finché non serve). Una busta
+  senza `kid` assume `"k1"`, quindi tutte le buste `/enroll` v1 esistenti
+  continuano a verificare senza modifiche. `wphc_verify_central_signature()`
+  centralizza la verifica (stesse tre guardie già corrette che erano inline:
+  `base64_decode(..., true)` strict, controllo esplicito delle lunghezze
+  `SODIUM_CRYPTO_SIGN_*`, `catch SodiumException` → false), condivisa da
+  `/enroll`, `/rotate` e `/revoke`.
+- **`GET|POST /thumbnail`**: stato e rigenerazione on-demand della thumbnail
+  del sito. `wphc_generate_site_thumbnail()` ritorna ora un array strutturato
+  invece di un `int|null` silenzioso: ogni punto di fallimento (prima tutti
+  indistinguibili) produce un codice diagnostico esplicito —
+  `wphc_thumb_uploads_not_writable` (nuovo preflight su `wp_upload_dir()`,
+  causa più frequente e prima non distinguibile da un fallimento di rete),
+  `wphc_thumb_download_failed`, `wphc_thumb_not_an_image`,
+  `wphc_thumb_animated_gif`, `wphc_thumb_sideload_failed` — persistito in
+  `wp_health_check_thumb_error` (schema `at`/`code`/`message`/`provider`,
+  stesso schema già usato da `wphc_record_enroll_error()`). Nuovo campo
+  `summary.thumbnail_error` in `/health` (solo il codice, non il messaggio
+  completo, per non gonfiare il payload polled). `wphc_maybe_generate_thumbnail()`
+  accetta ora `$force` per ignorare cooldown e attachment esistente: usata da
+  `POST /thumbnail` e dal nuovo pulsante "Rigenera anteprima ora" nella tab
+  Site Health (handler sincrono, l'esito è visibile subito, a differenza di
+  "Elimina e rigenera" che demanda alla prossima `/health`). URL del servizio
+  esterno spostato nella costante `WP_HEALTH_CHECK_THUMB_SERVICE` (default
+  thum.io, invariato), per permettere a un singolo sito di puntare a un
+  renderer diverso da `wp-config.php`.
+- **Segreto di flotta visibile nella tab Site Health**: nuova riga "Segreto
+  di flotta", mascherata per default (`<primi 6>••••••••<ultimi 4>` più
+  fingerprint `sha256:<primi 12 hex>`, data di rotazione e protocollo).
+  Pulsante "Mostra" → nuovo handler AJAX `wphc_ajax_reveal_secret`
+  (`check_ajax_referer`, `manage_options` e — su multisite — anche
+  `manage_network`, dato che il segreto è condiviso da tutta la rete): il
+  valore in chiaro raggiunge il browser SOLO in risposta a questa chiamata,
+  mai stampato nell'HTML della pagina. Ogni reveal scrive una riga
+  `type='token', message='secret_revealed'` in `wphc_update_log` (nessuna
+  migrazione: le colonne `source`/`actor` esistono già dalla 1.29.0). Nessun
+  pulsante di rotazione: il sito non possiede `MASTER_SECRET` e non può
+  auto-assegnarsi un segreto, la rotazione resta un'operazione del centro.
+- **`wp health-check secret [--show]`** e **`wp health-check status`**:
+  nuovi sottocomandi WP-CLI. Il primo stampa fingerprint/protocollo/data di
+  rotazione/stato di revoca, con `--show` anche il segreto in chiaro (recupero
+  d'emergenza da shell, dove non c'è browser da cui esfiltrarlo); il secondo
+  un riepilogo diagnostico (enrollment, versione, protocollo, ultimo errore
+  di enroll, stato thumbnail) senza aprire wp-admin.
+
+### Fixed
+
+- **`wp_health_check_last_autologin` sopravviveva a `wphc_reset_enrollment()`**
+  (§3.16): scritta e mai letta da nessuna rotta, non era nell'elenco delle
+  opzioni cancellate dal reset. Aggiunta all'elenco insieme a tutte le nuove
+  opzioni del protocollo v2 (`wp_health_check_token_prev`,
+  `_token_rotated_at`, `_protocol`, `_revoked_at`, `_secret_kid`,
+  `_autologin_pending`).
+
+### Changed
+
+- `wphc_require_token()` accetta ora, oltre al token corrente, anche
+  `wp_health_check_token_prev` durante la finestra di grazia di una
+  rotazione, e verifica la firma anti-replay quando il sito è su protocollo
+  2 (o quando la firma è comunque presente). Un sito con
+  `wp_health_check_revoked_at` valorizzata riceve `403` da ogni rotta dati
+  prima di qualunque altro controllo.
+- `Access-Control-Allow-Headers` include ora anche `X-WPHC-Timestamp`,
+  `X-WPHC-Nonce`, `X-WPHC-Signature`.
+
 ## [1.29.0] - 2026-07-27
 
 ### Added
@@ -666,7 +782,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.29.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.30.0...HEAD
+[1.30.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.27.0...v1.28.0
 [1.27.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.26.0...v1.27.0

@@ -15,18 +15,19 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 3. [Il problema del bootstrap e l'enroll firmato](#il-problema-del-bootstrap-e-lenroll-firmato)
 4. [Il modello del token](#il-modello-del-token)
 5. [Generazione della coppia di chiavi Ed25519](#generazione-della-coppia-di-chiavi-ed25519)
-6. [Rotte REST](#rotte-rest)
-7. [Autologin: aprire wp-admin già autenticati](#autologin-aprire-wp-admin-già-autenticati)
-8. [Tracciamento accessi](#tracciamento-accessi)
-9. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
-10. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
-11. [Requisiti lato GitHub](#requisiti-lato-github)
-12. [Caching per-rotta](#caching-per-rotta)
-13. [CORS](#cors)
-14. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
-15. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
-16. [Tab Site Health](#tab-site-health)
-17. [Sviluppo locale](#sviluppo-locale)
+6. [Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto)
+7. [Rotte REST](#rotte-rest)
+8. [Autologin: aprire wp-admin già autenticati](#autologin-aprire-wp-admin-già-autenticati)
+9. [Tracciamento accessi](#tracciamento-accessi)
+10. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
+11. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
+12. [Requisiti lato GitHub](#requisiti-lato-github)
+13. [Caching per-rotta](#caching-per-rotta)
+14. [CORS](#cors)
+15. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
+16. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
+17. [Tab Site Health](#tab-site-health)
+18. [Sviluppo locale](#sviluppo-locale)
 
 ---
 
@@ -117,7 +118,8 @@ valore opaco.
 
 ## Il modello del token
 
-Per scelta di progetto, il token è **per-sito, senza rotazione né scadenza**:
+Per scelta di progetto originaria (**protocollo 1**), il token era **per-sito,
+derivato e senza rotazione né scadenza**:
 
 ```
 token = base64url( hmac_sha256( url_normalizzato, MASTER_SECRET ) )
@@ -131,8 +133,14 @@ token = base64url( hmac_sha256( url_normalizzato, MASTER_SECRET ) )
   un proprio calcolo, lo usa solo per un confronto byte-per-byte (`hash_equals`)
   con il bearer token ricevuto in ogni richiesta dati.
 - **Non c'è scadenza**: il token è valido finché resta uguale al valore salvato in
-  `wp_health_check_token`. Nessuna rotazione, versione o invalidazione automatica è
-  implementata — vedi anche la sezione [Considerazioni di sicurezza](#considerazioni-e-limiti-di-sicurezza).
+  `wp_health_check_token`.
+
+Dalla **1.30.0** questo resta il comportamento di default (`wp_health_check_protocol
+= 1`), ma un sito può passare al **protocollo 2**: un segreto casuale, non più
+derivabile da `MASTER_SECRET`, assegnato dal centro tramite `POST /rotate` e
+ruotabile/revocabile per singolo sito senza toccare il resto della flotta. Vedi
+[Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto) e anche la
+sezione [Considerazioni di sicurezza](#considerazioni-e-limiti-di-sicurezza).
 
 ### `url_normalizzato`, esattamente
 
@@ -200,6 +208,48 @@ Con il placeholder vuoto di default (`WP_HEALTH_CHECK_CENTRAL_PUBKEY = ''`), ogn
 tentativo di `/enroll` fallisce la verifica della firma: è un comportamento
 volutamente *fail closed* (nessun enroll possibile finché la chiave reale non è
 incorporata), non *fail open*.
+
+Dalla 1.30.0 la costante è anche il kid **"k1"**: `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2`
+è uno slot per una seconda chiave, vuoto finché non serve. Una busta firmata può
+indicare `kid: "k2"`; senza `kid` si assume `"k1"` (retrocompatibile con ogni busta
+`/enroll` esistente). Permette di far convivere due chiavi durante una rotazione
+della chiave di firma del centro, senza un redeploy simultaneo dell'agent su tutta
+la flotta.
+
+## Rotazione e revoca del segreto
+
+Dalla 1.30.0 (§5.B dell'analisi di sicurezza), oltre al bootstrap firmato di
+`/enroll`, il plugin espone due rotte per gestire il ciclo di vita del segreto di
+un sito già registrato — stessa autenticazione di `/enroll` (firma Ed25519 del
+centro verificata nel callback, non un token):
+
+- **`POST /rotate`** consegna un segreto nuovo (casuale, non più derivato da
+  `MASTER_SECRET`). Il sito sposta l'attuale in `wp_health_check_token_prev` e
+  adotta il nuovo come `wp_health_check_token`, aprendo una finestra di grazia di
+  `WP_HEALTH_CHECK_ROTATION_GRACE` secondi (900 di default) durante la quale
+  `wphc_require_token()` accetta **entrambi** i segreti: una rotazione non causa
+  downtime per la flotta, perché il centro e il sito non devono allinearsi allo
+  stesso istante esatto.
+- **`POST /revoke`** cancella sia il segreto corrente sia l'eventuale precedente e
+  scrive `wp_health_check_revoked_at`: da quel momento ogni rotta dati risponde
+  `403 wphc_revoked`, indipendentemente dal token fornito. Invalida anche i token
+  di autologin già emessi e non ancora consumati.
+- Messaggio canonico firmato, con un **prefisso di dominio** che impedisce di
+  riusare una busta valida per un'operazione diversa da quella per cui è stata
+  emessa (senza di esso i payload di `/rotate` e `/revoke` sarebbero
+  strutturalmente confondibili, entrambi iniziano con `site_url`):
+  ```
+  rotate:  "rotate" \n site_url \n new_token \n nonce \n issued_at \n protocol
+  revoke:  "revoke" \n site_url \n nonce \n issued_at
+  ```
+- Passare a queste rotte alza automaticamente il sito a `wp_health_check_protocol
+  = 2`: da quel momento le rotte dati (`/health`, `/detail/*`, `/update*`,
+  `/thumbnail`) pretendono anche la firma anti-replay `X-WPHC-*` — vedi
+  [Considerazioni di sicurezza](#considerazioni-e-limiti-di-sicurezza).
+- Il sito **non può auto-assegnarsi un segreto**: non possiede `MASTER_SECRET` né
+  la chiave privata Ed25519, quindi non esiste (e non deve esistere) un pulsante di
+  rotazione nella tab Site Health. La rotazione/revoca restano operazioni del
+  centro.
 
 ## Rotte REST
 
@@ -291,11 +341,25 @@ autenticazione. Il sito memorizza **esattamente** il `site_url` firmato ricevuto
 (in `wp_health_check_site_url`) e lo restituisce nel campo `site`: è la chiave a
 cui il centro ha legato il token e che riuserà identica.
 
-Un replay dello stesso enroll (stesso URL) produce sempre lo stesso `token`
-(derivazione deterministica): riscrive lo stesso valore, quindi è innocuo e **non è
-implementato alcun controllo anti-replay**. Come irrobustimento **opzionale e non
-implementato**, si potrebbe imporre una finestra di freschezza su `issued_at` (es.
-300 secondi): è igiene dell'handshake, non necessaria per la sicurezza del token.
+**Protocol 1 (formato storico, sopra).** Un replay dello stesso enroll (stesso URL)
+produce sempre lo stesso `token` (derivazione deterministica): riscrive lo stesso
+valore, quindi è innocuo e non serve alcun controllo anti-replay.
+
+**Protocol 2 (dalla 1.30.0).** Con `"protocol": 2` nel body, il payload aggiunge
+`"nonce"` e la firma copre anche un prefisso di dominio (`"enroll"`) e `protocol`:
+
+```
+"enroll" + "\n" + site_url + "\n" + token + "\n" + dashboard_origin + "\n" + nonce + "\n" + issued_at + "\n" + protocol
+```
+
+Qui una finestra di freschezza su `issued_at` (`WP_HEALTH_CHECK_REPLAY_WINDOW`,
+±300 secondi) e il nonce (indicizzato per hash SHA-256, stesso store usato dalle
+rotte firmate `/rotate`/`/revoke` e dalla firma anti-replay delle rotte dati) **sono
+obbligatori**, non più un irrobustimento opzionale come lo era per il protocol 1:
+con la rotazione introdotta da questa versione, il token non è più derivato
+deterministicamente, quindi una busta di enroll vecchia riprodotta potrebbe
+riportare il sito a un segreto già ruotato. Vedi
+[Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto).
 
 **Diagnostica dell'URL mismatch (dalla `1.11.0`).** Quando l'enroll fallisce con
 `wphc_enroll_url_mismatch`, oltre a registrare il dettaglio in
@@ -310,6 +374,81 @@ Questo ramo è raggiungibile solo con **firma valida** (la firma è verificata
 prima, `401` altrimenti), quindi l'alert non è un vettore aperto ad attaccanti
 anonimi. L'email **non** viene inviata per gli altri fallimenti (firma non
 valida, campo mancante): quelli restano solo in `wp_health_check_last_enroll_error`.
+
+### `POST /rotate` — rotazione firmata del segreto (dalla 1.30.0)
+
+Stessa autenticazione di `/enroll` (firma Ed25519, nessun token). Richiede un
+enrollment già completato (`503 wphc_not_enrolled` altrimenti).
+
+**Payload:**
+
+```json
+{
+  "site_url": "<url_normalizzato>",
+  "new_token": "<segreto casuale>",
+  "nonce": "<hex casuale>",
+  "issued_at": <unix_ts>,
+  "signature": "<base64>",
+  "protocol": 2
+}
+```
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/rotate' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "site_url": "https://esempio.com/blog",
+    "new_token": "<nuovo-segreto-casuale>",
+    "nonce": "<32-hex-casuali>",
+    "issued_at": 1735689600,
+    "signature": "<base64>",
+    "protocol": 2
+  }'
+```
+
+Sposta il segreto attuale in `wp_health_check_token_prev` (finestra di grazia
+`WP_HEALTH_CHECK_ROTATION_GRACE`, 900s), adotta `new_token` come
+`wp_health_check_token`, alza `wp_health_check_protocol` a 2. Risposta:
+`{ "rotated": true, "site": "...", "protocol": 2, "grace_seconds": 900 }`.
+
+### `POST /revoke` — revoca firmata del segreto (dalla 1.30.0)
+
+```json
+{
+  "site_url": "<url_normalizzato>",
+  "nonce": "<hex casuale>",
+  "issued_at": <unix_ts>,
+  "signature": "<base64>"
+}
+```
+
+Cancella `wp_health_check_token` e l'eventuale `_token_prev`, scrive
+`wp_health_check_revoked_at`, invalida i token di autologin pendenti. Da quel
+momento ogni rotta dati risponde `403 wphc_revoked`. Risposta:
+`{ "revoked": true, "site": "..." }`.
+
+### `GET|POST /thumbnail` — stato e rigenerazione della thumbnail (dalla 1.30.0)
+
+Protette dal token (stesso bearer delle rotte dati). `GET` restituisce lo stato
+corrente senza alcuna chiamata remota:
+
+```bash
+curl 'https://esempio.com/blog/wp-json/health-check/v1/thumbnail' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{ "thumbnail": "https://esempio.com/blog/wp-content/uploads/...png", "generated_at": "2026-07-30T09:00:00+00:00", "error": null }
+```
+
+`POST` forza una rigenerazione ignorando il cooldown di un giorno, restituendo
+l'esito o l'errore diagnostico strutturato (`wphc_thumb_uploads_not_writable`,
+`wphc_thumb_download_failed`, `wphc_thumb_not_an_image`,
+`wphc_thumb_animated_gif`, `wphc_thumb_sideload_failed`):
+
+```json
+{ "thumbnail": null, "error": { "code": "wphc_thumb_uploads_not_writable", "message": "...", "provider": "https://image.thum.io/get/noanimate/png/width/400/" } }
+```
 
 ### `GET /health` — sommario economico
 
@@ -1283,9 +1422,12 @@ invia:
 ```
 Access-Control-Allow-Origin: <quell'origin specifico, mai "*">
 Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Allow-Headers: Authorization, Content-Type, X-WPHC-Timestamp, X-WPHC-Nonce, X-WPHC-Signature
 Vary: Origin
 ```
+
+(gli ultimi tre header sono la firma anti-replay del protocollo 2, dalla 1.30.0 —
+vedi [Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto)).
 
 Se invece `wp_health_check_dashboard_origin` **non è impostata** (sito appena
 installato, prima del primo `/enroll`, oppure resettato con
@@ -1364,11 +1506,24 @@ comunque un controllo cieco rispetto al *contenuto* del codice: non sostituisce 
 revisione umana delle release pubblicate, che resta responsabilità di chi gestisce
 il repository.
 
-**Nessuna rotazione né scadenza del token.** È una scelta di progetto esplicita,
-non un'omissione: il token resta valido finché non viene sostituito da un nuovo
-enroll o cancellato con `wp health-check reset`. Se in futuro servisse rotazione
-periodica, andrebbe introdotta come funzionalità nuova (non è prevista né
-predisposta in questa versione).
+**Rotazione e scadenza del token: opt-in dalla 1.30.0.** Sul protocol 1 (default
+storico) resta vero quanto sopra: il token è valido finché non viene sostituito da
+un nuovo enroll o cancellato con `wp health-check reset`, nessuna scadenza
+automatica. Dalla 1.30.0 un sito può passare al protocol 2 (`POST /rotate`/
+`POST /revoke`, vedi [sopra](#rotazione-e-revoca-del-segreto)): segreto casuale
+ruotabile/revocabile per singolo sito, con una finestra di grazia durante la
+rotazione e nessuna finestra durante la revoca. Resta un limite condiviso da
+entrambi i protocolli: il segreto vive comunque in chiaro (decifrato) in memoria
+sul sito durante ogni verifica, perché il plugin deve poterlo confrontare — nessuna
+rotazione elimina questo fatto, lo mitiga.
+
+**Anti-replay e rate limit (dalla 1.30.0).** Le rotte dati pretendono la firma
+`X-WPHC-*` quando il sito è su protocol 2 (finestra di freschezza ±300s, nonce
+single-use): una richiesta intercettata smette di essere una credenziale valida
+per sempre e diventa un artefatto monouso valido pochi minuti. Un rate limit sui
+tentativi falliti (10 in 300s, per IP) risponde `429` prima che un attacco a forza
+bruta sul bearer diventi pratico. `/enroll`, `/rotate`, `/revoke` richiedono inoltre
+HTTPS (salvo l'opt-out già previsto per un reverse proxy fidato).
 
 ## Installazione, enroll, reset, rollback
 
@@ -1429,7 +1584,19 @@ esempio quando un sito cambia dominio, o esce dalla flotta — **non** un
 meccanismo di scadenza: dopo il reset il sito torna semplicemente allo stato "non
 registrato" finché il centro non ripete l'enroll. Stessa identica azione
 disponibile anche dal pulsante "Resetta enrollment" nella [tab Site
-Health](#tab-site-health), per chi non ha accesso a WP-CLI.
+Health](#tab-site-health), per chi non ha accesso a WP-CLI. Dalla `1.30.0`
+cancella anche le opzioni del protocollo v2 (`wp_health_check_token_prev`,
+`_token_rotated_at`, `_protocol`, `_revoked_at`, `_secret_kid`,
+`_autologin_pending`) e `wp_health_check_last_autologin` (che prima
+sopravviveva erroneamente al reset).
+
+Due sottocomandi diagnostici in più, dalla `1.30.0`:
+
+```bash
+wp health-check secret          # fingerprint, protocollo, data di rotazione, stato di revoca
+wp health-check secret --show   # come sopra, ma stampa anche il segreto in chiaro
+wp health-check status          # enrollment, versione, protocollo, ultimo errore di enroll, stato thumbnail
+```
 
 ### Rollback da `.bak`
 
@@ -1455,6 +1622,14 @@ utenti con capability `manage_options`. Mostra:
   cachato 1h in un transient; se esiste un aggiornamento viene evidenziato);
 - coordinate del repository GitHub configurato;
 - stato di enrollment (registrato/non registrato, data e IP dell'enroll);
+- il **segreto di flotta** (dalla `1.30.0`): mascherato per default
+  (`<primi 6>••••••••<ultimi 4>` più fingerprint SHA-256, protocollo e data di
+  rotazione), con un pulsante "Mostra" che lo rivela per intero **solo** in
+  risposta a una chiamata AJAX dedicata (mai stampato nel markup della
+  pagina), e un pulsante "Copia". Ogni reveal lascia una riga
+  `type='token', message='secret_revealed'` nel log degli aggiornamenti. Su
+  multisite richiede anche `manage_network` (il segreto è condiviso dalla
+  rete, non dal singolo sito). Se revocato, mostra "Revocato" e la data;
 - l'**URL firmato registrato** (`wp_health_check_site_url`): la chiave a cui è
   legato il token;
 - gli **URL validi per l'enroll** (`wphc_candidate_site_urls()`, con quello
@@ -1487,6 +1662,15 @@ Tre pulsanti eseguono azioni:
   i conteggi o le versioni degli aggiornamenti sembrano sbagliati.
 - **Reset enrollment**: equivalente a `wp health-check reset` (stessa funzione
   condivisa `wphc_reset_enrollment()`), con conferma prima dell'esecuzione.
+
+Nella riga "Anteprima sito", un pulsante aggiuntivo **"Rigenera anteprima ora"**
+(dalla `1.30.0`) chiama sincronamente `wphc_maybe_generate_thumbnail( true )`
+nella stessa richiesta admin, mostrando subito l'esito o l'errore diagnostico —
+a differenza di "Elimina e rigenera" (che demanda la rigenerazione alla
+prossima `/health`). **Nessun pulsante di rotazione/revoca del segreto**: il
+sito non possiede `MASTER_SECRET` né la chiave privata Ed25519, quindi non può
+auto-assegnarsi un segreto; quelle restano operazioni del centro (vedi
+[Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto)).
 
 Un checkbox separato (dalla `1.18.0`), **"Consenti aggiornamenti (plugin, temi,
 core) via API"**, governa il kill-switch `wp_health_check_updates_enabled` (vedi
