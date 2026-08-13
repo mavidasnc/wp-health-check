@@ -1,13 +1,13 @@
-# Enrollment & Signature Verification
+# Enrollment, CORS & Signatures
 
-> 20 nodes
+> 22 nodes · cohesion 0.21
 
 ## Key Concepts
 
 - **wphc_route_enroll()** (17 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_route_revoke()** (14 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_route_rotate()** (14 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_get_client_ip()** (10 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_get_client_ip()** (11 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_maybe_send_cors_headers()** (8 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_require_token()** (8 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_candidate_site_urls()** (6 connections) — `mu-plugins/wp-health-check.php`
@@ -22,13 +22,17 @@
 - **wphc_verify_central_signature()** (4 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_record_enroll_error()** (3 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_send_enroll_mismatch_alert()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_build_enroll_signing_payload()** (2 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_handle_options_preflight()** (2 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_reassert_cors_headers()** (2 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_record_last_login()** (2 connections) — `mu-plugins/wp-health-check.php`
 
 ## Relationships
 
-- [REST Routes & Dispatch](REST_Routes_%26_Dispatch.md) (32 shared connections)
-- [Self-Update & Reactivation Flow](Self-Update_%26_Reactivation_Flow.md) (9 shared connections)
+- [REST Routes & Dispatch](REST_Routes_%26_Dispatch.md) (26 shared connections)
+- [Update Logging & Source Tracking](Update_Logging_%26_Source_Tracking.md) (9 shared connections)
+- [Auto-Update State & Diagnostics](Auto-Update_State_%26_Diagnostics.md) (6 shared connections)
+- [Bulk Update Job Engine](Bulk_Update_Job_Engine.md) (1 shared connections)
 
 ## Source Files
 
@@ -36,7 +40,7 @@
 
 ## Audit Trail
 
-- EXTRACTED: 87 (100%)
+- EXTRACTED: 90 (100%)
 - INFERRED: 0 (0%)
 - AMBIGUOUS: 0 (0%)
 

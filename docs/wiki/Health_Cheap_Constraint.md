@@ -1,10 +1,10 @@
-# Key Generation Script
+# Health Cheap Constraint
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **generate-keys.php** (0 connections) — `bin/generate-keys.php`
+- **/health must stay cheap constraint** (0 connections) — `CLAUDE.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `bin/generate-keys.php`
+- `CLAUDE.md`
 
 ## Audit Trail
 

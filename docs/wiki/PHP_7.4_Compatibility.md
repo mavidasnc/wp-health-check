@@ -1,10 +1,10 @@
-# Users Detail Route
+# PHP 7.4 Compatibility
 
-> 1 nodes
+> 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **GET /detail/users administrators listing** (0 connections) — `README.md`
+- **PHP 7.4+ runtime compatibility constraint** (0 connections) — `CLAUDE.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `README.md`
+- `CLAUDE.md`
 
 ## Audit Trail
 

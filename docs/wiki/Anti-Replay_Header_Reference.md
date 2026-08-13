@@ -1,10 +1,10 @@
-# Key Generation Script
+# Anti-Replay Header Reference
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **generate-keys.php** (0 connections) — `bin/generate-keys.php`
+- **X-WPHC canonical signing string (method\nroute\nsha256body\ntimestamp\nnonce)** (0 connections) — `docs/API health check.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `bin/generate-keys.php`
+- `docs/API health check.md`
 
 ## Audit Trail
 

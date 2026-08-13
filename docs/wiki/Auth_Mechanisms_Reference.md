@@ -1,10 +1,10 @@
-# WP-CLI Reference
+# Auth Mechanisms Reference
 
-> 1 nodes
+> 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **wp health-check WP-CLI commands** (0 connections) — `README.md`
+- **Two distinct auth mechanisms (Ed25519 enroll vs Bearer token)** (0 connections) — `docs/API health check.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `README.md`
+- `docs/API health check.md`
 
 ## Audit Trail
 

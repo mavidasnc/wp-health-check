@@ -1,10 +1,10 @@
-# Key Generation Script
+# Detail Users Route
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **generate-keys.php** (0 connections) — `bin/generate-keys.php`
+- **GET /detail/users (amministratori del sito)** (0 connections) — `README.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `bin/generate-keys.php`
+- `README.md`
 
 ## Audit Trail
 

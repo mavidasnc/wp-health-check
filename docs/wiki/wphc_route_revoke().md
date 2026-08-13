@@ -2,13 +2,13 @@
 
 > God node · 14 connections · `mu-plugins/wp-health-check.php`
 
-**Community:** [Enrollment & Signature Verification](Enrollment_%26_Signature_Verification.md)
+**Community:** [Enrollment, CORS & Signatures](Enrollment%2C_CORS_%26_Signatures.md)
 
 ## Connections by Relation
 
 ### calls
-- [wphc_log_update_row()](wphc_log_update_row%28%29.md) `EXTRACTED`
 - [wphc_generate_correlation_id()](wphc_generate_correlation_id%28%29.md) `EXTRACTED`
+- [wphc_log_update_row()](wphc_log_update_row%28%29.md) `EXTRACTED`
 - wphc_maybe_send_cors_headers() `EXTRACTED`
 - wphc_throttle_check() `EXTRACTED`
 - wphc_throttle_register_failure() `EXTRACTED`

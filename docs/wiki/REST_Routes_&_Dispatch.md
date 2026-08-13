@@ -1,41 +1,42 @@
 # REST Routes & Dispatch
 
-> 53 nodes
+> 52 nodes · cohesion 0.06
 
 ## Key Concepts
 
-- **wp-health-check.php** (99 connections) — `mu-plugins/wp-health-check.php`
-- **WP_REST_Request** (23 connections)
-- **wphc_record_access()** (13 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_health()** (13 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_normalize_site_url()** (12 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_detail_server()** (8 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_detail_plugins()** (7 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_detail_theme()** (7 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_mute_update_shortcircuit()** (6 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_request_wants_check()** (6 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_request_wants_fresh()** (6 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_restore_update_shortcircuit()** (6 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_get_public_ip()** (5 connections) — `mu-plugins/wp-health-check.php`
+- **wp-health-check.php** (144 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_normalize_site_url()** (17 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_dispatch_webhook_payload()** (9 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_update_log_table()** (6 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_bulk_send_webhook_for_job()** (5 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_maybe_generate_thumbnail()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_debug()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_detail_users()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_reactivate()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_update_core()** (5 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_render_site_health_tab()** (5 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_route_update_log()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_update_plugin()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_route_update_theme()** (5 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_get_server_ip()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_clear_stale_maintenance()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **WPHC_CLI_Command** (4 connections) — `mu-plugins/wp-health-check.php`
 - **wphc_get_update_log_entries()** (4 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_ip_is_public()** (4 connections) — `mu-plugins/wp-health-check.php`
-- **wphc_map_item_update_outcome()** (4 connections) — `mu-plugins/wp-health-check.php`
-- *... and 28 more nodes in this community*
+- **wphc_handle_test_webhook()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_route_thumbnail_regenerate()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_route_update()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_webhook_backoff_for_attempt()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_webhook_url_is_allowed()** (4 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_base64url_encode()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_build_outbound_signature()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_bulk_build_webhook_payload()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_bulk_normalize_items()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_get_reactivation_candidates()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_maintenance_file_path()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_maybe_retry_webhook()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_perform_self_update()** (3 connections) — `mu-plugins/wp-health-check.php`
+- **wphc_record_webhook_result()** (3 connections) — `mu-plugins/wp-health-check.php`
+- *... and 27 more nodes in this community*
 
 ## Relationships
 
-- [Self-Update & Reactivation Flow](Self-Update_%26_Reactivation_Flow.md) (36 shared connections)
-- [Enrollment & Signature Verification](Enrollment_%26_Signature_Verification.md) (32 shared connections)
-- [WP-CLI Command](WP-CLI_Command.md) (3 shared connections)
+- [Auto-Update State & Diagnostics](Auto-Update_State_%26_Diagnostics.md) (43 shared connections)
+- [Bulk Update Job Engine](Bulk_Update_Job_Engine.md) (30 shared connections)
+- [Update Logging & Source Tracking](Update_Logging_%26_Source_Tracking.md) (27 shared connections)
+- [Enrollment, CORS & Signatures](Enrollment%2C_CORS_%26_Signatures.md) (26 shared connections)
 
 ## Source Files
 
@@ -43,7 +44,7 @@
 
 ## Audit Trail
 
-- EXTRACTED: 198 (100%)
+- EXTRACTED: 212 (100%)
 - INFERRED: 0 (0%)
 - AMBIGUOUS: 0 (0%)
 

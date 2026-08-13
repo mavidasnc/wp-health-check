@@ -1,10 +1,10 @@
-# Key Generation Script
+# CORS Fix History
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **generate-keys.php** (0 connections) — `bin/generate-keys.php`
+- **v1.6.0: fix override CORS del core REST API** (0 connections) — `CHANGELOG.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `bin/generate-keys.php`
+- `CHANGELOG.md`
 
 ## Audit Trail
 

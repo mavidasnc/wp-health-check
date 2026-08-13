@@ -2,7 +2,7 @@
 
 > God node · 17 connections · `mu-plugins/wp-health-check.php`
 
-**Community:** [Enrollment & Signature Verification](Enrollment_%26_Signature_Verification.md)
+**Community:** [Enrollment, CORS & Signatures](Enrollment%2C_CORS_%26_Signatures.md)
 
 ## Connections by Relation
 

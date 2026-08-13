@@ -1,11 +1,11 @@
-# Compatibility Choices
+# Detail Theme Route
 
-> 2 nodes
+> 2 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **PHP 7.4+ runtime compatibility constraint** (1 connections) — `CLAUDE.md`
-- **Three brief interpretation choices (PHP7.4 vs 8.1, PSR-4, SCSS/BEM)** (1 connections) — `README.md`
+- **/detail/theme: array themes con tutti i temi installati** (1 connections) — `docs/plugin-implementation-todo.md`
+- **GET /detail/theme** (1 connections) — `README.md`
 
 ## Relationships
 
@@ -13,8 +13,8 @@
 
 ## Source Files
 
-- `CLAUDE.md`
 - `README.md`
+- `docs/plugin-implementation-todo.md`
 
 ## Audit Trail
 

@@ -1,10 +1,10 @@
-# Key Generation Script
+# Native Auto-Update Toggle Option
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **generate-keys.php** (0 connections) — `bin/generate-keys.php`
+- **Opzione E: solo toggle auto-update nativo** (0 connections) — `docs/plugin-update-via-api-analisi.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `bin/generate-keys.php`
+- `docs/plugin-update-via-api-analisi.md`
 
 ## Audit Trail
 

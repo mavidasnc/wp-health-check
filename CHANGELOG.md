@@ -7,6 +7,78 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-08-13
+
+### Added
+
+- **Stato di auto-update nativo di WordPress esposto in `/health` e
+  `/detail/plugins`/`/detail/theme`.** `/health` guadagna `core_auto_update`
+  (bool), `core_auto_update_level` (`none|minor|major|all`, quattro valori
+  perche' minor e major sono indipendenti — collassarli in tre perderebbe la
+  rara combinazione minor-off/major-on), `core_auto_update_blocked_by`
+  (`null|file_mods|automatic_updater_disabled`), `plugins_auto_update_enabled`
+  e `themes_auto_update_enabled` (gate globale). La derivazione replica
+  l'ordine di precedenza del core (`wp_is_file_mod_allowed()` →
+  `AUTOMATIC_UPDATER_DISABLED` → option `auto_update_core_{dev,minor,major}`
+  → costante `WP_AUTO_UPDATE_CORE` → filtri `allow_{minor,major,dev}_auto_core_updates`)
+  senza istanziare `WP_Automatic_Updater` (farebbe un giro sul filesystem
+  cercando un checkout VCS, incompatibile col contratto O(1) della rotta —
+  documentato come limite noto: su un sito con `.git`/`.svn` il core
+  rifiuterebbe comunque l'update indipendentemente da questi flag).
+  `/detail/plugins` e `/detail/theme` guadagnano per elemento `auto_update`
+  (bool) e `auto_update_forced` (`true|false|null`: null = si applica la
+  scelta salvata, altrimenti un filtro di terze parti impone lo stato
+  indipendentemente dalla option — distinzione necessaria perche' la
+  dashboard deve sapere se un'azione di remediation e' anche solo possibile).
+  Nuovi hook di invalidazione cache sulle option `auto_update_plugins`/
+  `auto_update_themes`/`auto_update_core_*` (sia `update_option_*` che
+  `update_site_option_*`, necessari entrambi per coprire single-site e
+  multisite), altrimenti il flag resterebbe stantio fino a un'ora dopo un
+  toggle nativo di WordPress.
+- **Aggiornamenti bulk (plugin/temi) asincroni via `POST /update/bulk` +
+  WP-Cron** (Opzione D di `docs/plugin-update-via-api-analisi.md`, rinviata
+  li' come "possibile evoluzione", non vietata). La REST autenticata accoda
+  un job; WP-Cron si limita a smaltire una coda gia' autorizzata, elemento
+  per elemento, riusando `wphc_perform_item_update()` cosi' com'e' — nessun
+  update parte mai senza un trigger autenticato esplicito, coerente con la
+  scelta che il sito non ha un cron di auto-update proprio. Il core resta
+  sulla rotta sincrona esistente `POST /update/core`: e' l'operazione piu'
+  lenta e rischiosa delle tre, con rollback piu' debole, e in un job non
+  presidiato un core a meta' e' lo scenario peggiore. Elementi falliti
+  vengono ritentati fino a `WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS` (4 = 1
+  iniziale + 3 retry) con backoff crescente (0/60/300/900s); una contesa di
+  lock con un update singolo concorrente (`locked`) non consuma un
+  tentativo. Il drain usa un mutex dedicato (`wp_health_check_bulk_lock`),
+  DISTINTO dal lock di update per singolo elemento (che resta interamente
+  dentro `wphc_perform_item_update()`), per impedire a due tick dello stesso
+  cron di sovrapporsi. Stato esposto in `/health` (`bulk_update`, O(1), con
+  un flag `stalled` derivato a lettura — non serve nulla lato sito perche' un
+  sito stallato per definizione non puo' segnalarlo da solo) e in dettaglio
+  via `GET /update/bulk`. Nuove rotte `POST /update/bulk`,
+  `GET /update/bulk`, `POST /update/bulk/cancel`. Modifica minima e
+  retrocompatibile a `wphc_perform_item_update()`: nuovo quarto parametro
+  `$source` (`'api'|'cron'`), inoltrato alla tabella di log cosi'
+  `GET /update/log?source=cron` puo' effettivamente trovare le righe del
+  drain. `wphc_record_access()` diventa no-op sotto `wp_doing_cron()` (stessa
+  scelta gia' applicata a `/ping`): altrimenti un job da N elementi
+  sovrascriverebbe N volte l'audit "ultimo accesso" con un IP di loopback.
+- **Webhook firmato di notifica a fine job bulk**, configurabile dalla tab
+  Site Health (`wp_health_check_webhook_url`, https obbligatorio, IP letterali
+  privati/loopback rifiutati al salvataggio tramite `wphc_ip_is_public()`
+  gia' esistente). Firma HMAC-SHA256 speculare (in uscita) al protocollo v2
+  di verifica in ingresso: header `X-WPHC-Timestamp`/`X-WPHC-Nonce`/
+  `X-WPHC-Signature`/`X-WPHC-Event`/`X-WPHC-Secret-Kid`/`X-WPHC-Delivery`
+  (= job id, idempotenza lato ricevente). Retry solo su errori transitori
+  (errore di trasporto, HTTP 408/429/5xx — mai su altri 4xx, che significano
+  un rifiuto esplicito del ricevente), fino a 3 tentativi con backoff
+  5min/30min, ri-firmando ogni volta con timestamp/nonce freschi sullo stesso
+  corpo. Un sito non enrollato o revocato non invia nulla (stessa dottrina di
+  `wphc_require_token()` in ingresso: un sito revocato tace). Pulsante
+  "Invia un webhook di prova" per validare l'integrazione HMAC del ricevente
+  prima che giri un job reale.
+- **Wiki di documentazione LLM-friendly** rigenerato in `docs/wiki/` per
+  riflettere le nuove funzionalita' di questa versione.
+
 ## [1.30.1] - 2026-08-13
 
 ### Added

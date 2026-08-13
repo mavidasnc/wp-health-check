@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.30.1
+ * Version:     1.31.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.30.1' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.31.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -98,6 +98,89 @@ if ( ! defined( 'WP_HEALTH_CHECK_LOG_RETENTION_DAYS' ) ) {
 /** TTL in secondi del lock anti-concorrenza per le rotte di update (§7.1). */
 if ( ! defined( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL' ) ) {
 	define( 'WP_HEALTH_CHECK_UPDATE_LOCK_TTL', 300 );
+}
+
+// -----------------------------------------------------------------------
+// COSTANTI: aggiornamenti bulk (plugin/temi) via POST /update/bulk + WP-Cron
+// -----------------------------------------------------------------------
+
+/** Numero massimo di elementi accettati in un singolo job bulk. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_MAX_ITEMS' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_MAX_ITEMS', 100 );
+}
+
+/** Elementi processati al massimo per singolo tick del drain, entro il budget di tempo sotto. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_ITEMS_PER_TICK' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_ITEMS_PER_TICK', 5 );
+}
+
+/** Budget di tempo (secondi) per tick, controllato PRIMA di ogni elemento, mai a meta'. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_TIME_BUDGET' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_TIME_BUDGET', 20 );
+}
+
+/** Intervallo minimo (secondi) tra un tick e il successivo. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_TICK_GAP' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_TICK_GAP', 30 );
+}
+
+/** Tentativi massimi per elemento: 1 iniziale + 3 retry, come richiesto. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS', 4 );
+}
+
+/** Backoff (secondi) applicato dopo ciascun tentativo fallito, per indice tentativo. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_BACKOFF' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_BACKOFF', array( 0, 60, 300, 900 ) );
+}
+
+/** Deferral massimi (contesa di lock con un update singolo) prima di arrendersi su un elemento. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_MAX_DEFERRALS' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_MAX_DEFERRALS', 20 );
+}
+
+/** TTL del mutex di drain (distinto dal lock di update per singolo elemento). */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_LOCK_TTL' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_LOCK_TTL', 300 );
+}
+
+/** Oltre questa eta' (secondi) un elemento 'running' e' considerato interrotto da un crash. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT', 600 );
+}
+
+/** Margine (secondi) oltre next_run_ts prima che un job attivo sia considerato stallato. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_STALL_GRACE' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_STALL_GRACE', 600 );
+}
+
+/** Scadenza dura del job (secondi dalla creazione): oltre, viene abortito comunque. */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_JOB_TTL' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_JOB_TTL', 6 * HOUR_IN_SECONDS );
+}
+
+// -----------------------------------------------------------------------
+// COSTANTI: webhook di notifica firmato a fine job bulk
+// -----------------------------------------------------------------------
+
+/** Timeout (secondi) della POST del webhook: nessun download, solo un breve report JSON. */
+if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_TIMEOUT' ) ) {
+	define( 'WP_HEALTH_CHECK_WEBHOOK_TIMEOUT', 10 );
+}
+
+/** Tentativi massimi di consegna del webhook (1 sincrono + retry via cron). */
+if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS' ) ) {
+	define( 'WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS', 3 );
+}
+
+/** Backoff (secondi) tra un tentativo di webhook e il successivo, per indice tentativo. */
+if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_BACKOFF' ) ) {
+	define( 'WP_HEALTH_CHECK_WEBHOOK_BACKOFF', array( 0, 300, 1800 ) );
+}
+
+/** Numero massimo di item elencati nel corpo del webhook (oltre, items_truncated=true). */
+if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_MAX_ITEMS' ) ) {
+	define( 'WP_HEALTH_CHECK_WEBHOOK_MAX_ITEMS', 200 );
 }
 
 /**
@@ -372,6 +455,184 @@ function wphc_get_public_ip() {
 }
 
 /**
+ * Deriva lo stato di auto-update del core WordPress, replicando (in sola
+ * lettura) la stessa logica di precedenza di Core_Upgrader::should_update_to_version()
+ * e WP_Automatic_Updater::is_disabled() — senza istanziare WP_Automatic_Updater,
+ * che farebbe anche un giro sul filesystem (is_vcs_checkout()) non necessario
+ * qui e non compatibile col contratto O(1) di /health.
+ *
+ * Ordine di precedenza (identico al core):
+ * 1. wp_is_file_mod_allowed()/AUTOMATIC_UPDATER_DISABLED spengono tutto;
+ * 2. le option auto_update_core_dev/_minor/_major danno i default;
+ * 3. la costante WP_AUTO_UPDATE_CORE batte le option se definita;
+ * 4. i filtri allow_{minor,major,dev}_auto_core_updates battono tutto il resto.
+ *
+ * Nota: su un sito con un checkout VCS (.git/.svn) il core rifiuterebbe
+ * comunque l'auto-update indipendentemente da queste impostazioni; questa
+ * funzione non lo rileva deliberatamente (richiederebbe stat() ripetute sul
+ * filesystem ad ogni /health) e il valore restituito va quindi letto come
+ * "cosa farebbe il core in assenza di un checkout VCS".
+ *
+ * @return array{enabled: bool, level: string, blocked_by: string|null} level
+ *              e' uno tra 'none'|'minor'|'major'|'all'.
+ */
+function wphc_core_auto_update_state() {
+	static $cache = null;
+	if ( null !== $cache ) {
+		return $cache;
+	}
+
+	if ( ! wp_is_file_mod_allowed( 'automatic_updater' ) ) {
+		$cache = array(
+			'enabled'    => false,
+			'level'      => 'none',
+			'blocked_by' => 'file_mods',
+		);
+		return $cache;
+	}
+
+	$disabled = defined( 'AUTOMATIC_UPDATER_DISABLED' ) && AUTOMATIC_UPDATER_DISABLED;
+	if ( (bool) apply_filters( 'automatic_updater_disabled', $disabled ) ) { // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si legge l'hook core, non se ne dichiara uno nuovo.
+		$cache = array(
+			'enabled'    => false,
+			'level'      => 'none',
+			'blocked_by' => 'automatic_updater_disabled',
+		);
+		return $cache;
+	}
+
+	$dev   = 'enabled' === get_site_option( 'auto_update_core_dev', 'enabled' );
+	$minor = 'enabled' === get_site_option( 'auto_update_core_minor', 'enabled' );
+	$major = 'enabled' === get_site_option( 'auto_update_core_major', 'unset' );
+
+	if ( defined( 'WP_AUTO_UPDATE_CORE' ) ) {
+		if ( false === WP_AUTO_UPDATE_CORE ) {
+			$dev   = false;
+			$minor = false;
+			$major = false;
+		} elseif ( 'minor' === WP_AUTO_UPDATE_CORE ) {
+			$dev   = false;
+			$minor = true;
+			$major = false;
+		} elseif ( true === WP_AUTO_UPDATE_CORE || in_array( WP_AUTO_UPDATE_CORE, array( 'beta', 'rc', 'development', 'branch-development' ), true ) ) {
+			$dev   = true;
+			$minor = true;
+			$major = true;
+		}
+	}
+
+	// phpcs:disable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si leggono gli hook core, non se ne dichiara di nuovi.
+	$minor = (bool) apply_filters( 'allow_minor_auto_core_updates', $minor );
+	$major = (bool) apply_filters( 'allow_major_auto_core_updates', $major );
+	$dev   = (bool) apply_filters( 'allow_dev_auto_core_updates', $dev );
+	// phpcs:enable WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound
+
+	if ( $major ) {
+		$level = 'all';
+	} elseif ( $minor ) {
+		$level = 'minor';
+	} else {
+		$level = 'none';
+	}
+
+	$cache = array(
+		'enabled'    => ( $minor || $major ),
+		'level'      => $level,
+		'blocked_by' => null,
+	);
+
+	return $cache;
+}
+
+/**
+ * Wrapper sottile sull'helper core wp_is_auto_update_enabled_for_type(), che
+ * a differenza di wphc_core_auto_update_state() sopra E' corretto per
+ * 'plugin'/'theme' (per 'core' restituirebbe sempre false: il core non ha
+ * un case per quel tipo). Include il file solo se non gia' incluso da chi
+ * chiama (le rotte /health e /detail/* lo includono gia').
+ *
+ * @param string $type 'plugin' | 'theme'.
+ * @return bool
+ */
+function wphc_auto_update_enabled_for( $type ) {
+	require_once ABSPATH . 'wp-admin/includes/update.php';
+	return (bool) wp_is_auto_update_enabled_for_type( $type );
+}
+
+/**
+ * Stato di auto-update effettivo per un singolo tema, con la stessa
+ * distinzione stored/forced di /detail/plugins (vedi wphc_route_detail_plugins()):
+ * null = si applica la scelta salvata in auto_update_themes; true|false = un
+ * filtro di terze parti impone lo stato indipendentemente dalla option.
+ *
+ * @param string $stylesheet         Stylesheet del tema.
+ * @param array  $auto_update_themes Contenuto gia' letto di get_site_option('auto_update_themes').
+ * @return array{auto_update: bool, auto_update_forced: bool|null}
+ */
+function wphc_theme_auto_update_state( $stylesheet, array $auto_update_themes ) {
+	// Il filtro auto_update_theme si aspetta esattamente questa forma (stessa
+	// convenzione usata dalla lista temi del core).
+	$item   = (object) array( 'theme' => $stylesheet );
+	$forced = wp_is_auto_update_forced_for_item( 'theme', null, $item );
+	$stored = in_array( $stylesheet, $auto_update_themes, true );
+
+	return array(
+		// Lo stub PHPStan dichiara un return type "bool" per
+		// wp_is_auto_update_forced_for_item(), ma l'implementazione reale
+		// e' apply_filters( "auto_update_{$type}", null, $item ): se nessun
+		// filtro e' agganciato, apply_filters() restituisce il null passato
+		// invariato. Il confronto stretto e' quindi corretto nonostante lo
+		// stub, non un refuso.
+		'auto_update'        => ( null === $forced ) ? $stored : (bool) $forced, // @phpstan-ignore identical.alwaysFalse
+		'auto_update_forced' => $forced,
+	);
+}
+
+/**
+ * Invalida le cache 1h di /detail/plugins e /detail/theme, e la micro-cache
+ * 60s di /health, quando cambia lo stato di auto-update nativo di WP. Senza
+ * questo, un admin che accende/spegne l'auto-update dalla lista plugin/temi
+ * (azione AJAX nativa 'toggle-auto-updates', che scrive l'opzione senza
+ * toccare i nostri transient) vedrebbe il flag restare stantio fino a un'ora.
+ */
+function wphc_flush_plugins_detail_cache() {
+	delete_transient( 'wphc_detail_plugins_cache' );
+	delete_transient( 'wphc_health_cache' );
+}
+
+/** Equivalente di wphc_flush_plugins_detail_cache() per i temi. */
+function wphc_flush_theme_detail_cache() {
+	delete_transient( 'wphc_detail_theme_cache' );
+	delete_transient( 'wphc_health_cache' );
+}
+
+/** Invalida la sola micro-cache di /health (per le option auto-update del core). */
+function wphc_flush_health_cache_only() {
+	delete_transient( 'wphc_health_cache' );
+}
+
+// Entrambe le famiglie servono: su multisite update_site_option() e' quella
+// che effettivamente scrive (i suoi hook update_option_*/add_option_* NON
+// scattano li'); su single-site update_site_option() ricade su
+// update_option() e sono invece gli hook update_option_*/add_option_* a
+// scattare. Registrare solo una famiglia lascerebbe l'altro contesto stantio.
+add_action( 'update_site_option_auto_update_plugins', 'wphc_flush_plugins_detail_cache' );
+add_action( 'add_site_option_auto_update_plugins', 'wphc_flush_plugins_detail_cache' );
+add_action( 'update_option_auto_update_plugins', 'wphc_flush_plugins_detail_cache' );
+add_action( 'add_option_auto_update_plugins', 'wphc_flush_plugins_detail_cache' );
+add_action( 'update_site_option_auto_update_themes', 'wphc_flush_theme_detail_cache' );
+add_action( 'add_site_option_auto_update_themes', 'wphc_flush_theme_detail_cache' );
+add_action( 'update_option_auto_update_themes', 'wphc_flush_theme_detail_cache' );
+add_action( 'add_option_auto_update_themes', 'wphc_flush_theme_detail_cache' );
+foreach ( array( 'auto_update_core_dev', 'auto_update_core_minor', 'auto_update_core_major' ) as $wphc_core_auto_option ) {
+	add_action( "update_site_option_{$wphc_core_auto_option}", 'wphc_flush_health_cache_only' );
+	add_action( "add_site_option_{$wphc_core_auto_option}", 'wphc_flush_health_cache_only' );
+	add_action( "update_option_{$wphc_core_auto_option}", 'wphc_flush_health_cache_only' );
+	add_action( "add_option_{$wphc_core_auto_option}", 'wphc_flush_health_cache_only' );
+}
+unset( $wphc_core_auto_option );
+
+/**
  * Legge il flag ?fresh=1, l'unico modo previsto per forzare un refresh
  * (bypassando cache/transient) su /health e sulle rotte /detail.
  *
@@ -395,11 +656,25 @@ function wphc_request_wants_fresh( WP_REST_Request $request ) {
  * indipendentemente dal fatto che il corpo della risposta sia servito
  * da cache o ricalcolato.
  *
+ * Durante wp_doing_cron() (es. il drain degli aggiornamenti bulk, che
+ * chiama il preflight una volta per elemento) NON scrive: un job da N
+ * elementi sovrascriverebbe altrimenti l'audit "ultimo accesso" con un IP
+ * di loopback/vuoto per N volte, cancellando il segnale reale dell'ultima
+ * chiamata autenticata da parte del centro. Stessa scelta gia' applicata a
+ * /ping. I valori restituiti restano quelli correnti, invariati.
+ *
  * @return array{at: string|null, ip: string|null} Timestamp/IP dell'accesso precedente.
  */
 function wphc_record_access() {
 	$previous_at = get_option( 'wp_health_check_last_request_at' );
 	$previous_ip = get_option( 'wp_health_check_last_request_ip' );
+
+	if ( wp_doing_cron() ) {
+		return array(
+			'at' => $previous_at ? $previous_at : null,
+			'ip' => $previous_ip ? $previous_ip : null,
+		);
+	}
 
 	update_option( 'wp_health_check_last_request_at', gmdate( 'c' ), false );
 	update_option( 'wp_health_check_last_request_ip', wphc_get_client_ip(), false );
@@ -1313,6 +1588,39 @@ function wphc_register_routes() {
 		)
 	);
 
+	// Aggiornamenti bulk (plugin/temi) asincroni: POST accoda un job
+	// autenticato, WP-Cron smaltisce la coda gia' autorizzata (mai un update
+	// non richiesto). Vedi wphc_route_update_bulk_enqueue() per il flusso
+	// completo. GET legge lo stato del job da un singolo option, piu'
+	// economico di una query sulla tabella di log.
+	register_rest_route(
+		'health-check/v1',
+		'/update/bulk',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_update_bulk_enqueue',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+	register_rest_route(
+		'health-check/v1',
+		'/update/bulk',
+		array(
+			'methods'             => WP_REST_Server::READABLE,
+			'callback'            => 'wphc_route_update_bulk_status',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+	register_rest_route(
+		'health-check/v1',
+		'/update/bulk/cancel',
+		array(
+			'methods'             => WP_REST_Server::CREATABLE,
+			'callback'            => 'wphc_route_update_bulk_cancel',
+			'permission_callback' => 'wphc_require_token',
+		)
+	);
+
 	// Stato/rigenerazione della thumbnail del sito (dalla 1.30.0): stessa
 	// autenticazione a bearer delle altre rotte dati. GET restituisce solo lo
 	// stato corrente (economico, nessuna chiamata remota); POST forza una
@@ -2219,6 +2527,7 @@ function wphc_route_health( WP_REST_Request $request ) {
 	$maintenance_file  = wphc_maintenance_file_path();
 	$maintenance_stuck = file_exists( $maintenance_file ) && ( time() - (int) filemtime( $maintenance_file ) ) > 600;
 	$last_update       = get_option( 'wp_health_check_last_update' );
+	$core_auto         = wphc_core_auto_update_state();
 
 	// Screenshot del sito (thum.io): generato e caricato nel Media Library
 	// una sola volta, alla prima /health con opzione vuota. Chiamate
@@ -2236,32 +2545,38 @@ function wphc_route_health( WP_REST_Request $request ) {
 		'generated_at'        => gmdate( 'c' ),
 		'fleet_agent_version' => WP_HEALTH_CHECK_VERSION,
 		'summary'             => array(
-			'wp_version'              => get_bloginfo( 'version' ),
-			'php_version'             => PHP_VERSION,
-			'php_memory_limit'        => (string) ini_get( 'memory_limit' ),
-			'server_ip'               => '' !== $server_ip ? $server_ip : null,
-			'server_ip_is_private'    => '' !== $server_ip && ! wphc_ip_is_public( $server_ip ),
-			'public_ip'               => '' !== $public_ip ? $public_ip : null,
-			'plugin_version'          => WP_HEALTH_CHECK_VERSION,
-			'plugins_total'           => count( $all_plugins ),
-			'plugins_active'          => count( $active_plugins ),
-			'plugins_updates'         => $plugins_updates_count,
-			'themes_total'            => count( $all_themes ),
-			'themes_updates'          => $themes_updates_count,
-			'theme_name'              => $active_theme_name,
-			'parent_theme_name'       => $parent_theme_name,
-			'core_update'             => $core_update_available,
-			'has_gdpr'                => $signals['has_gdpr'],
-			'has_builder'             => $signals['has_builder'],
-			'has_ecommerce'           => $signals['has_ecommerce'],
-			'mu_dir_writable'         => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
-			'updates_checked_at'      => $updates_checked_at,
-			'updates_via_api_enabled' => (bool) get_option( 'wp_health_check_updates_enabled', true ),
-			'restrict_official_only'  => (bool) get_option( 'wp_health_check_restrict_official_only', false ),
-			'last_update'             => $last_update ? $last_update : null,
-			'maintenance_stuck'       => $maintenance_stuck,
-			'thumbnail'               => $thumbnail ? $thumbnail : null,
-			'thumbnail_error'         => ( ! $thumbnail && is_array( $thumbnail_error ) && ! empty( $thumbnail_error['code'] ) ) ? $thumbnail_error['code'] : null,
+			'wp_version'                  => get_bloginfo( 'version' ),
+			'php_version'                 => PHP_VERSION,
+			'php_memory_limit'            => (string) ini_get( 'memory_limit' ),
+			'server_ip'                   => '' !== $server_ip ? $server_ip : null,
+			'server_ip_is_private'        => '' !== $server_ip && ! wphc_ip_is_public( $server_ip ),
+			'public_ip'                   => '' !== $public_ip ? $public_ip : null,
+			'plugin_version'              => WP_HEALTH_CHECK_VERSION,
+			'plugins_total'               => count( $all_plugins ),
+			'plugins_active'              => count( $active_plugins ),
+			'plugins_updates'             => $plugins_updates_count,
+			'themes_total'                => count( $all_themes ),
+			'themes_updates'              => $themes_updates_count,
+			'theme_name'                  => $active_theme_name,
+			'parent_theme_name'           => $parent_theme_name,
+			'core_update'                 => $core_update_available,
+			'core_auto_update'            => $core_auto['enabled'],
+			'core_auto_update_level'      => $core_auto['level'],
+			'core_auto_update_blocked_by' => $core_auto['blocked_by'],
+			'plugins_auto_update_enabled' => wphc_auto_update_enabled_for( 'plugin' ),
+			'themes_auto_update_enabled'  => wphc_auto_update_enabled_for( 'theme' ),
+			'bulk_update'                 => wphc_bulk_summary(),
+			'has_gdpr'                    => $signals['has_gdpr'],
+			'has_builder'                 => $signals['has_builder'],
+			'has_ecommerce'               => $signals['has_ecommerce'],
+			'mu_dir_writable'             => (bool) wp_is_writable( WPMU_PLUGIN_DIR ),
+			'updates_checked_at'          => $updates_checked_at,
+			'updates_via_api_enabled'     => (bool) get_option( 'wp_health_check_updates_enabled', true ),
+			'restrict_official_only'      => (bool) get_option( 'wp_health_check_restrict_official_only', false ),
+			'last_update'                 => $last_update ? $last_update : null,
+			'maintenance_stuck'           => $maintenance_stuck,
+			'thumbnail'                   => $thumbnail ? $thumbnail : null,
+			'thumbnail_error'             => ( ! $thumbnail && is_array( $thumbnail_error ) && ! empty( $thumbnail_error['code'] ) ) ? $thumbnail_error['code'] : null,
 		),
 		'last_access'         => array(
 			'at'          => $previous_access['at'],
@@ -2365,6 +2680,13 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 	wphc_restore_update_shortcircuit( $muted_updates );
 	$active_plugins = (array) get_option( 'active_plugins', array() );
 
+	// Sempre get_site_option(), mai get_option(): su multisite auto_update_plugins
+	// e' una option di RETE condivisa da tutti i siti (in sitemeta), e get_option()
+	// tornerebbe sempre array vuoto li', facendo apparire ogni plugin come "auto-update
+	// spento" anche quando non lo e'. Su single-site get_site_option() ricade da sola
+	// su get_option(), quindi e' corretta in entrambi i casi.
+	$auto_update_plugins = (array) get_site_option( 'auto_update_plugins', array() );
+
 	$items = array();
 	foreach ( $all_plugins as $plugin_file => $plugin_data ) {
 		$has_update  = isset( $plugin_updates[ $plugin_file ]->update->new_version );
@@ -2376,26 +2698,48 @@ function wphc_route_detail_plugins( WP_REST_Request $request ) {
 		$plugin_dir = dirname( $plugin_file );
 		$slug       = ( '.' !== $plugin_dir ) ? $plugin_dir : basename( $plugin_file, '.php' );
 
+		// Convenzione core: null = nessun filtro forza lo stato, si applica la
+		// scelta salvata dall'admin (auto_update_plugins); true|false = un
+		// filtro di terze parti impone lo stato indipendentemente dalla option,
+		// e la UI di WP mostra "gestito da un plugin" senza toggle disponibile.
+		// L'item passato al filtro deve avere almeno 'plugin'/'slug': alcuni
+		// filtri di terze parti li leggono e generano un warning se assenti.
+		$item_object        = (object) array_merge(
+			$plugin_data,
+			array(
+				'plugin' => $plugin_file,
+				'slug'   => $slug,
+			)
+		);
+		$forced             = wp_is_auto_update_forced_for_item( 'plugin', null, $item_object );
+		$auto_update_stored = in_array( $plugin_file, $auto_update_plugins, true );
+		// Vedi la nota su wphc_theme_auto_update_state(): lo stub PHPStan
+		// dichiara "bool", l'implementazione reale puo' restituire null.
+		$auto_update_effective = ( null === $forced ) ? $auto_update_stored : (bool) $forced; // @phpstan-ignore identical.alwaysFalse
+
 		$items[] = array(
-			'name'             => $plugin_data['Name'],
-			'slug'             => $slug,
+			'name'               => $plugin_data['Name'],
+			'slug'               => $slug,
 			// Plugin file (chiave di get_plugins(), es. "wordpress-seo/wp-seo.php"):
 			// e' il valore esatto da passare come "plugin" a POST /update/plugin,
 			// a differenza di "slug" che e' solo la cartella e non identifica
 			// univocamente il file principale per i plugin a file singolo.
-			'file'             => $plugin_file,
-			'version'          => $plugin_data['Version'],
-			'active'           => in_array( $plugin_file, $active_plugins, true ),
-			'update_available' => $has_update,
-			'new_version'      => $new_version,
+			'file'               => $plugin_file,
+			'version'            => $plugin_data['Version'],
+			'active'             => in_array( $plugin_file, $active_plugins, true ),
+			'update_available'   => $has_update,
+			'new_version'        => $new_version,
+			'auto_update'        => $auto_update_effective,
+			'auto_update_forced' => $forced,
 		);
 	}
 
 	$payload = array(
-		'site'         => wphc_normalize_site_url(),
-		'generated_at' => gmdate( 'c' ),
-		'count'        => count( $items ),
-		'plugins'      => $items,
+		'site'                         => wphc_normalize_site_url(),
+		'generated_at'                 => gmdate( 'c' ),
+		'count'                        => count( $items ),
+		'auto_update_enabled_globally' => wphc_auto_update_enabled_for( 'plugin' ),
+		'plugins'                      => $items,
 	);
 
 	set_transient( 'wphc_detail_plugins_cache', $payload, HOUR_IN_SECONDS );
@@ -2453,20 +2797,32 @@ function wphc_route_detail_theme( WP_REST_Request $request ) {
 	$has_update   = is_array( $theme_update ) && isset( $theme_update['new_version'] );
 	$new_version  = $has_update ? $theme_update['new_version'] : null;
 
+	// Sempre get_site_option(): stessa ragione multisite di auto_update_plugins
+	// in wphc_route_detail_plugins() qui sopra.
+	$auto_update_themes = (array) get_site_option( 'auto_update_themes', array() );
+
+	$active_auto_update = wphc_theme_auto_update_state( $stylesheet, $auto_update_themes );
+
 	$active_theme_payload = array(
-		'name'             => $active_theme->get( 'Name' ),
-		'stylesheet'       => $stylesheet,
-		'version'          => $active_theme->get( 'Version' ),
-		'update_available' => $has_update,
-		'new_version'      => $new_version,
+		'name'               => $active_theme->get( 'Name' ),
+		'stylesheet'         => $stylesheet,
+		'version'            => $active_theme->get( 'Version' ),
+		'update_available'   => $has_update,
+		'new_version'        => $new_version,
+		'auto_update'        => $active_auto_update['auto_update'],
+		'auto_update_forced' => $active_auto_update['auto_update_forced'],
 	);
 
 	$parent               = $active_theme->parent();
 	$parent_theme_payload = null;
 	if ( $parent instanceof WP_Theme ) {
+		$parent_stylesheet    = $parent->get_stylesheet();
+		$parent_auto_update   = wphc_theme_auto_update_state( $parent_stylesheet, $auto_update_themes );
 		$parent_theme_payload = array(
-			'name'    => $parent->get( 'Name' ),
-			'version' => $parent->get( 'Version' ),
+			'name'               => $parent->get( 'Name' ),
+			'version'            => $parent->get( 'Version' ),
+			'auto_update'        => $parent_auto_update['auto_update'],
+			'auto_update_forced' => $parent_auto_update['auto_update_forced'],
 		);
 	}
 
@@ -2484,27 +2840,31 @@ function wphc_route_detail_theme( WP_REST_Request $request ) {
 		$item_update      = isset( $theme_updates[ $theme_stylesheet ] ) ? $theme_updates[ $theme_stylesheet ]->update : false;
 		$item_has_update  = is_array( $item_update ) && isset( $item_update['new_version'] );
 		$item_new_version = $item_has_update ? $item_update['new_version'] : null;
+		$item_auto_update = wphc_theme_auto_update_state( (string) $theme_stylesheet, $auto_update_themes );
 
 		$themes[] = array(
-			'name'             => $theme->get( 'Name' ),
-			'stylesheet'       => (string) $theme_stylesheet,
-			'version'          => $theme->get( 'Version' ),
-			'active'           => ( (string) $theme_stylesheet === $active_stylesheet ),
+			'name'               => $theme->get( 'Name' ),
+			'stylesheet'         => (string) $theme_stylesheet,
+			'version'            => $theme->get( 'Version' ),
+			'active'             => ( (string) $theme_stylesheet === $active_stylesheet ),
 			// get_template() restituisce lo stylesheet del parent per un child
 			// theme, oppure quello del tema stesso se non e' un child: si
 			// espone il parent solo nel primo caso, altrimenti null.
-			'parent'           => $theme->parent() ? $theme->get_template() : null,
-			'update_available' => $item_has_update,
-			'new_version'      => $item_new_version,
+			'parent'             => $theme->parent() ? $theme->get_template() : null,
+			'update_available'   => $item_has_update,
+			'new_version'        => $item_new_version,
+			'auto_update'        => $item_auto_update['auto_update'],
+			'auto_update_forced' => $item_auto_update['auto_update_forced'],
 		);
 	}
 
 	$payload = array(
-		'site'         => wphc_normalize_site_url(),
-		'generated_at' => gmdate( 'c' ),
-		'active_theme' => $active_theme_payload,
-		'parent_theme' => $parent_theme_payload,
-		'themes'       => $themes,
+		'site'                         => wphc_normalize_site_url(),
+		'generated_at'                 => gmdate( 'c' ),
+		'auto_update_enabled_globally' => wphc_auto_update_enabled_for( 'theme' ),
+		'active_theme'                 => $active_theme_payload,
+		'parent_theme'                 => $parent_theme_payload,
+		'themes'                       => $themes,
 	);
 
 	set_transient( 'wphc_detail_theme_cache', $payload, HOUR_IN_SECONDS );
@@ -3771,9 +4131,13 @@ function wphc_patch_update_transient_after_success( $type, $target, $version_to 
  * @param string $type    'plugin' | 'theme'.
  * @param string $target  Plugin file (chiave di get_plugins()) oppure stylesheet.
  * @param bool   $dry_run True per un controllo senza eseguire l'update (?check=1).
+ * @param string $source  'api' | 'cron': chi ha AVVIATO l'esecuzione di questo tentativo
+ *                        (annotato nella riga di log e nell'ultimo aggiornamento). Default
+ *                        'api' per non toccare le chiamate esistenti dalle rotte REST
+ *                        sincrone; il drain degli aggiornamenti bulk passa 'cron'.
  * @return array Esito normalizzato, vedi wphc_map_item_update_outcome() per il mapping REST.
  */
-function wphc_perform_item_update( $type, $target, $dry_run = false ) {
+function wphc_perform_item_update( $type, $target, $dry_run = false, $source = 'api' ) {
 	$preflight = wphc_update_preflight( true );
 	if ( true !== $preflight ) {
 		return $preflight;
@@ -3879,7 +4243,7 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 	}
 
 	$correlation_id = wphc_generate_correlation_id();
-	wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'requested', null, $was_active );
+	wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'requested', null, $was_active, $source );
 
 	$skin     = new Automatic_Upgrader_Skin(); // Nessun output HTML: la richiesta e' REST, non una pagina admin.
 	$upgrader = ( 'plugin' === $type ) ? new Plugin_Upgrader( $skin ) : new Theme_Upgrader( $skin );
@@ -3932,8 +4296,8 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 		// 'failed', da verificare manualmente sul sito.
 		$phase = ( $exists && $actual_version === $version_from ) ? 'rolled_back' : 'failed';
 
-		$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message );
-		wphc_record_last_update( $type, $target, $phase );
+		$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message, null, $source );
+		wphc_record_last_update( $type, $target, $phase, $source );
 		wphc_release_update_lock();
 
 		return array(
@@ -3979,8 +4343,8 @@ function wphc_perform_item_update( $type, $target, $dry_run = false ) {
 		}
 	}
 
-	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', $log_message, $active_after );
-	wphc_record_last_update( $type, $target, 'completed' );
+	$log_id = wphc_log_update_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', $log_message, $active_after, $source );
+	wphc_record_last_update( $type, $target, 'completed', $source );
 	wphc_release_update_lock();
 
 	if ( null !== $reactivation_error ) {
@@ -4580,6 +4944,1357 @@ function wphc_route_reactivate( WP_REST_Request $request ) {
 }
 
 // -----------------------------------------------------------------------
+// AGGIORNAMENTI BULK (plugin/temi) VIA POST /update/bulk + WP-CRON
+// -----------------------------------------------------------------------
+//
+// Modello: la rotta REST autenticata ACCODA un job (mai un update di
+// per se'), WP-Cron si limita a SMALTIRE una coda gia' autorizzata,
+// elemento per elemento, riusando wphc_perform_item_update() cosi' com'e'
+// (nessuna modifica al suo comportamento sincrono per singolo elemento).
+// Nessun update parte mai senza un trigger autenticato esplicito - coerente
+// con la scelta architetturale che il sito non ha un cron di auto-update
+// proprio (vedi README, sezione "Architettura e scopo").
+//
+// Storage: il documento completo del job vive in un option NON autoloadato
+// (puo' arrivare a qualche decina di KB con 100 elementi); un secondo
+// option piccolo e fisso, autoloadato, ne tiene il solo riassunto per il
+// campo O(1) esposto da /health. Un transient dedicato (DISTINTO dal lock
+// di update per singolo elemento, che resta interamente dentro
+// wphc_perform_item_update()) impedisce a due tick del drain di
+// sovrapporsi.
+
+/**
+ * Legge il documento completo del job bulk corrente.
+ *
+ * @param bool $fresh True per bypassare l'object cache: necessario nel
+ *                     drain, dove un processo di lunga durata continuerebbe
+ *                     altrimenti a servire una copia in memoria stantia
+ *                     dell'option mentre un altro tick la aggiorna.
+ * @return array|null Il documento, oppure null se non e' mai stato creato un job.
+ */
+function wphc_bulk_get_job( $fresh = false ) {
+	if ( $fresh ) {
+		wp_cache_delete( 'wp_health_check_bulk_job', 'options' );
+	}
+	$job = get_option( 'wp_health_check_bulk_job' );
+	return is_array( $job ) ? $job : null;
+}
+
+/**
+ * Persiste il documento del job e ne sincronizza il riassunto autoloadato.
+ *
+ * @param array $job Documento completo del job.
+ */
+function wphc_bulk_save_job( array $job ) {
+	update_option( 'wp_health_check_bulk_job', $job, false );
+	wphc_bulk_sync_summary( $job );
+}
+
+/**
+ * Riassunto piccolo e fisso, autoloadato: l'unico che /health legge (vedi
+ * wphc_bulk_summary()), cosi' la rotta resta O(1) anche con un documento
+ * job di decine di KB.
+ *
+ * @param array $job Documento completo del job.
+ */
+function wphc_bulk_sync_summary( array $job ) {
+	update_option(
+		'wp_health_check_bulk_status',
+		array(
+			'job_id'       => $job['job_id'],
+			'status'       => $job['status'],
+			'abort_reason' => $job['abort_reason'],
+			'total'        => $job['counters']['total'],
+			'done'         => $job['counters']['done'],
+			'updated'      => $job['counters']['updated'],
+			'skipped'      => $job['counters']['skipped'],
+			'warnings'     => $job['counters']['warnings'],
+			'failed'       => $job['counters']['failed'],
+			'created_at'   => gmdate( 'c', $job['created_ts'] ),
+			'finished_at'  => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
+			'next_run_ts'  => $job['next_run_ts'],
+		),
+		true
+	);
+}
+
+/**
+ * Riassunto del job esposto da /health: un solo get_option() autoloadato piu'
+ * un confronto time(), nessuna query - coerente col contratto economico
+ * della rotta. 'stalled' e' derivato a lettura (mai spinto): funziona anche
+ * su un sito dove il cron non gira piu' per definizione.
+ *
+ * @return array|null Null se non e' mai stato creato un job.
+ */
+function wphc_bulk_summary() {
+	$status = get_option( 'wp_health_check_bulk_status' );
+	if ( ! is_array( $status ) ) {
+		return null;
+	}
+
+	$active  = in_array( $status['status'], array( 'queued', 'running' ), true );
+	$stalled = $active && ( time() > ( (int) $status['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE ) );
+
+	return array(
+		'job_id'       => $status['job_id'],
+		'status'       => $status['status'],
+		'total'        => $status['total'],
+		'done'         => $status['done'],
+		'updated'      => $status['updated'],
+		'skipped'      => $status['skipped'],
+		'warnings'     => $status['warnings'],
+		'failed'       => $status['failed'],
+		'created_at'   => $status['created_at'],
+		'finished_at'  => $status['finished_at'],
+		'next_run_at'  => gmdate( 'c', (int) $status['next_run_ts'] ),
+		'stalled'      => $stalled,
+		'abort_reason' => $status['abort_reason'],
+	);
+}
+
+/**
+ * True se il job e' in uno stato attivo (non terminale).
+ *
+ * @param array $job Documento completo del job.
+ * @return bool
+ */
+function wphc_bulk_is_active( array $job ) {
+	return in_array( $job['status'], array( 'queued', 'running' ), true );
+}
+
+/**
+ * Ricalcola i contatori del job dai singoli elementi. Chiamata dopo ogni
+ * modifica agli item, cosi' 'counters' resta sempre coerente con 'items'
+ * senza doverli tenere sincronizzati a mano in piu' punti.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ */
+function wphc_bulk_recount( array &$job ) {
+	$counters = array(
+		'total'    => count( $job['items'] ),
+		'done'     => 0,
+		'updated'  => 0,
+		'skipped'  => 0,
+		'warnings' => 0,
+		'failed'   => 0,
+		'pending'  => 0,
+	);
+
+	foreach ( $job['items'] as $item ) {
+		if ( 'done' === $item['state'] ) {
+			++$counters['done'];
+			if ( 'updated' === $item['result'] ) {
+				++$counters['updated'];
+			} elseif ( 'reactivation_failed' === $item['result'] ) {
+				++$counters['warnings'];
+			} else {
+				++$counters['skipped'];
+			}
+		} elseif ( 'error' === $item['state'] ) {
+			++$counters['done'];
+			++$counters['failed'];
+		} else {
+			++$counters['pending'];
+		}
+	}
+
+	$job['counters'] = $counters;
+}
+
+/**
+ * Nuovo elemento del job, stato iniziale 'pending'.
+ *
+ * @param string $type   'plugin' | 'theme'.
+ * @param string $target Plugin file oppure stylesheet.
+ * @return array
+ */
+function wphc_bulk_new_item( $type, $target ) {
+	return array(
+		'type'         => $type,
+		'target'       => $target,
+		'name'         => null,
+		'state'        => 'pending',
+		'result'       => null,
+		'attempts'     => 0,
+		'deferrals'    => 0,
+		'next_after'   => 0,
+		'claimed_ts'   => null,
+		'from'         => null,
+		'to'           => null,
+		'log_id'       => null,
+		'correlations' => array(),
+		'last_error'   => null,
+		'finished_ts'  => null,
+	);
+}
+
+/**
+ * Valida, deduplica e cappa gli elementi richiesti da POST /update/bulk.
+ * Accetta la forma canonica {"items":[{"type":"plugin","target":"..."}]}
+ * e, come zucchero, {"plugins":[...],"themes":[...]}. MAI un pacchetto,
+ * una versione o un URL: stesso vincolo non negoziabile delle rotte di
+ * update singole (POST /update/plugin, /update/theme).
+ *
+ * @param array|null $raw Corpo JSON della richiesta.
+ * @return array{items: array, rejected: array}
+ */
+function wphc_bulk_normalize_items( $raw ) {
+	$items      = array();
+	$rejected   = array();
+	$seen       = array();
+	$candidates = array();
+
+	if ( is_array( $raw ) ) {
+		if ( isset( $raw['items'] ) && is_array( $raw['items'] ) ) {
+			foreach ( $raw['items'] as $entry ) {
+				if ( is_array( $entry ) && isset( $entry['type'], $entry['target'] ) ) {
+					$candidates[] = array(
+						'type'   => (string) $entry['type'],
+						'target' => (string) $entry['target'],
+					);
+				}
+			}
+		}
+		if ( isset( $raw['plugins'] ) && is_array( $raw['plugins'] ) ) {
+			foreach ( $raw['plugins'] as $target ) {
+				$candidates[] = array(
+					'type'   => 'plugin',
+					'target' => (string) $target,
+				);
+			}
+		}
+		if ( isset( $raw['themes'] ) && is_array( $raw['themes'] ) ) {
+			foreach ( $raw['themes'] as $target ) {
+				$candidates[] = array(
+					'type'   => 'theme',
+					'target' => (string) $target,
+				);
+			}
+		}
+	}
+
+	foreach ( $candidates as $candidate ) {
+		$type   = $candidate['type'];
+		$target = trim( $candidate['target'] );
+
+		if ( 'core' === $type ) {
+			$rejected[] = array(
+				'type'   => $type,
+				'target' => $target,
+				'reason' => 'core_not_supported',
+			);
+			continue;
+		}
+		if ( ! in_array( $type, array( 'plugin', 'theme' ), true ) ) {
+			$rejected[] = array(
+				'type'   => $type,
+				'target' => $target,
+				'reason' => 'invalid_type',
+			);
+			continue;
+		}
+
+		// Validazione difensiva prima di toccare get_plugins()/wp_get_theme():
+		// un plugin file e' "cartella/file.php" o "file.php" alla radice, uno
+		// stylesheet e' una singola cartella. Nessun ".." in nessuno dei due.
+		$pattern = ( 'plugin' === $type )
+			? '/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?\.php$/'
+			: '/^[A-Za-z0-9._-]+$/';
+
+		if ( '' === $target || false !== strpos( $target, '..' ) || ! preg_match( $pattern, $target ) ) {
+			$rejected[] = array(
+				'type'   => $type,
+				'target' => $target,
+				'reason' => 'invalid_target',
+			);
+			continue;
+		}
+
+		$key = $type . '|' . $target;
+		if ( isset( $seen[ $key ] ) ) {
+			continue; // Duplicato silenzioso: non e' un errore del chiamante.
+		}
+		$seen[ $key ] = true;
+
+		if ( count( $items ) >= WP_HEALTH_CHECK_BULK_MAX_ITEMS ) {
+			$rejected[] = array(
+				'type'   => $type,
+				'target' => $target,
+				'reason' => 'max_items_exceeded',
+			);
+			continue;
+		}
+
+		$items[] = wphc_bulk_new_item( $type, $target );
+	}
+
+	return array(
+		'items'    => $items,
+		'rejected' => $rejected,
+	);
+}
+
+/**
+ * Acquisisce il mutex di drain. DISTINTO dal lock di update per singolo
+ * elemento (interamente dentro wphc_perform_item_update()): serve solo a
+ * impedire che due tick dello stesso hook (WP-Cron pseudo-cron + un
+ * eventuale cron di sistema + spawn_cron() da una visita) processino in
+ * sovrapposizione lo stesso job. Il worst case di una race residua (la
+ * finestra get/set_transient non e' atomica) degrada a un tentativo
+ * duplicato che rilegge il transient core update_plugins/update_themes e
+ * trova up_to_date - mai a corruzione.
+ *
+ * @return bool True se acquisito.
+ */
+function wphc_bulk_acquire_lock() {
+	if ( false !== get_transient( 'wp_health_check_bulk_lock' ) ) {
+		return false;
+	}
+	set_transient( 'wp_health_check_bulk_lock', 1, WP_HEALTH_CHECK_BULK_LOCK_TTL );
+	register_shutdown_function( 'wphc_bulk_release_lock' );
+	return true;
+}
+
+/**
+ * Rilascia il mutex di drain. Registrata anche come shutdown function: cosi'
+ * si libera comunque anche se PHP muore a meta' di un tick.
+ */
+function wphc_bulk_release_lock() {
+	delete_transient( 'wp_health_check_bulk_lock' );
+}
+
+/**
+ * Schedula il prossimo tick del drain con un singolo evento (MAI un evento
+ * ricorrente): un singolo evento orfano si autodistrugge al primo firing
+ * anche se il mu-plugin viene rimosso, mentre un evento ricorrente
+ * resterebbe per sempre nell'option 'cron' (un mu-plugin non ha un hook di
+ * disattivazione che potrebbe altrimenti ripulirlo).
+ *
+ * @param int|null $delay Secondi da ora. Default WP_HEALTH_CHECK_BULK_TICK_GAP.
+ * @return int Timestamp Unix schedulato.
+ */
+function wphc_bulk_schedule_tick( $delay = null ) {
+	if ( null === $delay ) {
+		$delay = WP_HEALTH_CHECK_BULK_TICK_GAP;
+	}
+	$when = time() + max( 0, (int) $delay );
+	if ( false === wp_next_scheduled( 'wphc_bulk_update_tick' ) ) {
+		wp_schedule_single_event( $when, 'wphc_bulk_update_tick' );
+	}
+	return $when;
+}
+
+/** Cancella qualunque tick pianificato: chiamata quando il job termina. */
+function wphc_bulk_unschedule_ticks() {
+	wp_clear_scheduled_hook( 'wphc_bulk_update_tick' );
+}
+
+/**
+ * Calcola il prossimo tick: al piu' presto WP_HEALTH_CHECK_BULK_TICK_GAP
+ * secondi, ma non prima del backoff piu' vicino tra gli elementi ancora
+ * pendenti (cosi' un elemento in attesa di un lungo backoff non causa tick
+ * inutili nel frattempo).
+ *
+ * @param array $job Documento del job.
+ * @return int Secondi da ora.
+ */
+function wphc_bulk_next_delay( array $job ) {
+	$now      = time();
+	$earliest = null;
+	foreach ( $job['items'] as $item ) {
+		if ( 'pending' === $item['state'] ) {
+			$earliest = ( null === $earliest ) ? $item['next_after'] : min( $earliest, $item['next_after'] );
+		}
+	}
+	if ( null === $earliest ) {
+		return WP_HEALTH_CHECK_BULK_TICK_GAP;
+	}
+	return max( WP_HEALTH_CHECK_BULK_TICK_GAP, $earliest - $now );
+}
+
+/**
+ * Ri-armo pigro: se un job e' attivo ma non c'e' alcun tick schedulato ed e'
+ * gia' passato il momento previsto, ri-schedula e sveglia il cron. Recupera
+ * un evento cancellato da un altro plugin o da un riavvio, senza violare la
+ * dottrina "nessun update non richiesto": il job era gia' stato autorizzato
+ * da una chiamata REST autenticata, cron/visite si limitano a farlo
+ * avanzare. Costo sui siti idle (la stragrande maggioranza): una sola
+ * lettura di option gia' autoloadata.
+ */
+function wphc_bulk_maybe_rearm() {
+	$status = get_option( 'wp_health_check_bulk_status' );
+	if ( ! is_array( $status ) || ! in_array( $status['status'], array( 'queued', 'running' ), true ) ) {
+		return;
+	}
+	if ( false !== wp_next_scheduled( 'wphc_bulk_update_tick' ) ) {
+		return;
+	}
+	if ( time() < (int) $status['next_run_ts'] ) {
+		return;
+	}
+	if ( false !== get_transient( 'wphc_bulk_rearm_lock' ) ) {
+		return;
+	}
+	set_transient( 'wphc_bulk_rearm_lock', 1, MINUTE_IN_SECONDS );
+
+	wphc_bulk_schedule_tick( 0 );
+	spawn_cron();
+}
+add_action( 'init', 'wphc_bulk_maybe_rearm' );
+
+/**
+ * Trova l'indice del prossimo elemento pronto per un tentativo (pending e
+ * backoff scaduto), oppure null se nessuno e' pronto ora.
+ *
+ * @param array $job Documento del job.
+ * @param int   $now Timestamp Unix corrente.
+ * @return int|null
+ */
+function wphc_bulk_next_item_index( array $job, $now ) {
+	foreach ( $job['items'] as $index => $item ) {
+		if ( 'pending' === $item['state'] && $item['next_after'] <= $now ) {
+			return $index;
+		}
+	}
+	return null;
+}
+
+/**
+ * Classifica un $result di wphc_perform_item_update() in una delle
+ * categorie di trattamento del drain. Tre dei valori possibili sono
+ * verdetti sull'INTERO SITO (kill-switch, versione WP, filesystem), non
+ * sul singolo elemento: per questi l'intero job va abortito, ripetere
+ * l'elemento 100 volte non servirebbe a nulla.
+ *
+ * @param string $result Valore del campo 'result' restituito dall'esito.
+ * @return string 'success'|'noop'|'warning'|'retry'|'defer'|'job_fatal'.
+ */
+function wphc_bulk_classify_result( $result ) {
+	$map = array(
+		'updated'                => 'success',
+		'up_to_date'             => 'noop',
+		'not_found'              => 'noop',
+		'not_updatable'          => 'noop',
+		'reactivation_failed'    => 'warning',
+		'failed'                 => 'retry',
+		'rolled_back'            => 'retry',
+		'locked'                 => 'defer',
+		'disabled'               => 'job_fatal',
+		'unsupported_wp_version' => 'job_fatal',
+		'fs_method_unavailable'  => 'job_fatal',
+	);
+
+	return isset( $map[ $result ] ) ? $map[ $result ] : 'retry';
+}
+
+/**
+ * Tempo di backoff (secondi) dopo il tentativo numero $attempts.
+ *
+ * @param int $attempts Numero di tentativi gia' effettuati.
+ * @return int
+ */
+function wphc_bulk_backoff_for_attempt( $attempts ) {
+	$table = WP_HEALTH_CHECK_BULK_BACKOFF;
+	$index = max( 0, min( (int) $attempts, count( $table ) - 1 ) );
+	return (int) $table[ $index ];
+}
+
+/**
+ * Applica l'esito di un tentativo all'elemento e ricalcola i contatori.
+ * Puo' abortire l'intero job (vedi wphc_bulk_classify_result()).
+ *
+ * @param array $job     Documento del job, passato per riferimento.
+ * @param int   $index   Indice dell'elemento in $job['items'].
+ * @param array $outcome Esito grezzo di wphc_perform_item_update().
+ */
+function wphc_bulk_apply_outcome( array &$job, $index, array $outcome ) {
+	$item   = &$job['items'][ $index ];
+	$result = isset( $outcome['result'] ) ? $outcome['result'] : 'failed';
+	$class  = wphc_bulk_classify_result( $result );
+
+	$item['result'] = $result;
+	if ( isset( $outcome['name'] ) ) {
+		$item['name'] = $outcome['name'];
+	}
+	if ( isset( $outcome['current'] ) ) {
+		$item['from'] = $outcome['current'];
+	}
+	if ( isset( $outcome['latest'] ) ) {
+		$item['to'] = $outcome['latest'];
+	}
+	if ( isset( $outcome['log_id'] ) && $outcome['log_id'] ) {
+		$item['log_id']         = $outcome['log_id'];
+		$item['correlations'][] = $outcome['log_id'];
+	}
+	if ( isset( $outcome['detail'] ) ) {
+		$item['last_error'] = mb_substr( (string) $outcome['detail'], 0, 200 );
+	}
+
+	switch ( $class ) {
+		case 'success':
+		case 'noop':
+		case 'warning':
+			$item['state']       = 'done';
+			$item['finished_ts'] = time();
+			break;
+
+		case 'retry':
+			++$item['attempts'];
+			if ( $item['attempts'] >= WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS ) {
+				$item['state']       = 'error';
+				$item['finished_ts'] = time();
+			} else {
+				$item['state']      = 'pending';
+				$item['next_after'] = time() + wphc_bulk_backoff_for_attempt( $item['attempts'] );
+			}
+			break;
+
+		case 'defer':
+			// Contesa di lock con un update singolo concorrente: non consuma
+			// un tentativo, altrimenti un sito occupato brucerebbe tutti i
+			// retry su un elemento mai davvero provato.
+			++$item['deferrals'];
+			if ( $item['deferrals'] >= WP_HEALTH_CHECK_BULK_MAX_DEFERRALS ) {
+				$item['state']       = 'error';
+				$item['result']      = 'failed';
+				$item['last_error']  = 'lock contention';
+				$item['finished_ts'] = time();
+			} else {
+				$item['state']      = 'pending';
+				$item['next_after'] = time() + WP_HEALTH_CHECK_BULK_TICK_GAP;
+			}
+			break;
+
+		case 'job_fatal':
+			unset( $item );
+			wphc_bulk_abort_job( $job, $result );
+			return;
+	}
+
+	unset( $item );
+	wphc_bulk_recount( $job );
+}
+
+/**
+ * Aborta l'intero job: gli elementi ancora pendenti/in corso diventano
+ * 'error' con un motivo esplicito, cosi' il report finale (e il webhook)
+ * non li mostra come "in sospeso" per sempre.
+ *
+ * @param array  $job    Documento del job, passato per riferimento.
+ * @param string $reason Motivo macchina (es. 'disabled', 'job_timeout').
+ */
+function wphc_bulk_abort_job( array &$job, $reason ) {
+	$job['status']       = 'aborted';
+	$job['abort_reason'] = $reason;
+	$job['finished_ts']  = time();
+
+	foreach ( $job['items'] as &$item ) {
+		if ( in_array( $item['state'], array( 'pending', 'running' ), true ) ) {
+			$item['state']       = 'error';
+			$item['last_error']  = 'job aborted: ' . $reason;
+			$item['finished_ts'] = time();
+		}
+	}
+	unset( $item );
+
+	wphc_bulk_recount( $job );
+}
+
+/**
+ * Rileva elementi 'running' orfani (claimed_ts piu' vecchio del timeout):
+ * un crash PHP a meta' di un tentativo lascia lo stato incoerente
+ * altrimenti per sempre. L'evidenza corroborante esiste gia' nella tabella
+ * di log: una riga 'requested' senza la corrispondente riga terminale e'
+ * esattamente cio' che il pattern a due righe e' pensato per rivelare.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ * @param int   $now Timestamp Unix corrente.
+ * @return bool True se almeno un elemento e' stato "riparato".
+ */
+function wphc_bulk_reap_stuck_items( array &$job, $now ) {
+	$reaped = false;
+
+	foreach ( $job['items'] as &$item ) {
+		if ( 'running' !== $item['state'] || null === $item['claimed_ts'] ) {
+			continue;
+		}
+		if ( ( $now - $item['claimed_ts'] ) <= WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT ) {
+			continue;
+		}
+
+		++$item['attempts'];
+		$item['last_error'] = 'interrupted (timeout/fatal)';
+		if ( $item['attempts'] >= WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS ) {
+			$item['state']       = 'error';
+			$item['result']      = 'failed';
+			$item['finished_ts'] = $now;
+		} else {
+			$item['state']      = 'pending';
+			$item['next_after'] = $now + wphc_bulk_backoff_for_attempt( $item['attempts'] );
+		}
+		$reaped = true;
+	}
+	unset( $item );
+
+	if ( $reaped ) {
+		wphc_bulk_recount( $job );
+	}
+
+	return $reaped;
+}
+
+/**
+ * Scadenza dura del job (WP_HEALTH_CHECK_BULK_JOB_TTL dalla creazione):
+ * finalizza come 'aborted' se superata. Chiamata sia a inizio tick sia da
+ * GET /update/bulk, cosi' anche un sito col cron morto viene finalizzato
+ * dal solo polling del centro.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ * @return bool True se il job e' stato abortito per timeout in questa chiamata.
+ */
+function wphc_bulk_maybe_reap( array &$job ) {
+	if ( ! wphc_bulk_is_active( $job ) ) {
+		return false;
+	}
+	if ( ( time() - $job['created_ts'] ) < WP_HEALTH_CHECK_BULK_JOB_TTL ) {
+		return false;
+	}
+
+	wphc_bulk_abort_job( $job, 'job_timeout' );
+	return true;
+}
+
+/**
+ * Determina se il job e' completo (nessun elemento ancora pendente) e, se
+ * si', ne fissa lo stato terminale. Restituisce true SOLO al momento della
+ * transizione, cosi' wphc_bulk_run_tick() invia il webhook esattamente una
+ * volta.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ * @return bool
+ */
+function wphc_bulk_maybe_finalize( array &$job ) {
+	if ( 'aborted' === $job['status'] ) {
+		return true; // Gia' finalizzato da wphc_bulk_abort_job().
+	}
+	if ( $job['counters']['pending'] > 0 ) {
+		return false;
+	}
+
+	$job['status']      = ( $job['counters']['failed'] > 0 ) ? 'completed_with_errors' : 'completed';
+	$job['finished_ts'] = time();
+
+	return true;
+}
+
+/**
+ * Finalizza il job: cancella lo scheduling, persiste, invia il webhook
+ * (se non gia' inviato per questo job) e ripersiste col relativo esito.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ */
+function wphc_bulk_finish( array &$job ) {
+	wphc_bulk_unschedule_ticks();
+	wphc_bulk_save_job( $job );
+
+	if ( empty( $job['webhook']['sent'] ) ) {
+		wphc_bulk_send_webhook_for_job( $job );
+		wphc_bulk_save_job( $job );
+	}
+}
+
+/**
+ * Il tick del drain: hook di WP-Cron. Acquisisce il mutex di drain (MAI il
+ * lock di update per singolo elemento, gia' gestito internamente da
+ * wphc_perform_item_update() su ogni chiamata sequenziale), processa fino a
+ * WP_HEALTH_CHECK_BULK_ITEMS_PER_TICK elementi entro
+ * WP_HEALTH_CHECK_BULK_TIME_BUDGET secondi (controllato PRIMA di ogni
+ * elemento, mai a meta', sempre almeno un elemento per tick), poi finalizza
+ * o ri-schedula.
+ */
+function wphc_bulk_run_tick() {
+	if ( ! wphc_bulk_acquire_lock() ) {
+		return;
+	}
+
+	$job = wphc_bulk_get_job( true );
+	if ( null === $job || ! wphc_bulk_is_active( $job ) ) {
+		wphc_bulk_release_lock();
+		return;
+	}
+
+	if ( function_exists( 'set_time_limit' ) ) {
+		@set_time_limit( 0 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.PHP.DiscouragedPHPFunctions.runtime_configuration_set_time_limit -- il budget di tempo sopra e' il vero governatore, non il limite PHP.
+	}
+	wphc_clear_stale_maintenance();
+
+	$job['status'] = 'running';
+	$job['ticks']  = isset( $job['ticks'] ) ? $job['ticks'] + 1 : 1;
+	if ( null === $job['started_ts'] ) {
+		$job['started_ts'] = time();
+	}
+
+	wphc_bulk_reap_stuck_items( $job, time() );
+
+	if ( wphc_bulk_maybe_reap( $job ) ) {
+		wphc_bulk_finish( $job );
+		wphc_bulk_release_lock();
+		return;
+	}
+
+	wphc_bulk_save_job( $job );
+
+	$start = microtime( true );
+	$done  = 0;
+	while ( $done < WP_HEALTH_CHECK_BULK_ITEMS_PER_TICK ) {
+		if ( $done > 0 && ( microtime( true ) - $start ) > WP_HEALTH_CHECK_BULK_TIME_BUDGET ) {
+			break;
+		}
+
+		$job   = wphc_bulk_get_job( true );
+		$index = wphc_bulk_next_item_index( $job, time() );
+		if ( null === $index ) {
+			break;
+		}
+
+		$job['items'][ $index ]['state']      = 'running';
+		$job['items'][ $index ]['claimed_ts'] = time();
+		wphc_bulk_save_job( $job );
+
+		$outcome = wphc_perform_item_update(
+			$job['items'][ $index ]['type'],
+			$job['items'][ $index ]['target'],
+			false,
+			'cron'
+		);
+
+		$job = wphc_bulk_get_job( true );
+		wphc_bulk_apply_outcome( $job, $index, $outcome );
+		wphc_bulk_save_job( $job );
+
+		if ( 'aborted' === $job['status'] ) {
+			break;
+		}
+
+		++$done;
+	}
+
+	if ( wphc_bulk_maybe_finalize( $job ) ) {
+		wphc_bulk_finish( $job );
+	} else {
+		$job['next_run_ts'] = wphc_bulk_schedule_tick( wphc_bulk_next_delay( $job ) );
+		wphc_bulk_save_job( $job );
+	}
+
+	delete_transient( 'wphc_health_cache' );
+	wphc_bulk_release_lock();
+}
+add_action( 'wphc_bulk_update_tick', 'wphc_bulk_run_tick' );
+
+/**
+ * Preambolo per POST /update/bulk: accesso, kill-switch, requisito versione
+ * WP, filesystem 'direct'. DELIBERATAMENTE senza il lock di update: l'ENQUEUE
+ * non tocca alcun file, e un lock momentaneo di un altro update in corso non
+ * deve far fallire la sola messa in coda.
+ *
+ * @return true|array True se si puo' procedere, altrimenti array-esito con
+ *                     chiavi 'result' e 'http'.
+ */
+function wphc_bulk_enqueue_preflight() {
+	wphc_record_access();
+
+	if ( ! get_option( 'wp_health_check_updates_enabled', true ) ) {
+		return array(
+			'result' => 'disabled',
+			'http'   => 403,
+		);
+	}
+
+	if ( version_compare( get_bloginfo( 'version' ), '6.3', '<' ) ) {
+		return array(
+			'result' => 'unsupported_wp_version',
+			'http'   => 200,
+		);
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/file.php';
+	if ( 'direct' !== get_filesystem_method() ) {
+		return array(
+			'result' => 'fs_method_unavailable',
+			'http'   => 200,
+		);
+	}
+
+	return true;
+}
+
+// -----------------------------------------------------------------------
+// CALLBACK: POST|GET /update/bulk, POST /update/bulk/cancel
+// -----------------------------------------------------------------------
+
+/**
+ * POST /update/bulk: accoda un job di aggiornamento bulk (plugin/temi). Il
+ * body indica SOLO quali elementi aggiornare, mai un pacchetto/versione/URL
+ * - stesso vincolo non negoziabile delle rotte di update singole.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response|WP_Error
+ */
+function wphc_route_update_bulk_enqueue( WP_REST_Request $request ) {
+	$preflight = wphc_bulk_enqueue_preflight();
+	if ( true !== $preflight ) {
+		if ( 403 === (int) $preflight['http'] ) {
+			return new WP_Error( 'wphc_updates_disabled', __( 'Aggiornamenti via API disattivati per questo sito.', 'wp-health-check' ), array( 'status' => 403 ) );
+		}
+		return rest_ensure_response(
+			array(
+				'accepted' => false,
+				'result'   => $preflight['result'],
+			)
+		);
+	}
+
+	$body        = (array) $request->get_json_params();
+	$force       = ! empty( $body['force'] );
+	$current_job = wphc_bulk_get_job( true );
+
+	if ( null !== $current_job && wphc_bulk_is_active( $current_job ) ) {
+		$summary = wphc_bulk_summary();
+		$stalled = is_array( $summary ) && ! empty( $summary['stalled'] );
+
+		if ( ! $force || ! $stalled ) {
+			return new WP_Error(
+				'wphc_bulk_job_in_progress',
+				__( 'Un job di aggiornamento bulk e\' gia\' in corso.', 'wp-health-check' ),
+				array(
+					'status'      => 409,
+					'job_id'      => $current_job['job_id'],
+					'job_status'  => $current_job['status'],
+					'total'       => $current_job['counters']['total'],
+					'done'        => $current_job['counters']['done'],
+					'stalled'     => $stalled,
+					'next_run_at' => gmdate( 'c', (int) $current_job['next_run_ts'] ),
+				)
+			);
+		}
+
+		// force=true su un job stallato: lo abortiamo esplicitamente prima di
+		// accodarne uno nuovo, cosi' non resta mai un documento 'running'
+		// orfano mentre un secondo job procede in parallelo.
+		wphc_bulk_abort_job( $current_job, 'replaced_by_new_job' );
+		wphc_bulk_finish( $current_job );
+	}
+
+	$normalized = wphc_bulk_normalize_items( $body );
+	if ( empty( $normalized['items'] ) ) {
+		return new WP_Error( 'wphc_bulk_no_valid_items', __( 'Nessun elemento valido da aggiornare.', 'wp-health-check' ), array( 'status' => 400 ) );
+	}
+
+	$now = time();
+	$job = array(
+		'job_id'        => wphc_generate_correlation_id(),
+		'status'        => 'queued',
+		'abort_reason'  => null,
+		'created_ts'    => $now,
+		'started_ts'    => null,
+		'finished_ts'   => null,
+		'next_run_ts'   => $now,
+		'ticks'         => 0,
+		'source'        => wphc_detect_update_source(),
+		'requested_ip'  => wphc_get_client_ip(),
+		'agent_version' => WP_HEALTH_CHECK_VERSION,
+		'dry_run'       => false,
+		'items'         => $normalized['items'],
+		'counters'      => array(),
+		'webhook'       => array(
+			'sent'       => false,
+			'attempts'   => 0,
+			'sending_ts' => null,
+			'sent_ts'    => null,
+			'code'       => null,
+			'last_error' => null,
+		),
+	);
+	wphc_bulk_recount( $job );
+	wphc_bulk_save_job( $job );
+
+	wphc_bulk_schedule_tick( 0 );
+	spawn_cron();
+
+	return new WP_REST_Response(
+		array(
+			'accepted'      => true,
+			'job_id'        => $job['job_id'],
+			'status'        => $job['status'],
+			'total'         => $job['counters']['total'],
+			'rejected'      => $normalized['rejected'],
+			'scheduled_at'  => gmdate( 'c', $now ),
+			'cron_disabled' => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
+			'poll'          => array(
+				'job' => rest_url( 'health-check/v1/update/bulk' ),
+				'log' => rest_url( 'health-check/v1/update/log' ) . '?source=cron',
+			),
+		),
+		202
+	);
+}
+
+/**
+ * GET /update/bulk: legge il documento del job da un singolo option non
+ * autoloadato - piu' economico di una query sulla tabella di log, e l'unico
+ * modo di conoscere elementi ancora pendenti (che non hanno righe di log).
+ * Chiama anche wphc_bulk_maybe_reap(): il polling da centro innesca da solo
+ * la finalizzazione di un job stallato, anche su un sito col cron morto.
+ *
+ * @param WP_REST_Request $request Richiesta REST corrente.
+ * @return WP_REST_Response
+ */
+function wphc_route_update_bulk_status( WP_REST_Request $request ) {
+	wphc_record_access();
+
+	$job = wphc_bulk_get_job( true );
+	if ( null === $job ) {
+		return rest_ensure_response(
+			array(
+				'site' => wphc_normalize_site_url(),
+				'job'  => null,
+			)
+		);
+	}
+
+	if ( wphc_bulk_maybe_reap( $job ) ) {
+		wphc_bulk_finish( $job );
+	}
+
+	$show_items = '0' !== (string) $request->get_param( 'items' );
+
+	$payload = array(
+		'job_id'       => $job['job_id'],
+		'status'       => $job['status'],
+		'abort_reason' => $job['abort_reason'],
+		'created_at'   => gmdate( 'c', $job['created_ts'] ),
+		'started_at'   => $job['started_ts'] ? gmdate( 'c', $job['started_ts'] ) : null,
+		'finished_at'  => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
+		'next_run_at'  => gmdate( 'c', (int) $job['next_run_ts'] ),
+		'stalled'      => wphc_bulk_is_active( $job ) && ( time() > ( (int) $job['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE ) ),
+		'counters'     => $job['counters'],
+		'webhook'      => $job['webhook'],
+	);
+	if ( $show_items ) {
+		$payload['items'] = $job['items'];
+	}
+
+	return rest_ensure_response(
+		array(
+			'site'         => wphc_normalize_site_url(),
+			'generated_at' => gmdate( 'c' ),
+			'job'          => $payload,
+		)
+	);
+}
+
+/**
+ * POST /update/bulk/cancel: interrompe un job attivo tra un elemento e
+ * l'altro (un elemento gia' dentro Plugin_Upgrader::upgrade() completa
+ * comunque). Il webhook viene inviato anche in questo caso, col report
+ * parziale.
+ *
+ * @return WP_REST_Response|WP_Error
+ */
+function wphc_route_update_bulk_cancel() {
+	$job = wphc_bulk_get_job( true );
+	if ( null === $job || ! wphc_bulk_is_active( $job ) ) {
+		return new WP_Error( 'wphc_bulk_no_active_job', __( 'Nessun job di aggiornamento bulk in corso.', 'wp-health-check' ), array( 'status' => 404 ) );
+	}
+
+	$job['status']      = 'cancelled';
+	$job['finished_ts'] = time();
+	foreach ( $job['items'] as &$item ) {
+		if ( in_array( $item['state'], array( 'pending', 'running' ), true ) ) {
+			$item['state']       = 'error';
+			$item['last_error']  = 'cancelled';
+			$item['finished_ts'] = time();
+		}
+	}
+	unset( $item );
+	wphc_bulk_recount( $job );
+	wphc_bulk_finish( $job );
+
+	return rest_ensure_response(
+		array(
+			'site'   => wphc_normalize_site_url(),
+			'job_id' => $job['job_id'],
+			'status' => $job['status'],
+		)
+	);
+}
+
+// -----------------------------------------------------------------------
+// WEBHOOK DI NOTIFICA FIRMATO (a fine job bulk, o su richiesta di prova)
+// -----------------------------------------------------------------------
+//
+// Firma HMAC-SHA256 speculare (in uscita) allo schema di verifica del
+// protocollo v2 in ingresso (wphc_verify_request_signature()): stessa
+// primitiva, stesso segreto di sito, cosi' il ricevente puo' riusare la
+// stessa logica di verifica gia' scritta per l'ingresso.
+
+/**
+ * URL del webhook configurato, o stringa vuota se il feature e' spento.
+ *
+ * @return string
+ */
+function wphc_webhook_url() {
+	return (string) get_option( 'wp_health_check_webhook_url', '' );
+}
+
+/**
+ * Guardia di salvataggio (difesa in profondita', non un confine di
+ * sicurezza assoluto: nessun re-check DNS all'invio, TOCTOU-vulnerabile e
+ * non affidabile su DNS split-horizon legittimo). wp_http_validate_url() e'
+ * lo stesso validatore che l'HTTP API di WP applica gia' alle richieste
+ * sicure; lo scheme https e' verificato a parte perche' quel validatore da
+ * solo accetta anche http; se l'host e' un IP letterale deve essere
+ * pubblico (wphc_ip_is_public(), gia' esistente - riusata, non riscritta).
+ *
+ * @param string $url URL da validare.
+ * @return bool
+ */
+function wphc_webhook_url_is_allowed( $url ) {
+	if ( ! wp_http_validate_url( $url ) ) {
+		return false;
+	}
+	if ( 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) {
+		return false;
+	}
+	$host = (string) wp_parse_url( $url, PHP_URL_HOST );
+	if ( filter_var( $host, FILTER_VALIDATE_IP ) && ! wphc_ip_is_public( $host ) ) {
+		return false;
+	}
+	return true;
+}
+
+/**
+ * Costruisce la firma HMAC-SHA256 di una POST in uscita. La stringa firmata
+ * usa $event al posto di un path di rotta (che non esiste per un POST in
+ * uscita): fornisce comunque separazione di dominio, mentre l'identita' del
+ * sito viaggia dentro il body firmato ('site'), non in uno slot separato.
+ *
+ * @param string $event     Nome evento (es. 'wphc.bulk_update.completed').
+ * @param string $body_json Corpo JSON gia' codificato UNA sola volta:
+ *                           l'hash e l'invio devono usare esattamente la
+ *                           stessa stringa, mai una ri-codifica separata.
+ * @param string $secret    Segreto di sito (wp_health_check_token).
+ * @return array{timestamp:int,nonce:string,signature:string}
+ */
+function wphc_build_outbound_signature( $event, $body_json, $secret ) {
+	$timestamp = time();
+	$nonce     = bin2hex( random_bytes( 16 ) );
+	$canonical = "POST\n{$event}\n" . hash( 'sha256', $body_json ) . "\n{$timestamp}\n{$nonce}";
+	$signature = wphc_base64url_encode( hash_hmac( 'sha256', $canonical, $secret, true ) );
+
+	return array(
+		'timestamp' => $timestamp,
+		'nonce'     => $nonce,
+		'signature' => $signature,
+	);
+}
+
+/**
+ * Backoff (secondi) per il tentativo di webhook numero $attempt.
+ *
+ * @param int $attempt Numero di tentativo (1-based).
+ * @return int
+ */
+function wphc_webhook_backoff_for_attempt( $attempt ) {
+	$table = WP_HEALTH_CHECK_WEBHOOK_BACKOFF;
+	$index = max( 0, min( (int) $attempt, count( $table ) - 1 ) );
+	return (int) $table[ $index ];
+}
+
+/**
+ * Registra l'ultimo esito di consegna del webhook, stesso pattern di
+ * wp_health_check_thumb_error: array con 'at'/codice macchina/messaggio
+ * troncato, mai l'URL completo (solo l'host).
+ *
+ * @param bool        $ok          Esito.
+ * @param int         $code        Codice HTTP (0 se errore di trasporto).
+ * @param string|null $error       Codice macchina dell'errore, null se ok.
+ * @param string      $message     Messaggio (troncato a 500 char).
+ * @param string      $url         URL di destinazione (solo l'host viene salvato).
+ * @param string      $job_id      Id del job (o 'test-...' per un invio di prova).
+ * @param int         $attempt     Numero di tentativo.
+ * @param int|null    $duration_ms Durata della richiesta in millisecondi.
+ */
+function wphc_record_webhook_result( $ok, $code, $error, $message, $url, $job_id, $attempt, $duration_ms ) {
+	$retry_at = null;
+	if ( ! $ok && in_array( $error, array( 'wphc_webhook_transport_error', 'wphc_webhook_http_error' ), true ) && $attempt < WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS ) {
+		$retry_at = gmdate( 'c', time() + wphc_webhook_backoff_for_attempt( $attempt ) );
+	}
+
+	update_option(
+		'wp_health_check_webhook_last',
+		array(
+			'at'          => gmdate( 'c' ),
+			'ok'          => (bool) $ok,
+			'job_id'      => $job_id,
+			'attempt'     => $attempt,
+			'code'        => $code,
+			'error'       => $error,
+			'message'     => mb_substr( (string) $message, 0, 500 ),
+			'url_host'    => wp_parse_url( $url, PHP_URL_HOST ),
+			'duration_ms' => $duration_ms,
+			'retry_at'    => $retry_at,
+		),
+		false
+	);
+}
+
+/**
+ * Invia (o tenta di inviare) una POST firmata verso il webhook configurato.
+ * Gestisce, in ordine, la degradazione a "nessun invio, nessun errore" (non
+ * configurato), a errore esplicito (non enrollato / revocato / URL non
+ * ammesso), poi il trasporto vero e proprio. Un sito revocato tace del
+ * tutto (stessa scelta di wphc_require_token() in ingresso) e cancella
+ * qualunque retry pendente.
+ *
+ * @param string $event   Nome evento.
+ * @param array  $payload Corpo del report (verra' codificato una volta sola).
+ * @param string $job_id  Id del job, per idempotenza lato ricevente (header X-WPHC-Delivery).
+ * @param int    $attempt Numero di tentativo (1-based).
+ * @return array{ok:bool,code:int,error:string|null,retryable:bool}
+ */
+function wphc_dispatch_webhook_payload( $event, array $payload, $job_id, $attempt ) {
+	$url = wphc_webhook_url();
+	if ( '' === $url ) {
+		return array(
+			'ok'        => false,
+			'code'      => 0,
+			'error'     => null,
+			'retryable' => false,
+		);
+	}
+
+	$secret = get_option( 'wp_health_check_token' );
+	if ( empty( $secret ) ) {
+		wphc_record_webhook_result( false, 0, 'wphc_webhook_not_enrolled', '', $url, $job_id, $attempt, null );
+		return array(
+			'ok'        => false,
+			'code'      => 0,
+			'error'     => 'wphc_webhook_not_enrolled',
+			'retryable' => false,
+		);
+	}
+
+	if ( get_option( 'wp_health_check_revoked_at' ) ) {
+		delete_option( 'wp_health_check_webhook_pending' );
+		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
+		wphc_record_webhook_result( false, 0, 'wphc_webhook_revoked', '', $url, $job_id, $attempt, null );
+		return array(
+			'ok'        => false,
+			'code'      => 0,
+			'error'     => 'wphc_webhook_revoked',
+			'retryable' => false,
+		);
+	}
+
+	if ( ! wphc_webhook_url_is_allowed( $url ) ) {
+		wphc_record_webhook_result( false, 0, 'wphc_webhook_url_blocked', '', $url, $job_id, $attempt, null );
+		return array(
+			'ok'        => false,
+			'code'      => 0,
+			'error'     => 'wphc_webhook_url_blocked',
+			'retryable' => false,
+		);
+	}
+
+	$body_json = wp_json_encode( $payload );
+	$sig       = wphc_build_outbound_signature( $event, $body_json, $secret );
+
+	$headers = array(
+		'Content-Type'      => 'application/json; charset=utf-8',
+		'Accept'            => 'application/json',
+		'User-Agent'        => 'wp-health-check-agent/' . WP_HEALTH_CHECK_VERSION,
+		'X-WPHC-Timestamp'  => (string) $sig['timestamp'],
+		'X-WPHC-Nonce'      => $sig['nonce'],
+		'X-WPHC-Signature'  => $sig['signature'],
+		'X-WPHC-Event'      => $event,
+		'X-WPHC-Secret-Kid' => (string) get_option( 'wp_health_check_secret_kid', '' ),
+		'X-WPHC-Site'       => wphc_normalize_site_url(),
+		'X-WPHC-Delivery'   => (string) $job_id,
+		'X-WPHC-Attempt'    => (string) $attempt,
+	);
+
+	$started     = microtime( true );
+	$response    = wp_remote_post(
+		$url,
+		array(
+			'timeout'     => WP_HEALTH_CHECK_WEBHOOK_TIMEOUT,
+			'redirection' => 0, // Una 30x non deve far ripostare il body firmato altrove.
+			'sslverify'   => true, // Esplicito: e' anche il default, non abbassarlo MAI.
+			'headers'     => $headers,
+			'body'        => $body_json,
+		)
+	);
+	$duration_ms = (int) round( ( microtime( true ) - $started ) * 1000 );
+
+	if ( is_wp_error( $response ) ) {
+		$message = $response->get_error_message();
+		wphc_record_webhook_result( false, 0, 'wphc_webhook_transport_error', $message, $url, $job_id, $attempt, $duration_ms );
+		return array(
+			'ok'        => false,
+			'code'      => 0,
+			'error'     => 'wphc_webhook_transport_error',
+			'retryable' => true,
+		);
+	}
+
+	$code = (int) wp_remote_retrieve_response_code( $response );
+	if ( $code >= 200 && $code < 300 ) {
+		wphc_record_webhook_result( true, $code, null, '', $url, $job_id, $attempt, $duration_ms );
+		return array(
+			'ok'        => true,
+			'code'      => $code,
+			'error'     => null,
+			'retryable' => false,
+		);
+	}
+
+	// Retry solo su errori transitori: un 4xx (a parte 408/429) significa
+	// che il ricevente ha rifiutato la richiesta, ripeterla non risolve nulla.
+	$retryable = ( 408 === $code || 429 === $code || $code >= 500 );
+	$message   = mb_substr( (string) wp_remote_retrieve_body( $response ), 0, 500 );
+	wphc_record_webhook_result( false, $code, 'wphc_webhook_http_error', $message, $url, $job_id, $attempt, $duration_ms );
+
+	return array(
+		'ok'        => false,
+		'code'      => $code,
+		'error'     => 'wphc_webhook_http_error',
+		'retryable' => $retryable,
+	);
+}
+
+/**
+ * Costruisce il report JSON di fine job bulk: un solo vocabolario di
+ * 'result' condiviso con la REST e con la tabella di log
+ * (wphc_map_item_update_outcome()), nessun segreto/token/dato utente.
+ *
+ * @param array $job Documento completo del job.
+ * @return array
+ */
+function wphc_bulk_build_webhook_payload( array $job ) {
+	$items           = array();
+	$items_truncated = false;
+
+	foreach ( $job['items'] as $item ) {
+		if ( count( $items ) >= WP_HEALTH_CHECK_WEBHOOK_MAX_ITEMS ) {
+			$items_truncated = true;
+			break;
+		}
+		$items[] = array(
+			'type'        => $item['type'],
+			'target'      => $item['target'],
+			'name'        => $item['name'],
+			'from'        => $item['from'],
+			'to'          => $item['to'],
+			'result'      => $item['result'],
+			'attempts'    => $item['attempts'],
+			'log_id'      => $item['log_id'],
+			'finished_at' => $item['finished_ts'] ? gmdate( 'c', $item['finished_ts'] ) : null,
+		);
+	}
+
+	return array(
+		'schema'          => 'wphc.bulk_update.report/1',
+		'event'           => 'wphc.bulk_update.completed',
+		'site'            => wphc_normalize_site_url(),
+		'agent_version'   => WP_HEALTH_CHECK_VERSION,
+		'secret_kid'      => (string) get_option( 'wp_health_check_secret_kid', '' ),
+		'generated_at'    => gmdate( 'c' ),
+		'job'             => array(
+			'id'           => $job['job_id'],
+			'source'       => $job['source'],
+			'status'       => $job['status'],
+			'abort_reason' => $job['abort_reason'],
+			'started_at'   => $job['started_ts'] ? gmdate( 'c', $job['started_ts'] ) : null,
+			'finished_at'  => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
+		),
+		'totals'          => $job['counters'],
+		'items'           => $items,
+		'items_truncated' => $items_truncated,
+	);
+}
+
+/**
+ * Invia il report di fine job (o pianifica il primo retry) e aggiorna lo
+ * stato 'webhook' del documento. Chiamata da wphc_bulk_finish() SOLO dopo
+ * che il job e' gia' stato finalizzato/persistito, cosi' un ricevente lento
+ * non tiene mai occupato il lock di drain per la durata della POST.
+ *
+ * @param array $job Documento del job, passato per riferimento.
+ */
+function wphc_bulk_send_webhook_for_job( array &$job ) {
+	++$job['webhook']['attempts'];
+	$job['webhook']['sending_ts'] = time();
+
+	$payload = wphc_bulk_build_webhook_payload( $job );
+	$result  = wphc_dispatch_webhook_payload( 'wphc.bulk_update.completed', $payload, $job['job_id'], $job['webhook']['attempts'] );
+
+	$job['webhook']['code']       = $result['code'];
+	$job['webhook']['last_error'] = $result['ok'] ? null : $result['error'];
+
+	if ( $result['ok'] ) {
+		$job['webhook']['sent']    = true;
+		$job['webhook']['sent_ts'] = time();
+		delete_option( 'wp_health_check_webhook_pending' );
+		return;
+	}
+
+	if ( $result['retryable'] && $job['webhook']['attempts'] < WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS ) {
+		update_option(
+			'wp_health_check_webhook_pending',
+			array(
+				'job_id'   => $job['job_id'],
+				'event'    => 'wphc.bulk_update.completed',
+				'body'     => $payload,
+				'attempts' => $job['webhook']['attempts'],
+			),
+			false
+		);
+		wp_schedule_single_event( time() + wphc_webhook_backoff_for_attempt( $job['webhook']['attempts'] ), 'wphc_webhook_retry' );
+	}
+}
+
+/**
+ * Cron callback di retry per un webhook fallito. Ri-firma sempre con
+ * timestamp/nonce freschi sullo STESSO body (la finestra di freschezza
+ * ±300s del protocollo scadrebbe altrimenti prima del retry).
+ */
+function wphc_maybe_retry_webhook() {
+	$pending = get_option( 'wp_health_check_webhook_pending' );
+	if ( ! is_array( $pending ) ) {
+		return;
+	}
+	if ( false !== get_transient( 'wphc_webhook_retry_lock' ) ) {
+		return;
+	}
+	set_transient( 'wphc_webhook_retry_lock', time(), 5 * MINUTE_IN_SECONDS );
+
+	$attempt = (int) $pending['attempts'] + 1;
+	$result  = wphc_dispatch_webhook_payload( $pending['event'], $pending['body'], $pending['job_id'], $attempt );
+
+	if ( $result['ok'] || ! $result['retryable'] || $attempt >= WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS ) {
+		delete_option( 'wp_health_check_webhook_pending' );
+	} else {
+		$pending['attempts'] = $attempt;
+		update_option( 'wp_health_check_webhook_pending', $pending, false );
+		wp_schedule_single_event( time() + wphc_webhook_backoff_for_attempt( $attempt ), 'wphc_webhook_retry' );
+	}
+
+	delete_transient( 'wphc_webhook_retry_lock' );
+}
+add_action( 'wphc_webhook_retry', 'wphc_maybe_retry_webhook' );
+
+// -----------------------------------------------------------------------
 // ROTTA DIAGNOSTICA: GET /debug
 // -----------------------------------------------------------------------
 
@@ -5022,6 +6737,14 @@ function wphc_render_site_health_tab( $tab ) {
 	$secret_rotated_at       = get_option( 'wp_health_check_token_rotated_at' );
 	$secret_revoked_at       = get_option( 'wp_health_check_revoked_at' );
 	$protocol_version        = (int) get_option( 'wp_health_check_protocol', 1 );
+	$webhook_url             = wphc_webhook_url();
+	$webhook_last            = get_option( 'wp_health_check_webhook_last' );
+	$webhook_url_field       = $webhook_url;
+	$webhook_bad_url         = get_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
+	if ( false !== $webhook_bad_url ) {
+		$webhook_url_field = $webhook_bad_url;
+		delete_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
+	}
 
 	// Il segreto non viene MAI stampato per intero nell'HTML della pagina
 	// (finirebbe in cache di pagina, view-source, screenshot automatici):
@@ -5100,6 +6823,33 @@ function wphc_render_site_health_tab( $tab ) {
 				<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima rigenerata con successo.', 'wp-health-check' ); ?></p></div>
 			<?php else : ?>
 				<div class="notice notice-error"><p><?php esc_html_e( 'Rigenerazione non riuscita: vedi il dettaglio dell\'errore nella riga "Anteprima sito" qui sotto.', 'wp-health-check' ); ?></p></div>
+			<?php endif; ?>
+		<?php elseif ( isset( $_GET['wphc_webhook_saved'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-success"><p>
+				<?php
+				echo '' === $webhook_url
+					? esc_html__( 'Webhook disattivato.', 'wp-health-check' )
+					: esc_html__( 'URL del webhook salvato.', 'wp-health-check' );
+				?>
+			</p></div>
+		<?php elseif ( isset( $_GET['wphc_webhook_invalid'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<div class="notice notice-error"><p>
+				<?php
+				$webhook_reason        = isset( $_GET['reason'] ) ? sanitize_key( wp_unslash( $_GET['reason'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				$webhook_reason_labels = array(
+					'not_https'    => __( 'L\'URL deve usare https.', 'wp-health-check' ),
+					'blocked_host' => __( 'L\'host indicato e\' un indirizzo privato o di loopback: non e\' consentito.', 'wp-health-check' ),
+					'bad_url'      => __( 'URL non valido.', 'wp-health-check' ),
+				);
+				$webhook_reason_label  = isset( $webhook_reason_labels[ $webhook_reason ] ) ? $webhook_reason_labels[ $webhook_reason ] : __( 'URL non valido.', 'wp-health-check' );
+				echo esc_html( $webhook_reason_label ) . ' <code>' . esc_html( $webhook_reason ) . '</code>';
+				?>
+			</p></div>
+		<?php elseif ( isset( $_GET['wphc_webhook_tested'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
+			<?php if ( is_array( $webhook_last ) && ! empty( $webhook_last['ok'] ) ) : ?>
+				<div class="notice notice-success"><p><?php esc_html_e( 'Webhook di prova inviato con successo.', 'wp-health-check' ); ?></p></div>
+			<?php else : ?>
+				<div class="notice notice-error"><p><?php esc_html_e( 'Invio del webhook di prova non riuscito: vedi il dettaglio qui sotto.', 'wp-health-check' ); ?></p></div>
 			<?php endif; ?>
 		<?php endif; ?>
 
@@ -5645,6 +7395,45 @@ function wphc_render_site_health_tab( $tab ) {
 			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
 		</form>
 
+		<h3><?php esc_html_e( 'Webhook di notifica aggiornamenti bulk', 'wp-health-check' ); ?></h3>
+		<p class="description">
+			<?php esc_html_e( 'A fine di ogni job di aggiornamento bulk (POST /update/bulk), se configurato, viene inviata una POST firmata con HMAC-SHA256 sul segreto di flotta (header X-WPHC-*) contenente il dettaglio di cosa e\' stato fatto. Deve essere un URL https; nessun token nella query string e\' necessario, l\'autenticazione e\' nella firma.', 'wp-health-check' ); ?>
+		</p>
+		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+			<input type="hidden" name="action" value="wphc_save_webhook" />
+			<?php wp_nonce_field( 'wphc_save_webhook' ); ?>
+			<p>
+				<input type="url" class="regular-text code" name="wphc_webhook_url" id="wphc-webhook-url"
+					value="<?php echo esc_attr( $webhook_url_field ); ?>"
+					placeholder="https://hub.esempio.com/wphc/webhook" />
+			</p>
+			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+		</form>
+		<?php if ( '' !== $webhook_url ) : ?>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="wphc_test_webhook" />
+				<?php wp_nonce_field( 'wphc_test_webhook' ); ?>
+				<?php submit_button( __( 'Invia un webhook di prova', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
+			</form>
+		<?php endif; ?>
+		<?php if ( is_array( $webhook_last ) ) : ?>
+			<p class="description" <?php echo empty( $webhook_last['ok'] ) ? 'style="color:#d63638;"' : ''; ?>>
+				<?php
+				printf(
+					/* translators: 1: data/ora, 2: esito, 3: codice HTTP, 4: codice errore macchina, 5: host di destinazione. */
+					esc_html__( 'Ultimo invio: %1$s — %2$s (http %3$s%4$s) verso %5$s', 'wp-health-check' ),
+					esc_html( $webhook_last['at'] ),
+					empty( $webhook_last['ok'] ) ? esc_html__( 'fallito', 'wp-health-check' ) : esc_html__( 'riuscito', 'wp-health-check' ),
+					esc_html( (string) $webhook_last['code'] ),
+					empty( $webhook_last['error'] ) ? '' : ', ' . esc_html( $webhook_last['error'] ),
+					esc_html( (string) $webhook_last['url_host'] )
+				);
+				?>
+			</p>
+		<?php else : ?>
+			<p class="description"><?php esc_html_e( 'Nessun webhook inviato finora.', 'wp-health-check' ); ?></p>
+		<?php endif; ?>
+
 		<h3><?php esc_html_e( 'Svuota cache e ricontrolla aggiornamenti', 'wp-health-check' ); ?></h3>
 		<p class="description">
 			<?php esc_html_e( 'Cancella le cache dell\'agent (transient wphc_*: health, dettaglio plugin/tema/server, ultima versione) e forza un ricontrollo COMPLETO degli aggiornamenti di core, plugin e temi. A differenza di ?fresh=1 (che gira via REST), qui siamo in contesto amministrativo: anche i plugin/temi premium vengono ricontrollati correttamente. Usalo se i conteggi o le versioni degli aggiornamenti sembrano sbagliati.', 'wp-health-check' ); ?>
@@ -6056,6 +7845,118 @@ function wphc_handle_toggle_updates() {
 	exit;
 }
 add_action( 'admin_post_wphc_toggle_updates', 'wphc_handle_toggle_updates' );
+
+/**
+ * Handler di admin-post.php per il campo "Webhook di notifica aggiornamenti
+ * bulk". Pipeline di validazione: esc_url_raw() normalizza (non valida),
+ * wp_http_validate_url() e' il gate vero (lo stesso validatore che l'HTTP
+ * API di WP applica gia' alle richieste sicure, quindi si rifiuta esattamente
+ * cio' che il trasporto rifiuterebbe comunque), poi scheme https esplicito
+ * (il validatore da solo accetta anche http) e, se l'host e' un IP letterale,
+ * wphc_ip_is_public() (riusata, non riscritta). Un valore rifiutato non
+ * sovrascrive mai un URL funzionante gia' salvato.
+ */
+function wphc_handle_save_webhook() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_save_webhook' );
+
+	$raw = isset( $_POST['wphc_webhook_url'] ) ? trim( (string) wp_unslash( $_POST['wphc_webhook_url'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+
+	if ( '' === $raw ) {
+		delete_option( 'wp_health_check_webhook_url' );
+		delete_option( 'wp_health_check_webhook_pending' );
+		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                => 'wp-health-check',
+					'wphc_webhook_saved' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	$url    = esc_url_raw( $raw );
+	$reason = '';
+	if ( '' === $url || ! wp_http_validate_url( $url ) ) {
+		$reason = 'bad_url';
+	} elseif ( 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) {
+		$reason = 'not_https';
+	} elseif ( ! wphc_webhook_url_is_allowed( $url ) ) {
+		$reason = 'blocked_host';
+	}
+
+	if ( '' !== $reason ) {
+		// Il valore rifiutato viaggia in un transient per utente, non nella
+		// query string (contenuto riflesso): serve solo a ripresentarlo nel
+		// campo dopo il redirect.
+		set_transient( 'wphc_webhook_bad_url_' . get_current_user_id(), $raw, 5 * MINUTE_IN_SECONDS );
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                  => 'wp-health-check',
+					'wphc_webhook_invalid' => '1',
+					'reason'               => $reason,
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	update_option( 'wp_health_check_webhook_url', $url, false );
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'                => 'wp-health-check',
+				'wphc_webhook_saved' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_save_webhook', 'wphc_handle_save_webhook' );
+
+/**
+ * Handler di admin-post.php per "Invia un webhook di prova": invio sincrono
+ * dell'evento wphc.test, MAI un retry pianificato (a differenza del report di
+ * fine job bulk). Unico modo pratico per un admin di verificare che la
+ * propria integrazione HMAC sia corretta prima che giri un job reale.
+ */
+function wphc_handle_test_webhook() {
+	if ( ! current_user_can( 'manage_options' ) ) {
+		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+	}
+	check_admin_referer( 'wphc_test_webhook' );
+
+	$payload = array(
+		'schema'        => 'wphc.test/1',
+		'event'         => 'wphc.test',
+		'site'          => wphc_normalize_site_url(),
+		'agent_version' => WP_HEALTH_CHECK_VERSION,
+		'secret_kid'    => (string) get_option( 'wp_health_check_secret_kid', '' ),
+		'generated_at'  => gmdate( 'c' ),
+	);
+	wphc_dispatch_webhook_payload( 'wphc.test', $payload, 'test-' . wphc_generate_correlation_id(), 1 );
+
+	wp_safe_redirect(
+		add_query_arg(
+			array(
+				'tab'                 => 'wp-health-check',
+				'wphc_webhook_tested' => '1',
+			),
+			admin_url( 'site-health.php' )
+		)
+	);
+	exit;
+}
+add_action( 'admin_post_wphc_test_webhook', 'wphc_handle_test_webhook' );
 
 // -----------------------------------------------------------------------
 // COMANDI WP-CLI: wp health-check reset | secret | status

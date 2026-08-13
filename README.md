@@ -21,13 +21,14 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 9. [Tracciamento accessi](#tracciamento-accessi)
 10. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
 11. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
-12. [Requisiti lato GitHub](#requisiti-lato-github)
-13. [Caching per-rotta](#caching-per-rotta)
-14. [CORS](#cors)
-15. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
-16. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
-17. [Tab Site Health](#tab-site-health)
-18. [Sviluppo locale](#sviluppo-locale)
+12. [Aggiornamenti bulk (plugin/temi) via API + WP-Cron](#aggiornamenti-bulk-plugintemi-via-api--wp-cron)
+13. [Requisiti lato GitHub](#requisiti-lato-github)
+14. [Caching per-rotta](#caching-per-rotta)
+15. [CORS](#cors)
+16. [Considerazioni e limiti di sicurezza](#considerazioni-e-limiti-di-sicurezza)
+17. [Installazione, enroll, reset, rollback](#installazione-enroll-reset-rollback)
+18. [Tab Site Health](#tab-site-health)
+19. [Sviluppo locale](#sviluppo-locale)
 
 ---
 
@@ -484,6 +485,12 @@ Risposta:
     "theme_name": "Astra Child",
     "parent_theme_name": "Astra",
     "core_update": false,
+    "core_auto_update": true,
+    "core_auto_update_level": "minor",
+    "core_auto_update_blocked_by": null,
+    "plugins_auto_update_enabled": true,
+    "themes_auto_update_enabled": true,
+    "bulk_update": null,
     "has_gdpr": true,
     "has_builder": false,
     "has_ecommerce": false,
@@ -540,6 +547,32 @@ prossimo tentativo. Nella tab Site Health un pulsante "Elimina e rigenera"
 cancella l'attachment dal Media Library e le opzioni collegate, forzando
 una nuova generazione alla `/health` successiva.
 
+**Stato di auto-update nativo di WordPress (dalla 1.31.0).**
+`summary.core_auto_update`/`core_auto_update_level`/`core_auto_update_blocked_by`
+riflettono se il *core* si aggiorna da solo, derivati replicando l'ordine di
+precedenza del core stesso (`wp_is_file_mod_allowed()` → costante
+`AUTOMATIC_UPDATER_DISABLED` → opzioni `auto_update_core_{dev,minor,major}` →
+costante `WP_AUTO_UPDATE_CORE` → filtri `allow_{minor,major,dev}_auto_core_updates`),
+tutte letture O(1) senza chiamate remote né accesso al filesystem. `level` è
+uno tra `none`/`minor`/`major`/`all` (major e minor sono indipendenti: la
+combinazione minor-off/major-on esiste ed è riportata come `major`, non
+collassata su `all`). Se un sito ha un checkout VCS (`.git`/`.svn`) il core
+rifiuterebbe comunque l'auto-update indipendentemente da questi flag: questo
+caso non è rilevato qui (richiederebbe una scansione filesystem incompatibile
+col contratto O(1) della rotta). `plugins_auto_update_enabled`/
+`themes_auto_update_enabled` riflettono invece il gate *globale* per plugin e
+temi (`wp_is_auto_update_enabled_for_type()`, corretto per questi due tipi a
+differenza del core); lo stato *per singolo elemento* è in `/detail/plugins`
+e `/detail/theme`, vedi sotto.
+
+**Stato del job di aggiornamento bulk (dalla 1.31.0).** `summary.bulk_update`
+è `null` se non è mai stato accodato un job, altrimenti il riassunto O(1)
+dell'ultimo/corrente job di `POST /update/bulk` (vedi
+[Aggiornamenti bulk via API + WP-Cron](#aggiornamenti-bulk-via-api--wp-cron)):
+`job_id`, `status`, contatori, `stalled` (derivato a lettura, nessuna
+scrittura lato sito). Il dettaglio completo, elemento per elemento, è su
+`GET /update/bulk`.
+
 ### `GET /ping` — heartbeat leggero (dalla 1.26.0)
 
 `/health` è già pensata per il polling frequente, ma **non è un ping puro**:
@@ -587,6 +620,7 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
   "site": "https://esempio.com/blog",
   "generated_at": "2026-07-08T10:00:00+00:00",
   "count": 2,
+  "auto_update_enabled_globally": true,
   "plugins": [
     {
       "name": "Akismet Anti-spam",
@@ -595,7 +629,9 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
       "version": "5.3.2",
       "active": true,
       "update_available": false,
-      "new_version": null
+      "new_version": null,
+      "auto_update": true,
+      "auto_update_forced": null
     },
     {
       "name": "WooCommerce",
@@ -604,7 +640,9 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/plugins' \
       "version": "8.9.1",
       "active": true,
       "update_available": true,
-      "new_version": "8.9.3"
+      "new_version": "8.9.3",
+      "auto_update": false,
+      "auto_update_forced": null
     }
   ]
 }
@@ -615,6 +653,20 @@ Il campo `file` (dalla `1.19.0`) è il plugin file, chiave di `get_plugins()`:
 [`POST /update/plugin`](#post-updateplugin-post-updatetheme), a differenza di
 `slug` (solo la cartella, non univoco per i plugin a file singolo nella
 radice di `wp-content/plugins/`).
+
+**Auto-update per plugin (dalla 1.31.0).** `auto_update` riflette lo stato
+effettivo (letto da `get_site_option('auto_update_plugins')`, sempre
+`get_site_option()` e mai `get_option()`: su multisite è un'opzione di rete
+condivisa, e `get_option()` risulterebbe sempre vuota). `auto_update_forced`
+distingue: `null` significa che si applica la scelta salvata dall'admin;
+`true`/`false` significa che un filtro di terze parti impone lo stato
+indipendentemente dalla option (la UI nativa di WordPress in quel caso non
+mostra alcun toggle) — informazione che serve a capire se un'azione di
+remediation è anche solo possibile. `auto_update_enabled_globally` è il gate
+generale (`wp_is_auto_update_enabled_for_type('plugin')`): se spento, ogni
+`auto_update: true` per singolo elemento è moot. Le cache 1h di questa rotta
+vengono invalidate automaticamente quando l'admin cambia le impostazioni di
+auto-update dalla lista plugin nativa di WordPress.
 
 ### `GET /detail/theme` — tema attivo e parent
 
@@ -627,16 +679,21 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/theme' \
 {
   "site": "https://esempio.com/blog",
   "generated_at": "2026-07-08T10:00:00+00:00",
+  "auto_update_enabled_globally": true,
   "active_theme": {
     "name": "Astra Child",
     "stylesheet": "astra-child",
     "version": "1.2.0",
     "update_available": false,
-    "new_version": null
+    "new_version": null,
+    "auto_update": false,
+    "auto_update_forced": null
   },
   "parent_theme": {
     "name": "Astra",
-    "version": "4.6.1"
+    "version": "4.6.1",
+    "auto_update": false,
+    "auto_update_forced": null
   },
   "themes": [
     {
@@ -646,7 +703,9 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/theme' \
       "active": true,
       "parent": "astra",
       "update_available": false,
-      "new_version": null
+      "new_version": null,
+      "auto_update": false,
+      "auto_update_forced": null
     },
     {
       "name": "Astra",
@@ -655,7 +714,9 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/theme' \
       "active": false,
       "parent": null,
       "update_available": true,
-      "new_version": "4.6.5"
+      "new_version": "4.6.5",
+      "auto_update": false,
+      "auto_update_forced": null
     }
   ]
 }
@@ -664,6 +725,10 @@ curl 'https://esempio.com/blog/wp-json/health-check/v1/detail/theme' \
 L'array `themes` elenca **tutti** i temi installati sul sito (non solo l'attivo).
 `parent` è lo `stylesheet` del tema parent per i child theme, altrimenti `null`.
 I campi `active_theme`/`parent_theme` restano invariati per retrocompatibilità.
+`auto_update`/`auto_update_forced` (dalla 1.31.0) seguono la stessa
+convenzione di `/detail/plugins` qui sopra, applicata anche al tema parent
+(un child theme non eredita lo stato di auto-update del parent: sono due
+entry indipendenti in `auto_update_themes`).
 
 ### `GET /detail/server` — ambiente server/PHP/database
 
@@ -1307,13 +1372,21 @@ perché è audit del sito, non stato di enrollment.
 **`source`/`actor` (dalla 1.29.0, schema versione 4).** Le colonne
 distinguono un aggiornamento avviato via API (`source = "api"`, il pattern a
 due righe qui sopra) da uno fatto direttamente da WordPress: `wp-admin`
-(bacheca), `cron` (auto-update in background) o `wp-cli`, tutti loggati con
-una **sola** riga `completed` (l'hook che li rileva scatta a esito già
-riuscito, non ha senso una riga `requested` che nessuno chiuderebbe).
-`actor` è lo `user_login` di chi ha agito da wp-admin, `null` per
-cron/wp-cli/api. Vedi il dettaglio del meccanismo di rilevazione nella
-sezione [`GET /update/log`](#get-updatelog--storico-degli-aggiornamenti)
+(bacheca), `cron` (auto-update **nativo** di WordPress in background) o
+`wp-cli`, tutti loggati con una **sola** riga `completed` (l'hook che li
+rileva scatta a esito già riuscito, non ha senso una riga `requested` che
+nessuno chiuderebbe). `actor` è lo `user_login` di chi ha agito da wp-admin,
+`null` per cron/wp-cli/api. Vedi il dettaglio del meccanismo di rilevazione
+nella sezione [`GET /update/log`](#get-updatelog--storico-degli-aggiornamenti)
 sopra.
+
+**Attenzione (dalla 1.31.0):** `source = "cron"` compare anche per gli
+elementi drenati da [`POST /update/bulk`](#aggiornamenti-bulk-plugintemi-via-api--wp-cron)
+— ma a differenza dell'auto-update nativo di WordPress, questi seguono il
+pattern a **due righe** (`requested` + terminale) descritto sopra, perché
+passano dallo stesso `wphc_perform_item_update()` delle rotte sincrone. Per
+distinguerli: le righe del drain bulk hanno sempre una riga `requested`
+gemella con lo stesso `correlation_id`; le righe dell'auto-update nativo no.
 
 `GET /health` espone tre campi derivati da questa funzionalità nel blocco
 `summary`, tutti O(1) (coerenti col contratto economico della rotta):
@@ -1323,6 +1396,204 @@ un'opzione autoloaded aggiornata ad ogni update, non da una query alla
 tabella — `source` incluso dalla 1.29.0) e `maintenance_stuck` (`true` se
 esiste un `.maintenance` più vecchio di 10 minuti: segnala un upgrade
 interrotto).
+
+## Aggiornamenti bulk (plugin/temi) via API + WP-Cron
+
+Le rotte `POST /update/plugin`/`/update/theme` qui sopra aggiornano **un
+elemento per chiamata** (Opzione C della fase di analisi originaria):
+durata contenuta e prevedibile, rollback per singolo elemento, ritentabile
+senza rifare tutto. Dalla 1.31.0 si aggiunge un modo per aggiornare **più
+elementi in un colpo solo senza tenere aperta una richiesta HTTP per la
+durata di tutto il lotto**: la dashboard accoda una lista con
+`POST /update/bulk`, e WP-Cron smaltisce la coda — mai il contrario. Nessun
+aggiornamento parte mai senza un trigger autenticato esplicito: il sito
+**non** ha un cron di auto-update proprio (vedi
+[Architettura e scopo](#architettura-e-scopo)), il cron si limita a drenare
+un lavoro già autorizzato da una chiamata REST autenticata.
+
+Il **core resta fuori**: solo `POST /update/core` (sincrona, sopra) può
+aggiornarlo. È l'operazione più lenta e rischiosa delle tre, con un rollback
+più debole di plugin/temi, e in un job non presidiato un core interrotto a
+metà è lo scenario peggiore possibile.
+
+### `POST /update/bulk` — accoda un job
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/bulk' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI' \
+  -H 'Content-Type: application/json' \
+  -d '{"items":[{"type":"plugin","target":"akismet/akismet.php"},{"type":"theme","target":"astra"}]}'
+```
+
+Forma canonica: `{"items":[{"type":"plugin"|"theme","target":"..."}]}`.
+Accettata anche la forma zucchero `{"plugins":[...],"themes":[...]}`. Come
+per le rotte sincrone, il body indica **solo quali elementi** aggiornare,
+mai un pacchetto, una versione o un URL. Un `type` `"core"` è rifiutato con
+`400 core_not_supported`.
+
+Risposta (`202 Accepted`):
+
+```json
+{
+  "accepted": true,
+  "job_id": "4f9c1ab7e2d05613",
+  "status": "queued",
+  "total": 2,
+  "rejected": [],
+  "scheduled_at": "2026-08-13T10:00:00+00:00",
+  "cron_disabled": false,
+  "poll": {
+    "job": "https://esempio.com/blog/wp-json/health-check/v1/update/bulk",
+    "log": "https://esempio.com/blog/wp-json/health-check/v1/update/log?source=cron"
+  }
+}
+```
+
+`rejected` elenca gli elementi scartati in validazione (target malformato,
+duplicato oltre il limite, tipo non supportato), con un `reason` macchina.
+`cron_disabled` rispecchia `DISABLE_WP_CRON`: se `true`, il sito non può
+autodrenare la coda e serve pollare `GET /update/bulk` (che finalizza da
+solo un job scaduto, vedi sotto) oppure affidarsi a un cron di sistema reale.
+
+Un job già in corso fa rispondere **409** `wphc_bulk_job_in_progress` con lo
+stato del job corrente nel body (così il chiamante può passare a fare
+polling invece di riprovare l'enqueue). Se il job corrente risulta
+**stallato** (`stalled: true`, vedi sotto), `{"force":true}` nel body lo
+aborta esplicitamente e ne accoda uno nuovo.
+
+### `GET /update/bulk` — stato del job
+
+```bash
+curl 'https://esempio.com/blog/wp-json/health-check/v1/update/bulk' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
+```
+
+```json
+{
+  "site": "https://esempio.com/blog",
+  "generated_at": "2026-08-13T10:02:00+00:00",
+  "job": {
+    "job_id": "4f9c1ab7e2d05613",
+    "status": "running",
+    "abort_reason": null,
+    "created_at": "2026-08-13T10:00:00+00:00",
+    "started_at": "2026-08-13T10:00:05+00:00",
+    "finished_at": null,
+    "next_run_at": "2026-08-13T10:02:30+00:00",
+    "stalled": false,
+    "counters": { "total": 2, "done": 1, "updated": 1, "skipped": 0, "warnings": 0, "failed": 0, "pending": 1 },
+    "webhook": { "sent": false, "attempts": 0, "sending_ts": null, "sent_ts": null, "code": null, "last_error": null }
+  }
+}
+```
+
+Aggiungere `?items=0` per omettere il dettaglio elemento-per-elemento e
+ricevere solo il riassunto. Questa rotta è più economica di una query alla
+tabella di log (un solo `get_option()` non autoloaded) ed è l'unico posto
+dove si vedono gli elementi ancora **pendenti** (che non hanno ancora
+nessuna riga di log). La cronologia dei tentativi resta comunque
+consultabile su `GET /update/log?source=cron`, collegabile tramite
+`correlation_id`.
+
+`stalled` è **derivato a lettura**, mai spinto dal sito: `true` quando il
+job è attivo ma il momento previsto per il prossimo tick (`next_run_at`) è
+passato da più di 10 minuti. Copre `DISABLE_WP_CRON`, un cron di sistema
+assente, un host che blocca il loopback di `spawn_cron()` — in tutti questi
+casi nulla gira lato sito per aggiornare lo stato, quindi il flag *deve*
+poter essere calcolato senza alcuna esecuzione. Chiamare questa rotta
+(anche solo per il polling) finalizza da solo un job che ha superato la
+scadenza dura di 6 ore dalla creazione.
+
+### `POST /update/bulk/cancel` — interrompe un job attivo
+
+Interrompe il job **tra** un elemento e il successivo (un elemento già
+dentro `Plugin_Upgrader::upgrade()` completa comunque). Il webhook di fine
+job (sotto) viene comunque inviato, con il report parziale.
+
+### Riprovare gli elementi falliti
+
+Ogni elemento fallito (`failed`/`rolled_back`) viene ritentato fino a un
+totale di **4 tentativi** (1 iniziale + 3 retry, come richiesto), con
+backoff crescente (0/60/300/900 secondi). Una contesa di lock con un update
+singolo concorrente (`locked`) **non** consuma un tentativo: è una deferral,
+non un fallimento. Esiti come `up_to_date`/`not_found`/`not_updatable` sono
+terminali (nulla da ritentare); `reactivation_failed` è un avviso terminale
+(i file sono già stati sostituiti con successo, un retry rileggerebbe solo
+`up_to_date` — si ripara con [`POST /update/reactivate`](#post-updatereactivate--riconciliazione-dello-stato-attivo-dei-plugin));
+kill-switch/versione WP non supportata/filesystem non `direct` sono
+verdetti sull'intero sito, non sul singolo elemento, e abortano l'intero job.
+
+### Webhook di notifica firmato
+
+A fine job (completato, con errori, abortito o cancellato), se configurato
+un URL nella tab Site Health (vedi [Tab Site Health](#tab-site-health)),
+viene inviata una `POST` firmata con il dettaglio di cosa è stato fatto.
+
+Firma HMAC-SHA256 speculare (in uscita) allo schema di verifica del
+protocollo v2 in ingresso (vedi [Il modello del token](#il-modello-del-token)):
+
+```
+stringa_firmata = "POST\n" + evento + "\n" + sha256_hex(body) + "\n" + timestamp + "\n" + nonce
+signature       = base64url( HMAC-SHA256( segreto_di_sito, stringa_firmata ) )
+```
+
+Header inviati: `X-WPHC-Timestamp`, `X-WPHC-Nonce`, `X-WPHC-Signature`,
+`X-WPHC-Event` (`wphc.bulk_update.completed` oppure `wphc.test` per l'invio
+di prova), `X-WPHC-Secret-Kid` (per sopravvivere a una rotazione del
+segreto), `X-WPHC-Delivery` (l'id del job, da usare come chiave di
+idempotenza lato ricevente: la consegna è *at-least-once*, non
+*exactly-once*), `X-WPHC-Attempt`. Il corpo (`Content-Type:
+application/json`) va codificato **una sola volta**: l'hash nella firma e il
+corpo inviato devono essere byte-per-byte identici.
+
+Corpo:
+
+```json
+{
+  "schema": "wphc.bulk_update.report/1",
+  "event": "wphc.bulk_update.completed",
+  "site": "https://esempio.com/blog",
+  "agent_version": "1.31.0",
+  "secret_kid": "k1",
+  "generated_at": "2026-08-13T10:04:12+00:00",
+  "job": {
+    "id": "4f9c1ab7e2d05613",
+    "source": "api",
+    "status": "completed",
+    "abort_reason": null,
+    "started_at": "2026-08-13T10:00:05+00:00",
+    "finished_at": "2026-08-13T10:04:12+00:00"
+  },
+  "totals": { "total": 2, "done": 2, "updated": 2, "skipped": 0, "warnings": 0, "failed": 0, "pending": 0 },
+  "items": [
+    { "type": "plugin", "target": "akismet/akismet.php", "name": "Akismet Anti-spam", "from": "5.3.2", "to": "5.3.3", "result": "updated", "attempts": 1, "log_id": 1234, "finished_at": "2026-08-13T10:01:02+00:00" }
+  ],
+  "items_truncated": false
+}
+```
+
+`items[].result` riusa lo stesso vocabolario delle rotte di update singole
+(`updated`, `up_to_date`, `not_updatable`, `reactivation_failed`, ecc.):
+un solo vocabolario condiviso tra REST, tabella di log e webhook. Nessun
+segreto, token o dato utente compare mai nel corpo.
+
+**Consegna e retry.** Solo errori transitori vengono ritentati (errore di
+trasporto, HTTP 408/429/5xx): un 4xx diverso significa che il ricevente ha
+rifiutato esplicitamente la richiesta, e ripeterla non risolverebbe nulla.
+Fino a 3 tentativi totali, con backoff 5 minuti poi 30 minuti, ri-firmando
+ogni volta con timestamp e nonce freschi sullo **stesso** corpo (la finestra
+di freschezza ±300s del protocollo scadrebbe altrimenti prima di un retry).
+Un sito non ancora registrato o revocato non invia nulla — un sito revocato
+tace del tutto, stessa scelta di `wphc_require_token()` in ingresso.
+
+**Sicurezza.** L'URL deve essere `https` (verificato sia al salvataggio sia
+all'invio) e supera `wp_http_validate_url()` (lo stesso validatore che l'HTTP
+API di WordPress applica già alle richieste sicure); se l'host è un indirizzo
+IP letterale, deve essere pubblico. Questo è un guardrail contro errori e
+abusi casuali, **non** un confine di sicurezza assoluto (nessun re-check DNS
+all'invio). `sslverify` resta sempre attivo (mai disattivabile) e le
+redirezioni non vengono seguite (`redirection: 0`): una 30x non deve
+ripostare il corpo firmato altrove.
 
 ## Requisiti lato GitHub
 
@@ -1684,6 +1955,15 @@ governa `wp_health_check_restrict_official_only` (vedi
 spento di default (qualsiasi plugin/tema è aggiornabile), va acceso
 esplicitamente per i siti su cui si vuole escludere i plugin/temi premium
 dall'aggiornamento via API.
+
+Un campo separato (dalla `1.31.0`), **"Webhook di notifica aggiornamenti
+bulk"**, imposta l'URL (`wp_health_check_webhook_url`, deve essere `https`)
+a cui viene inviato il report firmato di fine job al termine di
+[`POST /update/bulk`](#aggiornamenti-bulk-plugintemi-via-api--wp-cron). Un
+pulsante **"Invia un webhook di prova"** (evento `wphc.test`, mai un retry
+pianificato) permette di verificare l'integrazione HMAC del ricevente prima
+che giri un job reale; l'ultimo esito di consegna (successo/errore, codice
+HTTP, host di destinazione) resta visibile sotto il form.
 
 Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce

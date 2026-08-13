@@ -1,6 +1,6 @@
 # Composer Config
 
-> 24 nodes
+> 24 nodes · cohesion 0.08
 
 ## Key Concepts
 
