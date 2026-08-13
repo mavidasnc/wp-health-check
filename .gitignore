@@ -22,3 +22,7 @@ Thumbs.db
 
 # File .http con valori reali (token, host) per test locali: mai da committare.
 /http/*.local.http
+
+# Output di lavoro di graphify (cache estrazione, grafo grezzo, wiki temporaneo)
+# docs/wiki/ e' la copia versionata destinata al repo.
+/graphify-out/

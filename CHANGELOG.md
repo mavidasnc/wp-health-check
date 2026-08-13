@@ -7,6 +7,17 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.30.1] - 2026-08-13
+
+### Added
+
+- **Wiki di documentazione LLM-friendly** in `docs/wiki/` (generato con
+  `graphify`): un articolo per community del grafo di conoscenza del
+  repository (rotte REST, protocollo v2, flusso di self-update, design
+  update di terze parti, vincoli architetturali, comandi WP-CLI...) con
+  `index.md` come punto di ingresso per agenti e sviluppatori. Nessuna
+  modifica funzionale al plugin.
+
 ## [1.30.0] - 2026-07-30
 
 ### Added
