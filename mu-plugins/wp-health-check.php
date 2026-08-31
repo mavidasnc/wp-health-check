@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.31.1
+ * Version:     1.32.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.31.1' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.32.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -149,6 +149,19 @@ if ( ! defined( 'WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT' ) ) {
 	define( 'WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT', 600 );
 }
 
+/**
+ * Come sopra, ma per l'elemento core: il rilevamento "interrotto" e' solo
+ * un'inferenza dall'eta' del claim, quindi la soglia deve superare la durata
+ * plausibile MASSIMA dell'operazione, non quella tipica. Un core update fa
+ * download del pacchetto completo, sostituzione di migliaia di file e
+ * wp_upgrade(): 600 secondi non basterebbero, e un reap troppo precoce
+ * significherebbe un secondo Core_Upgrader in parallelo al primo (il lock di
+ * update scade a WP_HEALTH_CHECK_UPDATE_LOCK_TTL, 300 secondi).
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT' ) ) {
+	define( 'WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT', 1800 );
+}
+
 /** Margine (secondi) oltre next_run_ts prima che un job attivo sia considerato stallato. */
 if ( ! defined( 'WP_HEALTH_CHECK_BULK_STALL_GRACE' ) ) {
 	define( 'WP_HEALTH_CHECK_BULK_STALL_GRACE', 600 );
@@ -162,6 +175,16 @@ if ( ! defined( 'WP_HEALTH_CHECK_BULK_JOB_TTL' ) ) {
 // -----------------------------------------------------------------------
 // COSTANTI: webhook di notifica firmato a fine job bulk
 // -----------------------------------------------------------------------
+
+/**
+ * URL di default del webhook di fleet, usato quando il sito non ne ha
+ * impostato uno proprio in wp-admin (vedi wphc_webhook_url()) e non ha
+ * spuntato "disattiva webhook". Identico per tutta la flotta, non segreto:
+ * stesso principio delle altre costanti di flotta in cima al file.
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL' ) ) {
+	define( 'WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL', 'https://hub.mavida.com/api/v1/fleet/webhook/bulk-update' );
+}
 
 /** Timeout (secondi) della POST del webhook: nessun download, solo un breve report JSON. */
 if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_TIMEOUT' ) ) {
@@ -2559,6 +2582,8 @@ function wphc_route_health( WP_REST_Request $request ) {
 			'themes_updates'              => $themes_updates_count,
 			'theme_name'                  => $active_theme_name,
 			'parent_theme_name'           => $parent_theme_name,
+			'is_multisite'                => is_multisite(),
+			'comments_pending'            => (int) wp_count_comments()->moderated,
 			'core_update'                 => $core_update_available,
 			'core_auto_update'            => $core_auto['enabled'],
 			'core_auto_update_level'      => $core_auto['level'],
@@ -4383,10 +4408,12 @@ function wphc_perform_item_update( $type, $target, $dry_run = false, $source = '
  * wp_upgrade() per completare l'aggiornamento del database in contesto
  * headless, dove nessuna visita a wp-admin/upgrade.php lo farebbe altrimenti.
  *
- * @param bool $dry_run True per un controllo senza eseguire l'update (?check=1).
+ * @param bool   $dry_run True per un controllo senza eseguire l'update (?check=1).
+ * @param string $source  Origine della richiesta ('api'|'wp-admin'|'cron'|'wp-cli'), solo
+ *                         per l'attribuzione nel log: non altera il comportamento sincrono.
  * @return array Esito normalizzato, vedi wphc_map_item_update_outcome().
  */
-function wphc_perform_core_update( $dry_run = false ) {
+function wphc_perform_core_update( $dry_run = false, $source = 'api' ) {
 	$preflight = wphc_update_preflight( false );
 	if ( true !== $preflight ) {
 		return $preflight;
@@ -4445,7 +4472,7 @@ function wphc_perform_core_update( $dry_run = false ) {
 	}
 
 	$correlation_id = wphc_generate_correlation_id();
-	wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'requested' );
+	wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'requested', null, null, $source );
 
 	$skin     = new Automatic_Upgrader_Skin();
 	$upgrader = new Core_Upgrader( $skin );
@@ -4478,8 +4505,8 @@ function wphc_perform_core_update( $dry_run = false ) {
 		// tentativo, non su una garanzia esplicita del Core_Upgrader.
 		$phase = ( $actual_version === $version_from ) ? 'rolled_back' : 'failed';
 
-		$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, $phase, $message );
-		wphc_record_last_update( 'core', 'core', $phase );
+		$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, $phase, $message, null, $source );
+		wphc_record_last_update( 'core', 'core', $phase, $source );
 		wphc_release_update_lock();
 
 		return array(
@@ -4513,8 +4540,8 @@ function wphc_perform_core_update( $dry_run = false ) {
 	wp_version_check( array(), true );
 	delete_transient( 'wphc_health_cache' );
 
-	$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed' );
-	wphc_record_last_update( 'core', 'core', 'completed' );
+	$log_id = wphc_log_update_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed', null, null, $source );
+	wphc_record_last_update( 'core', 'core', 'completed', $source );
 	wphc_release_update_lock();
 
 	return array(
@@ -4944,7 +4971,7 @@ function wphc_route_reactivate( WP_REST_Request $request ) {
 }
 
 // -----------------------------------------------------------------------
-// AGGIORNAMENTI BULK (plugin/temi) VIA POST /update/bulk + WP-CRON
+// AGGIORNAMENTI BULK (plugin/temi, oppure core in job esclusivo) VIA POST /update/bulk + WP-CRON
 // -----------------------------------------------------------------------
 //
 // Modello: la rotta REST autenticata ACCODA un job (mai un update di
@@ -5104,15 +5131,21 @@ function wphc_bulk_recount( array &$job ) {
 /**
  * Nuovo elemento del job, stato iniziale 'pending'.
  *
- * @param string $type   'plugin' | 'theme'.
- * @param string $target Plugin file oppure stylesheet.
+ * @param string $type   'plugin' | 'theme' | 'core'.
+ * @param string $target Plugin file, stylesheet, oppure 'core' per il core.
  * @return array
  */
 function wphc_bulk_new_item( $type, $target ) {
 	return array(
 		'type'         => $type,
 		'target'       => $target,
-		'name'         => null,
+		// Solo il core ha un nome noto a priori: gli esiti 'up_to_date',
+		// 'not_updatable', 'failed' e 'rolled_back' di plugin/temi non lo
+		// restituiscono, quindi qui resterebbe null fino al primo tentativo
+		// riuscito. Per il core invece e' sempre 'WordPress', e valorizzarlo
+		// subito evita un 'name: null' nel payload del webhook proprio nei
+		// casi che servono a diagnosticare un fallimento.
+		'name'         => ( 'core' === $type ) ? 'WordPress' : null,
 		'state'        => 'pending',
 		'result'       => null,
 		'attempts'     => 0,
@@ -5131,12 +5164,22 @@ function wphc_bulk_new_item( $type, $target ) {
 /**
  * Valida, deduplica e cappa gli elementi richiesti da POST /update/bulk.
  * Accetta la forma canonica {"items":[{"type":"plugin","target":"..."}]}
- * e, come zucchero, {"plugins":[...],"themes":[...]}. MAI un pacchetto,
- * una versione o un URL: stesso vincolo non negoziabile delle rotte di
- * update singole (POST /update/plugin, /update/theme).
+ * e, come zucchero, {"plugins":[...],"themes":[...],"core":true}. MAI un
+ * pacchetto, una versione o un URL: stesso vincolo non negoziabile delle
+ * rotte di update singole (POST /update/plugin, /update/theme, /update/core).
+ *
+ * Il core e' un item come gli altri (type='core', target sentinella
+ * 'core', sempre lo stesso usato da wphc_perform_core_update() per il log),
+ * ma un job non puo' mescolarlo con plugin/temi: e' l'unico item il cui
+ * fallimento non ha un rollback nativo affidabile (il core non ha il
+ * temp-backup di WP 6.3+), quindi il centro deve poterlo accodare, seguire
+ * e valutare da solo prima di mettere mano a qualunque altra cosa sul sito.
  *
  * @param array|null $raw Corpo JSON della richiesta.
- * @return array{items: array, rejected: array}
+ * @return array{items: array, rejected: array, error: string|null} 'error' e'
+ *              valorizzato SOLO per il mix core + plugin/temi ('items' e
+ *              'rejected' restano vuoti in quel caso: non e' una richiesta
+ *              parzialmente valida, va corretta e rimandata).
  */
 function wphc_bulk_normalize_items( $raw ) {
 	$items      = array();
@@ -5147,10 +5190,13 @@ function wphc_bulk_normalize_items( $raw ) {
 	if ( is_array( $raw ) ) {
 		if ( isset( $raw['items'] ) && is_array( $raw['items'] ) ) {
 			foreach ( $raw['items'] as $entry ) {
-				if ( is_array( $entry ) && isset( $entry['type'], $entry['target'] ) ) {
+				// Il core non ha un target scelto dal chiamante: 'target' e'
+				// facoltativo solo per questo type, normalizzato piu' sotto.
+				if ( is_array( $entry ) && isset( $entry['type'] )
+					&& ( isset( $entry['target'] ) || 'core' === $entry['type'] ) ) {
 					$candidates[] = array(
 						'type'   => (string) $entry['type'],
-						'target' => (string) $entry['target'],
+						'target' => isset( $entry['target'] ) ? (string) $entry['target'] : '',
 					);
 				}
 			}
@@ -5171,21 +5217,43 @@ function wphc_bulk_normalize_items( $raw ) {
 				);
 			}
 		}
+		if ( ! empty( $raw['core'] ) ) {
+			$candidates[] = array(
+				'type'   => 'core',
+				'target' => 'core',
+			);
+		}
+	}
+
+	// Esclusivita': un job core non puo' contenere altro. Controllato PRIMA
+	// della validazione dei singoli elementi, sul set intero della richiesta:
+	// e' una proprieta' della combinazione, non del singolo item.
+	$has_core  = false;
+	$has_other = false;
+	foreach ( $candidates as $candidate ) {
+		if ( 'core' === $candidate['type'] ) {
+			$has_core = true;
+		} else {
+			$has_other = true;
+		}
+	}
+	if ( $has_core && $has_other ) {
+		return array(
+			'items'    => array(),
+			'rejected' => array(),
+			'error'    => 'core_must_be_exclusive',
+		);
 	}
 
 	foreach ( $candidates as $candidate ) {
 		$type   = $candidate['type'];
 		$target = trim( $candidate['target'] );
 
-		if ( 'core' === $type ) {
-			$rejected[] = array(
-				'type'   => $type,
-				'target' => $target,
-				'reason' => 'core_not_supported',
-			);
-			continue;
+		if ( 'core' === $type && '' === $target ) {
+			$target = 'core'; // Sentinella: il core non ha un target scelto dal chiamante.
 		}
-		if ( ! in_array( $type, array( 'plugin', 'theme' ), true ) ) {
+
+		if ( ! in_array( $type, array( 'plugin', 'theme', 'core' ), true ) ) {
 			$rejected[] = array(
 				'type'   => $type,
 				'target' => $target,
@@ -5196,10 +5264,15 @@ function wphc_bulk_normalize_items( $raw ) {
 
 		// Validazione difensiva prima di toccare get_plugins()/wp_get_theme():
 		// un plugin file e' "cartella/file.php" o "file.php" alla radice, uno
-		// stylesheet e' una singola cartella. Nessun ".." in nessuno dei due.
-		$pattern = ( 'plugin' === $type )
-			? '/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?\.php$/'
-			: '/^[A-Za-z0-9._-]+$/';
+		// stylesheet e' una singola cartella, il core e' sempre e solo la
+		// sentinella 'core'. Nessun ".." in nessuno dei tre.
+		if ( 'plugin' === $type ) {
+			$pattern = '/^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?\.php$/';
+		} elseif ( 'theme' === $type ) {
+			$pattern = '/^[A-Za-z0-9._-]+$/';
+		} else {
+			$pattern = '/^core$/';
+		}
 
 		if ( '' === $target || false !== strpos( $target, '..' ) || ! preg_match( $pattern, $target ) ) {
 			$rejected[] = array(
@@ -5231,6 +5304,7 @@ function wphc_bulk_normalize_items( $raw ) {
 	return array(
 		'items'    => $items,
 		'rejected' => $rejected,
+		'error'    => null,
 	);
 }
 
@@ -5527,7 +5601,11 @@ function wphc_bulk_reap_stuck_items( array &$job, $now ) {
 		if ( 'running' !== $item['state'] || null === $item['claimed_ts'] ) {
 			continue;
 		}
-		if ( ( $now - $item['claimed_ts'] ) <= WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT ) {
+		// Il core ha una soglia piu' larga (vedi WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT):
+		// un download di pacchetto completo + migliaia di file + wp_upgrade()
+		// supera facilmente i 600s usati per plugin/temi.
+		$timeout = ( 'core' === $item['type'] ) ? WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT : WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT;
+		if ( ( $now - $item['claimed_ts'] ) <= $timeout ) {
 			continue;
 		}
 
@@ -5666,16 +5744,16 @@ function wphc_bulk_run_tick() {
 			break;
 		}
 
+		$item_type   = $job['items'][ $index ]['type'];
+		$item_target = $job['items'][ $index ]['target'];
+
 		$job['items'][ $index ]['state']      = 'running';
 		$job['items'][ $index ]['claimed_ts'] = time();
 		wphc_bulk_save_job( $job );
 
-		$outcome = wphc_perform_item_update(
-			$job['items'][ $index ]['type'],
-			$job['items'][ $index ]['target'],
-			false,
-			'cron'
-		);
+		$outcome = ( 'core' === $item_type )
+			? wphc_perform_core_update( false, 'cron' )
+			: wphc_perform_item_update( $item_type, $item_target, false, 'cron' );
 
 		$job = wphc_bulk_get_job( true );
 		wphc_bulk_apply_outcome( $job, $index, $outcome );
@@ -5686,6 +5764,17 @@ function wphc_bulk_run_tick() {
 		}
 
 		++$done;
+
+		if ( 'core' === $item_type ) {
+			// Core_Upgrader ha appena sostituito centinaia di file sotto i
+			// piedi di questo stesso processo PHP: classi e funzioni gia'
+			// caricate in memoria possono non corrispondere piu' ai file su
+			// disco. Si chiude il tick qui, il prossimo riparte da un
+			// processo nuovo. Con l'esclusivita' del job core (vedi
+			// wphc_bulk_normalize_items()) e' di fatto un no-op, ma rende
+			// esplicito l'invariante anche se in futuro cambiasse.
+			break;
+		}
 	}
 
 	if ( wphc_bulk_maybe_finalize( $job ) ) {
@@ -5701,15 +5790,51 @@ function wphc_bulk_run_tick() {
 add_action( 'wphc_bulk_update_tick', 'wphc_bulk_run_tick' );
 
 /**
+ * Vero solo se il body della richiesta menziona il core e nient'altro.
+ * Euristica DELIBERATAMENTE conservativa sul body grezzo, non una
+ * validazione: in ogni caso ambiguo ritorna false, cosi' il gate WP 6.3
+ * resta applicato. L'autorita' sul contenuto del job resta
+ * wphc_bulk_normalize_items(): un body che sostiene di essere core-only ma
+ * e' misto passa comunque questo controllo (non serve il gate 6.3 per un
+ * core update), ma viene rifiutato con 400 subito dopo dalla normalizzazione.
+ *
+ * @param array $body Corpo JSON gia' decodificato della richiesta.
+ * @return bool
+ */
+function wphc_bulk_body_is_core_only( array $body ) {
+	$core  = ! empty( $body['core'] );
+	$other = ( ! empty( $body['plugins'] ) || ! empty( $body['themes'] ) );
+
+	if ( isset( $body['items'] ) ) {
+		if ( ! is_array( $body['items'] ) ) {
+			return false;
+		}
+		foreach ( $body['items'] as $entry ) {
+			if ( is_array( $entry ) && isset( $entry['type'] ) && 'core' === $entry['type'] ) {
+				$core = true;
+			} else {
+				$other = true;
+			}
+		}
+	}
+
+	return $core && ! $other;
+}
+
+/**
  * Preambolo per POST /update/bulk: accesso, kill-switch, requisito versione
  * WP, filesystem 'direct'. DELIBERATAMENTE senza il lock di update: l'ENQUEUE
  * non tocca alcun file, e un lock momentaneo di un altro update in corso non
  * deve far fallire la sola messa in coda.
  *
+ * @param bool $requires_wp63 False per un job core-only: il core non usa il
+ *                             temp-backup nativo (vedi wphc_perform_core_update()),
+ *                             quindi il requisito WP 6.3 non gli si applica,
+ *                             esattamente come per POST /update/core.
  * @return true|array True se si puo' procedere, altrimenti array-esito con
  *                     chiavi 'result' e 'http'.
  */
-function wphc_bulk_enqueue_preflight() {
+function wphc_bulk_enqueue_preflight( $requires_wp63 = true ) {
 	wphc_record_access();
 
 	if ( ! get_option( 'wp_health_check_updates_enabled', true ) ) {
@@ -5719,7 +5844,7 @@ function wphc_bulk_enqueue_preflight() {
 		);
 	}
 
-	if ( version_compare( get_bloginfo( 'version' ), '6.3', '<' ) ) {
+	if ( $requires_wp63 && version_compare( get_bloginfo( 'version' ), '6.3', '<' ) ) {
 		return array(
 			'result' => 'unsupported_wp_version',
 			'http'   => 200,
@@ -5742,15 +5867,20 @@ function wphc_bulk_enqueue_preflight() {
 // -----------------------------------------------------------------------
 
 /**
- * POST /update/bulk: accoda un job di aggiornamento bulk (plugin/temi). Il
- * body indica SOLO quali elementi aggiornare, mai un pacchetto/versione/URL
+ * POST /update/bulk: accoda un job di aggiornamento bulk (plugin/temi, oppure
+ * il solo core: i due non si possono mescolare, vedi wphc_bulk_normalize_items()).
+ * Il body indica SOLO quali elementi aggiornare, mai un pacchetto/versione/URL
  * - stesso vincolo non negoziabile delle rotte di update singole.
  *
  * @param WP_REST_Request $request Richiesta REST corrente.
  * @return WP_REST_Response|WP_Error
  */
 function wphc_route_update_bulk_enqueue( WP_REST_Request $request ) {
-	$preflight = wphc_bulk_enqueue_preflight();
+	// Letto prima del preflight (pura decodifica, nessun effetto collaterale)
+	// solo per determinare se il requisito WP 6.3 si applica: un job core-only
+	// non lo richiede, esattamente come POST /update/core.
+	$body      = (array) $request->get_json_params();
+	$preflight = wphc_bulk_enqueue_preflight( ! wphc_bulk_body_is_core_only( $body ) );
 	if ( true !== $preflight ) {
 		if ( 403 === (int) $preflight['http'] ) {
 			return new WP_Error( 'wphc_updates_disabled', __( 'Aggiornamenti via API disattivati per questo sito.', 'wp-health-check' ), array( 'status' => 403 ) );
@@ -5763,7 +5893,6 @@ function wphc_route_update_bulk_enqueue( WP_REST_Request $request ) {
 		);
 	}
 
-	$body        = (array) $request->get_json_params();
 	$force       = ! empty( $body['force'] );
 	$current_job = wphc_bulk_get_job( true );
 
@@ -5795,6 +5924,16 @@ function wphc_route_update_bulk_enqueue( WP_REST_Request $request ) {
 	}
 
 	$normalized = wphc_bulk_normalize_items( $body );
+	if ( ! empty( $normalized['error'] ) ) {
+		return new WP_Error(
+			'wphc_bulk_core_not_exclusive',
+			__( 'Un job che include il core WordPress non puo\' contenere anche plugin o temi: accoda due job separati, in sequenza.', 'wp-health-check' ),
+			array(
+				'status' => 400,
+				'reason' => $normalized['error'],
+			)
+		);
+	}
 	if ( empty( $normalized['items'] ) ) {
 		return new WP_Error( 'wphc_bulk_no_valid_items', __( 'Nessun elemento valido da aggiornare.', 'wp-health-check' ), array( 'status' => 400 ) );
 	}
@@ -5949,11 +6088,22 @@ function wphc_route_update_bulk_cancel() {
 
 /**
  * URL del webhook configurato, o stringa vuota se il feature e' spento.
+ * Se il sito non ha impostato un URL proprio, ricade sul default di flotta
+ * (WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL) a meno che l'operatore non abbia
+ * spuntato esplicitamente "disattiva webhook" in wp-admin: un campo vuoto,
+ * da solo, non basta piu' a significare "spento" ora che esiste un default.
  *
  * @return string
  */
 function wphc_webhook_url() {
-	return (string) get_option( 'wp_health_check_webhook_url', '' );
+	$url = (string) get_option( 'wp_health_check_webhook_url', '' );
+	if ( '' !== $url ) {
+		return $url;
+	}
+	if ( get_option( 'wp_health_check_webhook_disabled', false ) ) {
+		return '';
+	}
+	return WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL;
 }
 
 /**
@@ -6746,10 +6896,17 @@ function wphc_render_site_health_tab( $tab ) {
 	$secret_rotated_at       = get_option( 'wp_health_check_token_rotated_at' );
 	$secret_revoked_at       = get_option( 'wp_health_check_revoked_at' );
 	$protocol_version        = (int) get_option( 'wp_health_check_protocol', 1 );
-	$webhook_url             = wphc_webhook_url();
-	$webhook_last            = get_option( 'wp_health_check_webhook_last' );
-	$webhook_url_field       = $webhook_url;
-	$webhook_bad_url         = get_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
+	// $webhook_url_raw e' il SOLO override del sito (campo del form): resta
+	// vuoto se il sito non ha impostato nulla, anche quando il default di
+	// flotta e' attivo. $webhook_url e' invece l'URL EFFETTIVO (con fallback
+	// al default), usato solo per decidere se mostrare il pulsante di test e
+	// per il testo informativo sotto il campo.
+	$webhook_url_raw   = (string) get_option( 'wp_health_check_webhook_url', '' );
+	$webhook_disabled  = (bool) get_option( 'wp_health_check_webhook_disabled', false );
+	$webhook_url       = wphc_webhook_url();
+	$webhook_last      = get_option( 'wp_health_check_webhook_last' );
+	$webhook_url_field = $webhook_url_raw;
+	$webhook_bad_url   = get_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
 	if ( false !== $webhook_bad_url ) {
 		$webhook_url_field = $webhook_bad_url;
 		delete_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
@@ -7179,7 +7336,7 @@ function wphc_render_site_health_tab( $tab ) {
 
 		<style>
 			.wphc-modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100000;display:flex;align-items:flex-start;justify-content:center;padding:5vh 16px;box-sizing:border-box;}
-			.wphc-modal-box{background:#fff;max-width:840px;width:100%;max-height:88vh;overflow:auto;border-radius:4px;padding:14px 20px 20px;box-shadow:0 4px 24px rgba(0,0,0,.3);}
+			.wphc-modal-box{background:#fff;width:80%;max-height:88vh;overflow:auto;border-radius:4px;padding:14px 20px 20px;box-shadow:0 4px 24px rgba(0,0,0,.3);}
 			.wphc-modal-head{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #dcdcde;padding-bottom:8px;margin-bottom:6px;}
 			.wphc-modal-close{font-size:22px;line-height:1;text-decoration:none;color:#646970;}
 			#wphc-modal-body{background:#1d2327;color:#f0f0f1;padding:12px;border-radius:3px;overflow:auto;max-height:60vh;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.5;margin:0;}
@@ -7408,6 +7565,21 @@ function wphc_render_site_health_tab( $tab ) {
 		<p class="description">
 			<?php esc_html_e( 'A fine di ogni job di aggiornamento bulk (POST /update/bulk), se configurato, viene inviata una POST firmata con HMAC-SHA256 sul segreto di flotta (header X-WPHC-*) contenente il dettaglio di cosa e\' stato fatto. Deve essere un URL https; nessun token nella query string e\' necessario, l\'autenticazione e\' nella firma.', 'wp-health-check' ); ?>
 		</p>
+		<p class="description">
+			<?php if ( $webhook_disabled ) : ?>
+				<?php esc_html_e( 'Webhook disattivato esplicitamente per questo sito: nessuna notifica viene inviata.', 'wp-health-check' ); ?>
+			<?php elseif ( '' !== $webhook_url_raw ) : ?>
+				<?php esc_html_e( 'In uso l\'URL impostato qui sotto per questo sito.', 'wp-health-check' ); ?>
+			<?php else : ?>
+				<?php
+				printf(
+					/* translators: %s: URL di default della flotta. */
+					esc_html__( 'Nessun URL impostato per questo sito: in uso il default di flotta %s. Compila il campo per sovrascriverlo, o spunta "disattiva" per non inviare nulla.', 'wp-health-check' ),
+					'<code>' . esc_html( $webhook_url ) . '</code>'
+				);
+				?>
+			<?php endif; ?>
+		</p>
 		<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
 			<input type="hidden" name="action" value="wphc_save_webhook" />
 			<?php wp_nonce_field( 'wphc_save_webhook' ); ?>
@@ -7415,6 +7587,12 @@ function wphc_render_site_health_tab( $tab ) {
 				<input type="url" class="regular-text code" name="wphc_webhook_url" id="wphc-webhook-url"
 					value="<?php echo esc_attr( $webhook_url_field ); ?>"
 					placeholder="https://hub.esempio.com/wphc/webhook" />
+			</p>
+			<p>
+				<label>
+					<input type="checkbox" name="wphc_webhook_disabled" value="1" <?php checked( $webhook_disabled ); ?> />
+					<?php esc_html_e( 'Non inviare notifiche webhook per questo sito (ignora anche il default di flotta)', 'wp-health-check' ); ?>
+				</label>
 			</p>
 			<?php submit_button( __( 'Salva', 'wp-health-check' ), 'secondary', 'submit', false ); ?>
 		</form>
@@ -7864,6 +8042,11 @@ add_action( 'admin_post_wphc_toggle_updates', 'wphc_handle_toggle_updates' );
  * (il validatore da solo accetta anche http) e, se l'host e' un IP letterale,
  * wphc_ip_is_public() (riusata, non riscritta). Un valore rifiutato non
  * sovrascrive mai un URL funzionante gia' salvato.
+ *
+ * Gestisce anche la checkbox "disattiva webhook", indipendente dal campo
+ * URL: da quando esiste un default di flotta (WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL),
+ * un campo vuoto non significa piu' "spento" ma "usa il default", quindi
+ * serve un modo esplicito di dire "niente notifiche per questo sito".
  */
 function wphc_handle_save_webhook() {
 	if ( ! current_user_can( 'manage_options' ) ) {
@@ -7871,7 +8054,17 @@ function wphc_handle_save_webhook() {
 	}
 	check_admin_referer( 'wphc_save_webhook' );
 
-	$raw = isset( $_POST['wphc_webhook_url'] ) ? trim( (string) wp_unslash( $_POST['wphc_webhook_url'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+	$raw      = isset( $_POST['wphc_webhook_url'] ) ? trim( (string) wp_unslash( $_POST['wphc_webhook_url'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+	$disabled = ! empty( $_POST['wphc_webhook_disabled'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+
+	update_option( 'wp_health_check_webhook_disabled', $disabled );
+	if ( $disabled ) {
+		// Nessuna notifica deve restare in volo (retry pianificato) quando
+		// l'operatore ha appena chiesto di spegnere tutto, a prescindere dal
+		// campo URL sotto.
+		delete_option( 'wp_health_check_webhook_pending' );
+		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
+	}
 
 	if ( '' === $raw ) {
 		delete_option( 'wp_health_check_webhook_url' );

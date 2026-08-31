@@ -21,7 +21,7 @@ flotta di siti clienti, controllati da un sistema centrale esterno e da una dash
 9. [Tracciamento accessi](#tracciamento-accessi)
 10. [Self-update: flusso passo per passo](#self-update-flusso-passo-per-passo)
 11. [Aggiornamento di plugin, temi e core via API](#aggiornamento-di-plugin-temi-e-core-via-api)
-12. [Aggiornamenti bulk (plugin/temi) via API + WP-Cron](#aggiornamenti-bulk-plugintemi-via-api--wp-cron)
+12. [Aggiornamenti bulk (core/plugin/temi) via API + WP-Cron](#aggiornamenti-bulk-coreplugintemi-via-api--wp-cron)
 13. [Requisiti lato GitHub](#requisiti-lato-github)
 14. [Caching per-rotta](#caching-per-rotta)
 15. [CORS](#cors)
@@ -568,10 +568,17 @@ e `/detail/theme`, vedi sotto.
 **Stato del job di aggiornamento bulk (dalla 1.31.0).** `summary.bulk_update`
 è `null` se non è mai stato accodato un job, altrimenti il riassunto O(1)
 dell'ultimo/corrente job di `POST /update/bulk` (vedi
-[Aggiornamenti bulk via API + WP-Cron](#aggiornamenti-bulk-via-api--wp-cron)):
+[Aggiornamenti bulk (core/plugin/temi) via API + WP-Cron](#aggiornamenti-bulk-coreplugintemi-via-api--wp-cron)):
 `job_id`, `status`, contatori, `stalled` (derivato a lettura, nessuna
 scrittura lato sito). Il dettaglio completo, elemento per elemento, è su
 `GET /update/bulk`.
+
+**`summary.is_multisite` e `summary.comments_pending` (dalla 1.32.0).** Il
+primo è `is_multisite()` a costo zero; il secondo è il numero di commenti in
+attesa di moderazione del solo sito arruolato (`wp_count_comments()->moderated`),
+una query indicizzata assorbita dalla stessa micro-cache di 60s del resto del
+payload — nessun costo aggiuntivo sul vincolo "`/health` deve restare
+economico" (vedi sotto).
 
 ### `GET /ping` — heartbeat leggero (dalla 1.26.0)
 
@@ -1381,7 +1388,7 @@ nella sezione [`GET /update/log`](#get-updatelog--storico-degli-aggiornamenti)
 sopra.
 
 **Attenzione (dalla 1.31.0):** `source = "cron"` compare anche per gli
-elementi drenati da [`POST /update/bulk`](#aggiornamenti-bulk-plugintemi-via-api--wp-cron)
+elementi drenati da [`POST /update/bulk`](#aggiornamenti-bulk-coreplugintemi-via-api--wp-cron)
 — ma a differenza dell'auto-update nativo di WordPress, questi seguono il
 pattern a **due righe** (`requested` + terminale) descritto sopra, perché
 passano dallo stesso `wphc_perform_item_update()` delle rotte sincrone. Per
@@ -1397,24 +1404,27 @@ tabella — `source` incluso dalla 1.29.0) e `maintenance_stuck` (`true` se
 esiste un `.maintenance` più vecchio di 10 minuti: segnala un upgrade
 interrotto).
 
-## Aggiornamenti bulk (plugin/temi) via API + WP-Cron
+## Aggiornamenti bulk (core/plugin/temi) via API + WP-Cron
 
-Le rotte `POST /update/plugin`/`/update/theme` qui sopra aggiornano **un
-elemento per chiamata** (Opzione C della fase di analisi originaria):
-durata contenuta e prevedibile, rollback per singolo elemento, ritentabile
-senza rifare tutto. Dalla 1.31.0 si aggiunge un modo per aggiornare **più
-elementi in un colpo solo senza tenere aperta una richiesta HTTP per la
-durata di tutto il lotto**: la dashboard accoda una lista con
+Le rotte `POST /update/plugin`/`/update/theme`/`/update/core` qui sopra
+aggiornano **un elemento per chiamata** (Opzione C della fase di analisi
+originaria): durata contenuta e prevedibile, rollback per singolo elemento,
+ritentabile senza rifare tutto. Dalla 1.31.0 si aggiunge un modo per
+aggiornare **più elementi in un colpo solo senza tenere aperta una richiesta
+HTTP per la durata di tutto il lotto**: la dashboard accoda una lista con
 `POST /update/bulk`, e WP-Cron smaltisce la coda — mai il contrario. Nessun
 aggiornamento parte mai senza un trigger autenticato esplicito: il sito
 **non** ha un cron di auto-update proprio (vedi
 [Architettura e scopo](#architettura-e-scopo)), il cron si limita a drenare
 un lavoro già autorizzato da una chiamata REST autenticata.
 
-Il **core resta fuori**: solo `POST /update/core` (sincrona, sopra) può
-aggiornarlo. È l'operazione più lenta e rischiosa delle tre, con un rollback
-più debole di plugin/temi, e in un job non presidiato un core interrotto a
-metà è lo scenario peggiore possibile.
+**Il core è supportato dalla 1.32.0, ma solo in un job esclusivo**: un job
+che include il core non può contenere anche plugin o temi (e viceversa). È
+l'operazione più lenta e rischiosa delle tre, con un rollback più debole di
+plugin/temi (nessun temp-backup nativo), e mescolarla ad altro renderebbe
+impossibile per il centro isolare l'effetto di un core interrotto a metà da
+quello di un plugin aggiornato nello stesso lotto. Il centro accoda prima il
+job core, ne attende l'esito, poi accoda plugin/temi separatamente.
 
 ### `POST /update/bulk` — accoda un job
 
@@ -1425,11 +1435,25 @@ curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/bulk' \
   -d '{"items":[{"type":"plugin","target":"akismet/akismet.php"},{"type":"theme","target":"astra"}]}'
 ```
 
-Forma canonica: `{"items":[{"type":"plugin"|"theme","target":"..."}]}`.
-Accettata anche la forma zucchero `{"plugins":[...],"themes":[...]}`. Come
-per le rotte sincrone, il body indica **solo quali elementi** aggiornare,
-mai un pacchetto, una versione o un URL. Un `type` `"core"` è rifiutato con
-`400 core_not_supported`.
+Forma canonica: `{"items":[{"type":"plugin"|"theme"|"core","target":"..."}]}`
+(`target` è facoltativo per il core, forzato comunque alla sentinella
+`"core"`). Accettata anche la forma zucchero
+`{"plugins":[...],"themes":[...],"core":true}`. Come per le rotte sincrone,
+il body indica **solo quali elementi** aggiornare, mai un pacchetto, una
+versione o un URL.
+
+Job core-only, con lo zucchero:
+
+```bash
+curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/bulk' \
+  -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI' \
+  -H 'Content-Type: application/json' \
+  -d '{"core":true}'
+```
+
+Un body che mescola `"core":true` (o un item `type:"core"`) con plugin o temi
+è rifiutato con **`400 wphc_bulk_core_not_exclusive`**, senza creare alcun
+job: va accodato un job separato per il core.
 
 Risposta (`202 Accepted`):
 
@@ -1514,14 +1538,19 @@ job (sotto) viene comunque inviato, con il report parziale.
 
 Ogni elemento fallito (`failed`/`rolled_back`) viene ritentato fino a un
 totale di **4 tentativi** (1 iniziale + 3 retry, come richiesto), con
-backoff crescente (0/60/300/900 secondi). Una contesa di lock con un update
-singolo concorrente (`locked`) **non** consuma un tentativo: è una deferral,
-non un fallimento. Esiti come `up_to_date`/`not_found`/`not_updatable` sono
-terminali (nulla da ritentare); `reactivation_failed` è un avviso terminale
-(i file sono già stati sostituiti con successo, un retry rileggerebbe solo
-`up_to_date` — si ripara con [`POST /update/reactivate`](#post-updatereactivate--riconciliazione-dello-stato-attivo-dei-plugin));
+backoff crescente (0/60/300/900 secondi) — il core segue esattamente le
+stesse regole, nessun trattamento speciale sui retry. Una contesa di lock
+con un update singolo concorrente (`locked`) **non** consuma un tentativo: è
+una deferral, non un fallimento. Esiti come `up_to_date`/`not_found`/`not_updatable`
+sono terminali (nulla da ritentare); `reactivation_failed` è un avviso
+terminale (i file sono già stati sostituiti con successo, un retry
+rileggerebbe solo `up_to_date` — si ripara con [`POST /update/reactivate`](#post-updatereactivate--riconciliazione-dello-stato-attivo-dei-plugin));
 kill-switch/versione WP non supportata/filesystem non `direct` sono
 verdetti sull'intero sito, non sul singolo elemento, e abortano l'intero job.
+Un elemento core marcato `running` viene considerato interrotto (e rimesso
+in coda) solo dopo 30 minuti, non i 10 usati per plugin/temi: un download
+del pacchetto completo più la sostituzione di migliaia di file può
+legittimamente richiedere più tempo.
 
 ### Webhook di notifica firmato
 
@@ -1594,6 +1623,14 @@ abusi casuali, **non** un confine di sicurezza assoluto (nessun re-check DNS
 all'invio). `sslverify` resta sempre attivo (mai disattivabile) e le
 redirezioni non vengono seguite (`redirection: 0`): una 30x non deve
 ripostare il corpo firmato altrove.
+
+**Default di flotta (dalla 1.32.0).** Se il campo URL nella tab Site Health
+è vuoto, il sito usa automaticamente `https://hub.mavida.com/api/v1/fleet/webhook/bulk-update`
+(costante `WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL`) — nessuna azione richiesta
+per i siti già arruolati. Un URL impostato nel campo lo sovrascrive; una
+checkbox esplicita "Non inviare notifiche webhook per questo sito" spegne
+del tutto l'invio (default incluso), perché da quando esiste un default un
+campo vuoto non significa più "spento".
 
 ## Requisiti lato GitHub
 
@@ -1959,11 +1996,16 @@ dall'aggiornamento via API.
 Un campo separato (dalla `1.31.0`), **"Webhook di notifica aggiornamenti
 bulk"**, imposta l'URL (`wp_health_check_webhook_url`, deve essere `https`)
 a cui viene inviato il report firmato di fine job al termine di
-[`POST /update/bulk`](#aggiornamenti-bulk-plugintemi-via-api--wp-cron). Un
-pulsante **"Invia un webhook di prova"** (evento `wphc.test`, mai un retry
-pianificato) permette di verificare l'integrazione HMAC del ricevente prima
-che giri un job reale; l'ultimo esito di consegna (successo/errore, codice
-HTTP, host di destinazione) resta visibile sotto il form.
+[`POST /update/bulk`](#aggiornamenti-bulk-coreplugintemi-via-api--wp-cron).
+Dalla `1.32.0`, un campo vuoto non significa più "spento": il sito usa il
+default di flotta (vedi [Webhook di notifica firmato](#webhook-di-notifica-firmato))
+a meno che non sia spuntato il checkbox **"Non inviare notifiche webhook per
+questo sito"**, che governa `wp_health_check_webhook_disabled` e disattiva
+anche il default. Un pulsante **"Invia un webhook di prova"** (evento
+`wphc.test`, mai un retry pianificato) permette di verificare l'integrazione
+HMAC del ricevente prima che giri un job reale; l'ultimo esito di consegna
+(successo/errore, codice HTTP, host di destinazione) resta visibile sotto il
+form.
 
 Tutti i form inviano a `admin-post.php` (pattern standard di WordPress per
 processare submission fuori dalla pagina che le genera), protetti da nonce

@@ -7,6 +7,18 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.32.0] - 2026-08-31
+
+### Added
+
+- **Aggiornamento del core WordPress nel motore di bulk update.** `POST /update/bulk` accetta ora `{"core":true}` (o `{"items":[{"type":"core"}]}`), in un job **esclusivo**: non può mescolare il core con plugin/temi nella stessa richiesta (`400 wphc_bulk_core_not_exclusive`), perché il core non ha il temp-backup nativo che rende sicuro il rollback di plugin/temi. Segue le stesse regole di retry/backoff degli altri elementi, con una soglia di "elemento interrotto" più larga (30 minuti invece di 10) per via della durata intrinsecamente maggiore dell'operazione. `GET /update/log?source=cron&type=core` mostra ora correttamente le righe generate dal drain (in precedenza `wphc_perform_core_update()` non propagava `source`).
+- **`summary.is_multisite` e `summary.comments_pending` in `GET /health`.** Il primo è `is_multisite()`, il secondo il numero di commenti in attesa di moderazione del sito arruolato — entrambi a costo zero, assorbiti dalla micro-cache esistente.
+- **Webhook di fleet attivo di default.** Se il campo URL in wp-admin è vuoto, il sito notifica automaticamente `https://hub.mavida.com/api/v1/fleet/webhook/bulk-update` a fine job bulk, senza bisogno di configurare ogni sito uno per uno. Una nuova checkbox "Non inviare notifiche webhook per questo sito" disattiva esplicitamente anche il default.
+
+### Changed
+
+- **Modale del log e dell'endpoint tester nella tab Site Health più larga** (dall'80% della larghezza della pagina invece di un `max-width` fisso di 840px), per leggere le otto colonne del log senza scroll orizzontale.
+
 ## [1.31.1] - 2026-08-31
 
 ### Fixed
