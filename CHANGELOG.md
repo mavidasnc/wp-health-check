@@ -7,6 +7,12 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.31.1] - 2026-08-31
+
+### Fixed
+
+- **`GET /update/bulk`: `items[].from`/`items[].to` sempre `null` per un elemento aggiornato con successo.** `wphc_bulk_apply_outcome()` copiava la versione solo da `outcome['current']`/`outcome['latest']` (usati dai risultati che non scrivono nulla, es. `up_to_date`), mai da `outcome['from']`/`outcome['to']` (usati invece da `wphc_perform_item_update()` per il risultato `updated`). Il job riportava quindi "Aggiornato da vnull a vnull" per ogni elemento riuscito.
+
 ## [1.31.0] - 2026-08-13
 
 ### Added

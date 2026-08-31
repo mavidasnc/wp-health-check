@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.31.0
+ * Version:     1.31.1
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.31.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.31.1' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -5416,10 +5416,19 @@ function wphc_bulk_apply_outcome( array &$job, $index, array $outcome ) {
 	if ( isset( $outcome['name'] ) ) {
 		$item['name'] = $outcome['name'];
 	}
-	if ( isset( $outcome['current'] ) ) {
+	// 'updated'/'reactivation_failed' popolano 'from'/'to' (versione reale
+	// prima/dopo); i risultati che non scrivono nulla (up_to_date,
+	// not_updatable...) popolano invece 'current'/'latest' — vedi
+	// wphc_perform_item_update(). Senza questo doppio controllo gli item
+	// riusciti del job restavano con from/to sempre null.
+	if ( isset( $outcome['from'] ) ) {
+		$item['from'] = $outcome['from'];
+	} elseif ( isset( $outcome['current'] ) ) {
 		$item['from'] = $outcome['current'];
 	}
-	if ( isset( $outcome['latest'] ) ) {
+	if ( isset( $outcome['to'] ) ) {
+		$item['to'] = $outcome['to'];
+	} elseif ( isset( $outcome['latest'] ) ) {
 		$item['to'] = $outcome['latest'];
 	}
 	if ( isset( $outcome['log_id'] ) && $outcome['log_id'] ) {
