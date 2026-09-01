@@ -4,7 +4,7 @@
 
 ## Key Concepts
 
-- **GET /detail/users (amministratori del sito)** (0 connections) — `README.md`
+- **GET /detail/users administrators route** (0 connections) — `README.md`
 
 ## Relationships
 

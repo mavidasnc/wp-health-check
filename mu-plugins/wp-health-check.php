@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.32.0
+ * Version:     1.32.1
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.32.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.32.1' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -5009,12 +5009,38 @@ function wphc_bulk_get_job( $fresh = false ) {
 
 /**
  * Persiste il documento del job e ne sincronizza il riassunto autoloadato.
+ * Ricalcola sempre 'stall_after_ts' prima di salvare, cosi' resta coerente
+ * con lo stato corrente degli item ad ogni scrittura (vedi
+ * wphc_bulk_compute_stall_after_ts()).
  *
  * @param array $job Documento completo del job.
  */
 function wphc_bulk_save_job( array $job ) {
+	$job['stall_after_ts'] = wphc_bulk_compute_stall_after_ts( $job );
 	update_option( 'wp_health_check_bulk_job', $job, false );
 	wphc_bulk_sync_summary( $job );
+}
+
+/**
+ * Istante oltre il quale il job va considerato 'stalled' se ancora attivo.
+ * Un item 'running' con CLAIMED_TS valorizzato usa il proprio timeout
+ * (piu' largo per il core, che sostituisce l'intero filesystem del core e
+ * puo' restare in corso ben oltre i 600s usati per plugin/temi) invece del
+ * generico next_run_ts: altrimenti un core update legittimo, in corso da
+ * 10-30 minuti, veniva segnalato 'stalled' mentre il tick era semplicemente
+ * ancora dentro Core_Upgrader::upgrade().
+ *
+ * @param array $job Documento completo del job.
+ * @return int Timestamp Unix.
+ */
+function wphc_bulk_compute_stall_after_ts( array $job ) {
+	foreach ( $job['items'] as $item ) {
+		if ( 'running' === $item['state'] && null !== $item['claimed_ts'] ) {
+			$timeout = ( 'core' === $item['type'] ) ? WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT : WP_HEALTH_CHECK_BULK_ITEM_TIMEOUT;
+			return $item['claimed_ts'] + $timeout + WP_HEALTH_CHECK_BULK_STALL_GRACE;
+		}
+	}
+	return $job['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE;
 }
 
 /**
@@ -5028,18 +5054,19 @@ function wphc_bulk_sync_summary( array $job ) {
 	update_option(
 		'wp_health_check_bulk_status',
 		array(
-			'job_id'       => $job['job_id'],
-			'status'       => $job['status'],
-			'abort_reason' => $job['abort_reason'],
-			'total'        => $job['counters']['total'],
-			'done'         => $job['counters']['done'],
-			'updated'      => $job['counters']['updated'],
-			'skipped'      => $job['counters']['skipped'],
-			'warnings'     => $job['counters']['warnings'],
-			'failed'       => $job['counters']['failed'],
-			'created_at'   => gmdate( 'c', $job['created_ts'] ),
-			'finished_at'  => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
-			'next_run_ts'  => $job['next_run_ts'],
+			'job_id'         => $job['job_id'],
+			'status'         => $job['status'],
+			'abort_reason'   => $job['abort_reason'],
+			'total'          => $job['counters']['total'],
+			'done'           => $job['counters']['done'],
+			'updated'        => $job['counters']['updated'],
+			'skipped'        => $job['counters']['skipped'],
+			'warnings'       => $job['counters']['warnings'],
+			'failed'         => $job['counters']['failed'],
+			'created_at'     => gmdate( 'c', $job['created_ts'] ),
+			'finished_at'    => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
+			'next_run_ts'    => $job['next_run_ts'],
+			'stall_after_ts' => $job['stall_after_ts'],
 		),
 		true
 	);
@@ -5059,8 +5086,15 @@ function wphc_bulk_summary() {
 		return null;
 	}
 
+	// stall_after_ts assente = riassunto scritto da una versione precedente
+	// dell'agent (prima di stall_after_ts): stessa formula di prima, sul
+	// solo next_run_ts.
+	$stall_after = isset( $status['stall_after_ts'] )
+		? (int) $status['stall_after_ts']
+		: ( (int) $status['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE );
+
 	$active  = in_array( $status['status'], array( 'queued', 'running' ), true );
-	$stalled = $active && ( time() > ( (int) $status['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE ) );
+	$stalled = $active && ( time() > $stall_after );
 
 	return array(
 		'job_id'       => $status['job_id'],
@@ -5749,7 +5783,22 @@ function wphc_bulk_run_tick() {
 
 		$job['items'][ $index ]['state']      = 'running';
 		$job['items'][ $index ]['claimed_ts'] = time();
+		// Avanza anche next_run_ts: e' il valore che next_run_at rispecchia
+		// al centro e che un client vecchio (senza stall_after_ts) usa per
+		// calcolare 'stalled' da solo - altrimenti resterebbe fermo
+		// all'istante dell'enqueue per tutta la durata dell'item.
+		$job['next_run_ts'] = time() + WP_HEALTH_CHECK_BULK_TICK_GAP;
 		wphc_bulk_save_job( $job );
+
+		if ( 'core' === $item_type ) {
+			// Il mutex di drain (300s) e' molto piu' corto del timeout
+			// dell'item core (1800s): senza riestenderlo qui, un secondo
+			// tick potrebbe acquisirlo a meta' di Core_Upgrader::upgrade()
+			// e tentare un secondo aggiornamento concorrente sullo stesso
+			// filesystem. L'item resta comunque 'running' come guardia
+			// aggiuntiva (vedi wphc_bulk_next_item_index()).
+			set_transient( 'wp_health_check_bulk_lock', 1, WP_HEALTH_CHECK_BULK_CORE_ITEM_TIMEOUT );
+		}
 
 		$outcome = ( 'core' === $item_type )
 			? wphc_perform_core_update( false, 'cron' )
@@ -5994,6 +6043,12 @@ function wphc_route_update_bulk_enqueue( WP_REST_Request $request ) {
  * Chiama anche wphc_bulk_maybe_reap(): il polling da centro innesca da solo
  * la finalizzazione di un job stallato, anche su un sito col cron morto.
  *
+ * Fa anche il reap degli item 'running' orfani (processo PHP morto a meta'
+ * tentativo): prima di questa chiamata la sola via di sblocco era il tick
+ * successivo, mai garantito su un sito col cron morto, oppure il TTL del job
+ * (6h) via wphc_bulk_maybe_reap(). Cosi' il solo polling del centro
+ * sblocca un job orfano entro il timeout dell'item (30 min per il core).
+ *
  * @param WP_REST_Request $request Richiesta REST corrente.
  * @return WP_REST_Response
  */
@@ -6010,9 +6065,26 @@ function wphc_route_update_bulk_status( WP_REST_Request $request ) {
 		);
 	}
 
+	if ( wphc_bulk_is_active( $job ) && wphc_bulk_reap_stuck_items( $job, time() ) ) {
+		if ( wphc_bulk_maybe_finalize( $job ) ) {
+			wphc_bulk_finish( $job );
+		} else {
+			wphc_bulk_save_job( $job );
+			wphc_bulk_schedule_tick( 0 );
+			spawn_cron();
+		}
+	}
+
 	if ( wphc_bulk_maybe_reap( $job ) ) {
 		wphc_bulk_finish( $job );
 	}
+
+	// stall_after_ts assente = documento scritto da una versione precedente
+	// dell'agent: stessa formula di prima, sul solo next_run_ts (vedi
+	// wphc_bulk_summary(), stesso fallback).
+	$stall_after = isset( $job['stall_after_ts'] )
+		? (int) $job['stall_after_ts']
+		: ( (int) $job['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE );
 
 	$show_items = '0' !== (string) $request->get_param( 'items' );
 
@@ -6024,7 +6096,7 @@ function wphc_route_update_bulk_status( WP_REST_Request $request ) {
 		'started_at'   => $job['started_ts'] ? gmdate( 'c', $job['started_ts'] ) : null,
 		'finished_at'  => $job['finished_ts'] ? gmdate( 'c', $job['finished_ts'] ) : null,
 		'next_run_at'  => gmdate( 'c', (int) $job['next_run_ts'] ),
-		'stalled'      => wphc_bulk_is_active( $job ) && ( time() > ( (int) $job['next_run_ts'] + WP_HEALTH_CHECK_BULK_STALL_GRACE ) ),
+		'stalled'      => wphc_bulk_is_active( $job ) && ( time() > $stall_after ),
 		'counters'     => $job['counters'],
 		'webhook'      => $job['webhook'],
 	);

@@ -1,0 +1,5 @@
+# docs/wiki/ è l'OUTPUT di graphify (copia versionata di graphify-out/wiki,
+# vedi .gitignore), non una fonte: senza questa esclusione ogni run la
+# re-ingerisce come documento, riestraendo entità come "wphc_bulk_run_tick()
+# (16 connections)" dal proprio riassunto invece che dal codice reale.
+docs/wiki/

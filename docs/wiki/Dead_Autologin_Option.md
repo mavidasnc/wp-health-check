@@ -1,10 +1,10 @@
-# CORS Fix History
+# Dead Autologin Option
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **v1.6.0: fix override CORS del core REST API** (0 connections) — `CHANGELOG.md`
+- **P3 §3.16: wp_health_check_last_autologin scritta e mai letta** (0 connections) — `docs/sicurezza-autenticazione-analisi.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `CHANGELOG.md`
+- `docs/sicurezza-autenticazione-analisi.md`
 
 ## Audit Trail
 

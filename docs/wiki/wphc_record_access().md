@@ -8,11 +8,11 @@
 
 ### calls
 - [wphc_route_health()](wphc_route_health%28%29.md) `EXTRACTED`
+- wphc_route_update_bulk_status() `EXTRACTED`
 - wphc_get_client_ip() `EXTRACTED`
 - wphc_route_detail_theme() `EXTRACTED`
 - wphc_route_detail_plugins() `EXTRACTED`
 - wphc_route_detail_server() `EXTRACTED`
-- wphc_route_update_bulk_status() `EXTRACTED`
 - wphc_update_preflight() `EXTRACTED`
 - wphc_route_detail_users() `EXTRACTED`
 - wphc_route_update_log() `EXTRACTED`

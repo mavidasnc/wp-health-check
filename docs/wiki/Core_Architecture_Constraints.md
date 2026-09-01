@@ -1,17 +1,18 @@
 # Core Architecture Constraints
 
-> 8 nodes · cohesion 0.25
+> 9 nodes · cohesion 0.22
 
 ## Key Concepts
 
-- **Architettura must-use plugin a file singolo** (7 connections) — `README.md`
+- **Must-use plugin single-file architecture** (7 connections) — `README.md`
+- **Atomic rename() write with neutral-extension temp file** (2 connections) — `README.md`
 - **REST responses only reflect matching Origin, never wildcard** (1 connections) — `CLAUDE.md`
 - **/detail/server explicit field allowlist** (1 connections) — `CLAUDE.md`
 - **Single self-contained mu-plugin file constraint** (1 connections) — `CLAUDE.md`
 - **Never writes to wp-config.php** (1 connections) — `CLAUDE.md`
 - **wp-health-check dev repo** (1 connections) — `CLAUDE.md`
 - **API Health Check reference document** (1 connections) — `docs/API health check.md`
-- **POST /update (self-update dell'agent da GitHub)** (1 connections) — `README.md`
+- **Self-update flow (wphc_perform_self_update)** (1 connections) — `README.md`
 
 ## Relationships
 
@@ -25,8 +26,8 @@
 
 ## Audit Trail
 
-- EXTRACTED: 7 (100%)
-- INFERRED: 0 (0%)
+- EXTRACTED: 7 (88%)
+- INFERRED: 1 (12%)
 - AMBIGUOUS: 0 (0%)
 
 ---

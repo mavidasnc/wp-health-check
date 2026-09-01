@@ -1,10 +1,10 @@
-# Detail Theme Route
+# Enroll Replay Window Gap
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **/detail/theme: array themes con tutti i temi installati** (0 connections) — `docs/plugin-implementation-todo.md`
+- **P2 §3.7: /enroll senza nonce né finestra di freschezza** (0 connections) — `docs/sicurezza-autenticazione-analisi.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `docs/plugin-implementation-todo.md`
+- `docs/sicurezza-autenticazione-analisi.md`
 
 ## Audit Trail
 

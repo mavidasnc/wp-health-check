@@ -1,10 +1,10 @@
-# Detail Theme Route
+# Plugin Overview
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **/detail/theme: array themes con tutti i temi installati** (0 connections) — `docs/plugin-implementation-todo.md`
+- **WP Health Check Fleet Agent** (0 connections) — `README.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `docs/plugin-implementation-todo.md`
+- `README.md`
 
 ## Audit Trail
 

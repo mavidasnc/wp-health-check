@@ -7,6 +7,14 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.32.1] - 2026-09-01
+
+### Fixed
+
+- **Job bulk del core segnalato `stalled` durante un aggiornamento in corso.** Lo `stalled` di `/update/bulk` e `/health` era calcolato solo su `next_run_ts`, aggiornato unicamente a fine tick: un core update (fino a 30 minuti, contro i 10 minuti di grace-period pensati per plugin/temi) veniva quindi segnalato "bloccato" mentre `Core_Upgrader` stava ancora lavorando, inducendo il centro a fermare il polling. Ora un item `running` con `claimed_ts` valorizzato calcola `stall_after_ts` sul proprio timeout (1800s per il core, 600s per plugin/temi) invece che su `next_run_ts`.
+- **Job bulk appeso fino a 6 ore se il processo PHP muore a metà di un item.** Il reap degli item `running` orfani girava solo dentro il tick di WP-Cron; `GET /update/bulk` finalizzava un job del genere solo al TTL di 6 ore. Ora la stessa GET fa il reap ad ogni chiamata: il solo polling del centro sblocca un job orfano entro il timeout dell'item, anche su un sito col cron morto.
+- **Mutex di drain (300s) più corto del timeout dell'item core (1800s).** Un secondo tick poteva riacquisire il lock a metà di un aggiornamento del core. Il lock viene ora riesteso a 1800s subito prima di `wphc_perform_core_update()`.
+
 ## [1.32.0] - 2026-08-31
 
 ### Added

@@ -1,10 +1,10 @@
-# Detail Theme Route
+# Canonical Signing String
 
 > 1 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **/detail/theme: array themes con tutti i temi installati** (0 connections) — `docs/plugin-implementation-todo.md`
+- **X-WPHC canonical signing string (method\nroute\nsha256body\ntimestamp\nnonce)** (0 connections) — `docs/API health check.md`
 
 ## Relationships
 
@@ -12,7 +12,7 @@
 
 ## Source Files
 
-- `docs/plugin-implementation-todo.md`
+- `docs/API health check.md`
 
 ## Audit Trail
 

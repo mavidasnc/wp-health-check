@@ -1,11 +1,11 @@
-# Detail Plugins Route
+# Auth Rate Limiting
 
 > 2 nodes · cohesion 1.00
 
 ## Key Concepts
 
-- **v1.31.0: stato auto-update nativo di WordPress esposto** (1 connections) — `CHANGELOG.md`
-- **GET /detail/plugins** (1 connections) — `README.md`
+- **1.30.0: rate limiting on failed auth attempts added** (1 connections) — `CHANGELOG.md`
+- **wphc_throttle_check() failed-auth rate limiting** (1 connections) — `README.md`
 
 ## Relationships
 
