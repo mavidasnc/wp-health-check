@@ -7,6 +7,13 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-09-30
+
+### Fixed
+
+- **`POST /update/reactivate` riattivava plugin disattivati a mano e ritentava all'infinito quelli cancellati.** L'elenco dei plugin "attesi attivi" si basava solo sulle righe di log degli update, mai aggiornate da disattivazioni o cancellazioni: un plugin rimosso finiva a ogni chiamata in `failed` ("Plugin file does not exist."), uno disattivato volontariamente in wp-admin veniva riattivato. Ora gli hook `deactivated_plugin` e `deleted_plugin` scrivono righe di log con le nuove fasi `deactivated` e `deleted` (`active = 0`), che chiudono il candidato. Le disattivazioni silent di `Plugin_Upgrader` non scattano l'hook, quindi gli update non producono righe `deactivated` spurie.
+- **Rete di sicurezza per le cancellazioni fuori da WordPress (FTP, pannello hosting).** `wphc_perform_reactivate()` scarta i candidati il cui file non esiste più: in dry-run li esclude soltanto, in esecuzione reale scrive una sola riga `deleted` per ciascuno (che non compare più alla chiamata successiva) e non li conta in `results`/`failed`.
+
 ## [1.32.1] - 2026-09-01
 
 ### Fixed

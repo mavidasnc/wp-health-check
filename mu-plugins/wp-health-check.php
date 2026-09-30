@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.32.1
+ * Version:     1.33.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.32.1' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.33.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -3572,7 +3572,10 @@ add_action( 'init', 'wphc_maybe_install_update_log_schema' );
  *                                    null per 'token'/'login'.
  * @param string      $phase          'requested' | 'completed' | 'failed' | 'rolled_back' |
  *                                    'reactivated' | 'reactivation_failed' (questi ultimi due
- *                                    solo da wphc_perform_reactivate()); 'token'/'login' riusano
+ *                                    solo da wphc_perform_reactivate()) | 'deactivated' |
+ *                                    'deleted' (plugin disattivato/cancellato, da hook o dalla
+ *                                    rete di sicurezza di wphc_perform_reactivate());
+ *                                    'token'/'login' riusano
  *                                    'completed'/'failed', nessun valore nuovo per loro.
  * @param string|null $message        Dettaglio in caso di errore/rollback.
  * @param bool|null   $active         Stato attivo dell'elemento in questo momento
@@ -3621,6 +3624,9 @@ function wphc_log_update_row( $correlation_id, $type, $target, $name, $version_f
  * considera SOLO la riga piu' recente non-null: cosi' un plugin disattivato
  * volontariamente in un update successivo (che avrebbe loggato active=0)
  * smette correttamente di comparire come candidato, evitando falsi positivi.
+ * Lo stesso vale per le righe active=0 delle fasi 'deactivated' e 'deleted'
+ * (hook su deactivated_plugin/deleted_plugin): disattivazioni e cancellazioni
+ * intenzionali chiudono il candidato.
  * Non confronta con lo stato reale corrente: quello e' compito del chiamante
  * (wphc_perform_reactivate()), qui si restituisce solo l'atteso secondo il log.
  *
@@ -3842,6 +3848,84 @@ function wphc_log_wp_initiated_update( $upgrader, $hook_extra ) {
 	}
 }
 add_action( 'upgrader_process_complete', 'wphc_log_wp_initiated_update', 10, 2 );
+
+/**
+ * Registra la disattivazione di un plugin come scelta intenzionale, con una
+ * riga 'deactivated' e active=0: e' l'ultima riga non-null del target, quindi
+ * wphc_get_reactivation_candidates() smette di considerarlo "atteso attivo" e
+ * il reactivate non lo riattiva piu'.
+ *
+ * Plugin_Upgrader disattiva in modalita' *silent* (deactivate_plugins( $p, true )),
+ * che non fa scattare 'deactivated_plugin': gli update non vengono quindi
+ * scambiati per disattivazioni volute. Una disattivazione non-silent fatta da
+ * codice terzo e' invece trattata come voluta (compromesso accettato).
+ *
+ * @param string $plugin       Plugin file (es. 'akismet/akismet.php').
+ * @param bool   $network_wide Non usato.
+ */
+function wphc_log_plugin_deactivation( $plugin, $network_wide ) {
+	unset( $network_wide );
+
+	// Per sicurezza: durante un update eseguito dall'agent nessuna
+	// disattivazione va considerata intenzionale.
+	if ( ! empty( $GLOBALS['wphc_api_update_in_progress'] ) ) {
+		return;
+	}
+
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+	// Nome e versione dal file, con fallback al plugin file se illeggibile.
+	$plugin_file = WP_PLUGIN_DIR . '/' . $plugin;
+	$data        = is_readable( $plugin_file ) ? get_plugin_data( $plugin_file, false, false ) : array();
+	$name        = ! empty( $data['Name'] ) ? $data['Name'] : $plugin;
+	$version     = ! empty( $data['Version'] ) ? $data['Version'] : null;
+
+	wphc_log_update_row( wphc_generate_correlation_id(), 'plugin', $plugin, $name, $version, null, 'deactivated', null, false, wphc_detect_update_source(), wphc_current_actor() );
+}
+add_action( 'deactivated_plugin', 'wphc_log_plugin_deactivation', 10, 2 );
+
+/**
+ * Cattura nome e versione di un plugin PRIMA della cancellazione: a
+ * 'deleted_plugin' il file non esiste piu' e non sarebbero leggibili.
+ *
+ * @param string $plugin_file Plugin file in cancellazione.
+ */
+function wphc_snapshot_plugin_before_delete( $plugin_file ) {
+	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+
+	$path = WP_PLUGIN_DIR . '/' . $plugin_file;
+	if ( is_readable( $path ) ) {
+		$data = get_plugin_data( $path, false, false );
+		$GLOBALS['wphc_deleting_plugins'][ $plugin_file ] = array(
+			'name'    => $data['Name'],
+			'version' => $data['Version'],
+		);
+	}
+}
+add_action( 'delete_plugin', 'wphc_snapshot_plugin_before_delete' );
+
+/**
+ * Registra la cancellazione di un plugin (riga 'deleted', active=0), per
+ * audit. WP permette di cancellare solo plugin inattivi, quindi di norma
+ * esiste gia' la riga 'deactivated'; questa chiude comunque il ciclo di vita.
+ *
+ * @param string $plugin_file Plugin file cancellato.
+ * @param bool   $deleted     True se la cancellazione e' riuscita.
+ */
+function wphc_log_plugin_deletion( $plugin_file, $deleted ) {
+	$snapshot = isset( $GLOBALS['wphc_deleting_plugins'][ $plugin_file ] ) ? $GLOBALS['wphc_deleting_plugins'][ $plugin_file ] : array();
+	unset( $GLOBALS['wphc_deleting_plugins'][ $plugin_file ] );
+
+	if ( ! $deleted ) {
+		return;
+	}
+
+	$name    = ! empty( $snapshot['name'] ) ? $snapshot['name'] : $plugin_file;
+	$version = ! empty( $snapshot['version'] ) ? $snapshot['version'] : null;
+
+	wphc_log_update_row( wphc_generate_correlation_id(), 'plugin', $plugin_file, $name, $version, null, 'deleted', null, false, wphc_detect_update_source(), wphc_current_actor() );
+}
+add_action( 'deleted_plugin', 'wphc_log_plugin_deletion', 10, 2 );
 
 /**
  * Rileva un aggiornamento del core avviato fuori dal flusso API (wp-admin,
@@ -4579,16 +4663,27 @@ function wphc_perform_core_update( $dry_run = false, $source = 'api' ) {
 function wphc_perform_reactivate( $dry_run = false ) {
 	require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
-	$candidates = wphc_get_reactivation_candidates();
+	$candidates  = wphc_get_reactivation_candidates();
+	$all_plugins = get_plugins();
 
 	// Discrepanza vera: candidato "atteso attivo" secondo l'ultima riga di
 	// log non-null per quel target, ma risulta disattivato ORA.
 	// is_plugin_active() e' l'unica fonte di verita' sullo stato reale.
+	// I candidati il cui file non esiste piu' (cancellati fuori da WP: FTP,
+	// pannello hosting) non sono riattivabili: finiscono in $missing.
 	$discrepancies = array();
+	$missing       = array();
 	foreach ( $candidates as $candidate ) {
-		if ( ! is_plugin_active( $candidate['target'] ) ) {
-			$discrepancies[] = $candidate;
+		if ( is_plugin_active( $candidate['target'] ) ) {
+			continue;
 		}
+
+		if ( ! isset( $all_plugins[ $candidate['target'] ] ) ) {
+			$missing[] = $candidate;
+			continue;
+		}
+
+		$discrepancies[] = $candidate;
 	}
 
 	if ( $dry_run ) {
@@ -4617,19 +4712,22 @@ function wphc_perform_reactivate( $dry_run = false ) {
 		return $preflight;
 	}
 
-	// Nomi/versioni "vivi" da get_plugins(), con fallback al nome gia'
-	// registrato nel log se il plugin file nel frattempo e' sparito
-	// (disinstallato manualmente fra il log e questa chiamata).
-	$all_plugins = get_plugins();
+	// Plugin spariti dal disco: una riga 'deleted' (active=0) li chiude, cosi'
+	// alla chiamata successiva non sono piu' candidati. Non finiscono in
+	// $results/$failed: l'esito e' "nessuna discrepanza".
+	foreach ( $missing as $candidate ) {
+		wphc_log_update_row( wphc_generate_correlation_id(), 'plugin', $candidate['target'], $candidate['name'], null, null, 'deleted', null, false );
+	}
 
 	$results     = array();
 	$reactivated = 0;
 	$failed      = 0;
 
 	foreach ( $discrepancies as $candidate ) {
+		// Nome/versione "vivi" da get_plugins(): qui il file esiste sempre.
 		$target       = $candidate['target'];
-		$name         = isset( $all_plugins[ $target ] ) ? $all_plugins[ $target ]['Name'] : $candidate['name'];
-		$version_from = isset( $all_plugins[ $target ] ) ? $all_plugins[ $target ]['Version'] : null;
+		$name         = $all_plugins[ $target ]['Name'];
+		$version_from = $all_plugins[ $target ]['Version'];
 
 		$correlation_id = wphc_generate_correlation_id();
 		$activation     = activate_plugin( $target, '', false );

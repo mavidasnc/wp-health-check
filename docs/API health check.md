@@ -1099,7 +1099,7 @@ condiviso con l'operazione di update originaria.
 | `target` | string | Plugin file, stylesheet, `core`, oppure per `token`/`login` lo `user_login` dell'utente (o un identificatore di ripiego se non recuperabile: vedi nota sopra) |
 | `name` | string | Nome leggibile dell'elemento; per `token`/`login` il `display_name` dell'utente (fallback `user_login`) |
 | `version_from` / `version_to` | string \| null | Versione installata / target; `version_to` sempre `null` sulle righe `reactivated`/`reactivation_failed` (nessun cambio di versione); entrambi sempre `null` per `token`/`login` |
-| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` (da `POST /update/plugin`/`/theme`/`/core`), oppure `reactivated` \| `reactivation_failed` (da `POST /update/reactivate`, dalla `1.23.0`; colonna allargata a `VARCHAR(32)` per ospitarli); `token`/`login` riusano `completed`/`failed`, nessun valore nuovo |
+| `phase` | string | `requested` \| `completed` \| `failed` \| `rolled_back` (da `POST /update/plugin`/`/theme`/`/core`), oppure `reactivated` \| `reactivation_failed` (da `POST /update/reactivate`, dalla `1.23.0`; colonna allargata a `VARCHAR(32)` per ospitarli), oppure `deactivated` \| `deleted` (dalla `1.33.0`, da hook su disattivazione/cancellazione di un plugin, con `active = 0`; `deleted` è scritta anche da `POST /update/reactivate` per i plugin non più presenti su disco); `token`/`login` riusano `completed`/`failed`, nessun valore nuovo |
 | `message` | string \| null | Dettaglio in caso di errore/rollback/riattivazione fallita, o motivo di un consumo autologin fallito |
 | `ip` | string \| null | IP del chiamante che ha innescato l'operazione |
 | `active` | bool \| null | Stato attivo del plugin in quel momento (dalla `1.21.0`); sempre `null` per `theme`/`core`/`token`/`login`; sulle righe `reactivation_failed` è sempre `null` anziché `false` (vedi [`POST /update/reactivate`](#post-updatereactivate)) |
@@ -1119,6 +1119,13 @@ per ogni plugin, l'ultimo stato "atteso attivo" registrato nel log
 (`GET /update/log`) con lo stato reale corrente; per ogni discrepanza trovata
 tenta la riattivazione (`activate_plugin()`), registrando **sempre** una riga
 di log per il tentativo (`phase` `reactivated` o `reactivation_failed`).
+
+Dalla `1.33.0` le disattivazioni e le cancellazioni intenzionali (hook
+`deactivated_plugin`/`deleted_plugin`) scrivono righe `deactivated`/`deleted`
+con `active = 0`, che tolgono il plugin dai candidati: un plugin disattivato a
+mano **non** viene riattivato. I plugin il cui file non esiste più (cancellati
+fuori da WordPress) sono ignorati: in dry-run sono solo esclusi, in esecuzione
+reale ricevono una sola riga `deleted` e non compaiono in `results`/`failed`.
 
 **Auth:** Bearer token. **Richiede inoltre**, solo per l'esecuzione reale, il
 kill-switch `wp_health_check_updates_enabled` acceso (altrimenti `403
