@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check Installer
  * Description: Installa il must-use plugin wp-health-check.php scaricando l'ultima release firmata da GitHub. Da attivare una volta sola: se il mu-plugin e' gia' presente non fa nulla. In caso di problema lascia una notice con il motivo.
- * Version:     1.0.0
+ * Version:     1.1.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -168,15 +168,21 @@ function wphc_installer_fetch_latest_asset() {
 		return new WP_Error( 'wphc_installer_integrity', 'il file scaricato non e\' valido' );
 	}
 
-	// Verifica SHA-256 se l'asset affiancato e' disponibile.
+	// Verifica SHA-256 obbligatoria (A-3, review 2026-10-03): senza l'asset
+	// affiancato o con un hash illeggibile l'installazione si ferma, invece di
+	// installare un file non verificato.
+	$expected = '';
 	if ( null !== $sha_url ) {
 		$sha_response = wp_remote_get( $sha_url, array( 'timeout' => 20 ) );
 		if ( ! is_wp_error( $sha_response ) && 200 === (int) wp_remote_retrieve_response_code( $sha_response ) ) {
 			$expected = strtolower( (string) strtok( trim( wp_remote_retrieve_body( $sha_response ) ), " \t\n" ) );
-			if ( '' !== $expected && ! hash_equals( $expected, hash( 'sha256', $contents ) ) ) {
-				return new WP_Error( 'wphc_installer_integrity', 'verifica SHA-256 fallita (file corrotto o manomesso)' );
-			}
 		}
+	}
+	if ( '' === $expected ) {
+		return new WP_Error( 'wphc_installer_integrity', 'hash SHA-256 della release non disponibile: installazione annullata' );
+	}
+	if ( ! hash_equals( $expected, hash( 'sha256', $contents ) ) ) {
+		return new WP_Error( 'wphc_installer_integrity', 'verifica SHA-256 fallita (file corrotto o manomesso)' );
 	}
 
 	return array(

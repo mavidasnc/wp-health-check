@@ -3261,10 +3261,11 @@ function wphc_perform_self_update() {
 		return array( 'result' => 'not_writable' );
 	}
 
-	// 4. Individua gli asset della release: il file del plugin e il suo
-	// hash sha256 affiancato.
+	// 4. Individua gli asset della release: il file del plugin, il suo
+	// hash sha256 affiancato e, dalla 1.34.0, la firma del centro (.sig).
 	$asset_url     = null;
 	$sha_asset_url = null;
+	$sig_asset_url = null;
 	if ( ! empty( $release['assets'] ) && is_array( $release['assets'] ) ) {
 		foreach ( $release['assets'] as $asset ) {
 			if ( ! isset( $asset['name'], $asset['browser_download_url'] ) ) {
@@ -3274,6 +3275,8 @@ function wphc_perform_self_update() {
 				$asset_url = $asset['browser_download_url'];
 			} elseif ( 'wp-health-check.php.sha256' === $asset['name'] ) {
 				$sha_asset_url = $asset['browser_download_url'];
+			} elseif ( 'wp-health-check.php.sig' === $asset['name'] ) {
+				$sig_asset_url = $asset['browser_download_url'];
 			}
 		}
 	}
@@ -3303,9 +3306,11 @@ function wphc_perform_self_update() {
 	$new_contents = wp_remote_retrieve_body( $download );
 
 	// 5. Verifica di integrita', PRIMA di toccare qualunque file di
-	// produzione: hash atteso (asset .sha256, oppure riga "sha256: <hash>"
-	// nel corpo della release), contenuto non vuoto, prefisso "<?php" e
-	// coerenza fra la versione dichiarata nel file e il tag della release.
+	// produzione: hash atteso (asset .sha256), contenuto non vuoto, prefisso
+	// "<?php" e coerenza fra la versione dichiarata nel file e il tag della
+	// release. Dalla 1.34.0 (A-3) non si legge piu' l'hash dal corpo della
+	// release ("sha256: <hash>"): era un secondo canale ugualmente
+	// controllato da chi controlla la release.
 	$expected_sha256 = null;
 	if ( null !== $sha_asset_url ) {
 		$sha_response = wp_remote_get( $sha_asset_url, array( 'timeout' => 30 ) );
@@ -3314,11 +3319,6 @@ function wphc_perform_self_update() {
 			// ("<hash>  <nomefile>") oppure contenere il solo hash.
 			$sha_body        = trim( wp_remote_retrieve_body( $sha_response ) );
 			$expected_sha256 = strtolower( (string) strtok( $sha_body, " \t\n" ) );
-		}
-	}
-	if ( ( null === $expected_sha256 || '' === $expected_sha256 ) && ! empty( $release['body'] ) ) {
-		if ( preg_match( '/sha256:\s*([a-f0-9]{64})/i', (string) $release['body'], $matches ) ) {
-			$expected_sha256 = strtolower( $matches[1] );
 		}
 	}
 
@@ -3339,6 +3339,40 @@ function wphc_perform_self_update() {
 		@unlink( $test_file );
 
 		return array( 'result' => 'integrity_check_failed' );
+	}
+
+	// 5-bis. Autenticita' (dalla 1.34.0, A-3 della review 2026-10-03): lo
+	// SHA-256 sta nella stessa release del file, quindi chi controlla il repo
+	// GitHub controlla anche l'hash. L'asset .sig contiene la firma Ed25519
+	// del centro (hub/scripts/sign_release.py) su
+	// "release\n<tag>\n<sha256>", verificata con la chiave pubblica
+	// incorporata: senza la chiave privata non si produce una release valida.
+	// Rollout in due fasi: una release senza .sig e' ancora accettata (esito
+	// 'signature' => 'missing' nella risposta), la firma diventera'
+	// obbligatoria nella release successiva; una firma presente ma non
+	// valida ferma sempre l'aggiornamento.
+	$signature_status = 'missing';
+	if ( null !== $sig_asset_url ) {
+		$sig_response = wp_remote_get( $sig_asset_url, array( 'timeout' => 30 ) );
+		$sig_data     = null;
+		if ( ! is_wp_error( $sig_response ) && 200 === (int) wp_remote_retrieve_response_code( $sig_response ) ) {
+			$sig_data = json_decode( wp_remote_retrieve_body( $sig_response ), true );
+		}
+		$sig_kid        = ( is_array( $sig_data ) && isset( $sig_data['kid'] ) ) ? sanitize_key( (string) $sig_data['kid'] ) : 'k1';
+		$signed_message = "release\n" . (string) $release['tag_name'] . "\n" . $expected_sha256;
+		if (
+			! is_array( $sig_data )
+			|| empty( $sig_data['signature'] )
+			|| ! wphc_verify_central_signature( $signed_message, (string) $sig_data['signature'], $sig_kid )
+		) {
+			@unlink( $test_file );
+			if ( WP_DEBUG ) {
+				error_log( sprintf( 'wp-health-check: firma della release %s non valida, aggiornamento annullato', (string) $release['tag_name'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			}
+
+			return array( 'result' => 'integrity_check_failed' );
+		}
+		$signature_status = 'verified';
 	}
 
 	// 6. Backup del file corrente, prima di qualsiasi scrittura.
@@ -3409,9 +3443,10 @@ function wphc_perform_self_update() {
 	}
 
 	return array(
-		'result' => 'updated',
-		'from'   => $current_version,
-		'to'     => $latest_tag,
+		'result'    => 'updated',
+		'from'      => $current_version,
+		'to'        => $latest_tag,
+		'signature' => $signature_status,
 	);
 }
 
@@ -3439,9 +3474,10 @@ function wphc_route_update( WP_REST_Request $request ) {
 		case 'updated':
 			return rest_ensure_response(
 				array(
-					'updated' => true,
-					'from'    => $outcome['from'],
-					'to'      => $outcome['to'],
+					'updated'   => true,
+					'from'      => $outcome['from'],
+					'to'        => $outcome['to'],
+					'signature' => $outcome['signature'],
 				)
 			);
 

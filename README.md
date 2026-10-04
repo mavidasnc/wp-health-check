@@ -871,8 +871,12 @@ Risposte possibili:
 { "updated": false, "reason": "integrity_check_failed" }
 ```
 ```json
-{ "updated": true, "from": "1.0.0", "to": "1.1.0" }
+{ "updated": true, "from": "1.33.0", "to": "1.34.0", "signature": "missing" }
 ```
+
+`signature` (dalla 1.34.0) vale `verified` se la release aveva l'asset `.sig` e la
+firma è stata verificata, `missing` se l'asset non c'era (vedi il passo 6 del
+[flusso di self-update](#self-update-flusso-passo-per-passo)).
 
 ### `POST /update/plugin`, `POST /update/theme`, `POST /update/core` — aggiornamento software di terze parti
 
@@ -1177,12 +1181,22 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 6. **Verifica di integrità**, prima di toccare qualunque file di produzione:
    - hash atteso recuperato dall'asset affiancato `wp-health-check.php.sha256`
      (supporta sia il formato `sha256sum`, `"<hash>  <nomefile>"`, sia il solo
-     hash), oppure da una riga `"sha256: <hash>"` nel corpo della release come
-     fallback;
+     hash); dalla 1.34.0 non c'è più il ripiego sulla riga `"sha256: <hash>"`
+     nel corpo della release;
    - confronto con `hash('sha256', $contenuto)` via `hash_equals()` (tempo
      costante);
    - il contenuto non deve essere vuoto, deve iniziare con `<?php` e deve
      contenere `"Version: <tag>"` coerente col tag scaricato.
+   - **firma del centro (dalla 1.34.0, A-3 della review 2026-10-03)**: se la
+     release ha l'asset `wp-health-check.php.sig` (JSON `{tag, sha256, kid,
+     signature}` prodotto da `hub/scripts/sign_release.py`), la firma Ed25519 su
+     `"release\n<tag>\n<sha256>"` viene verificata con
+     `wphc_verify_central_signature()` e la chiave pubblica `kid` incorporata. Lo
+     SHA-256 da solo garantiva l'integrità ma non l'autenticità: sta nella stessa
+     release, quindi chi controlla il repository controlla anche l'hash. Rollout in
+     due fasi: una release senza `.sig` è ancora accettata (`"signature":
+     "missing"` nella risposta) e la firma diventerà obbligatoria nella release
+     successiva; una firma presente ma non valida ferma sempre l'aggiornamento.
    - Se una qualunque verifica fallisce: si cancella il file di test del punto 4
      e si risponde `200 { "updated": false, "reason": "integrity_check_failed" }`.
 7. **Backup**: il file corrente viene copiato in `wp-health-check.php.bak`.
@@ -1665,8 +1679,13 @@ Ogni release del repository deve fornire:
   completo, pronto per la produzione, con l'header del plugin che dichiara
   `Version: <tag senza "v">`;
 - un asset affiancato **`wp-health-check.php.sha256`** con l'hash SHA-256 del file
-  sopra (formato `sha256sum` o hash nudo), oppure, in alternativa, una riga
-  `sha256: <hash>` nel corpo/note della release.
+  sopra (formato `sha256sum` o hash nudo); dalla 1.34.0 la riga `sha256: <hash>`
+  nelle note della release non è più letta, e anche il plugin installer pretende
+  l'asset `.sha256`;
+- dalla 1.34.0, un asset **`wp-health-check.php.sig`** con la firma del centro,
+  prodotto dall'hub con la stessa `PRIVATE_KEY` dell'enroll:
+  `python scripts/sign_release.py --file ../wp-health-check/mu-plugins/wp-health-check.php --tag vX.Y.Z`
+  (eseguito dalla cartella `hub`).
 
 ## Caching per-rotta
 
@@ -1822,10 +1841,11 @@ stato rispetto ad alternative come una PoP key o un secondo fattore di conferma.
 repository venisse compromesso, un attaccante potrebbe pubblicare una release
 malevola. Le mitigazioni sono su due livelli indipendenti:
 
-1. l'asset `.sha256` (o la riga `sha256:` nelle note di release) dovrebbe essere
-   prodotto e pubblicato con un processo separato da quello che compromette
-   l'account GitHub stesso (es. CI con chiavi diverse, pubblicazione manuale
-   dell'hash da un canale fuori banda);
+1. dalla 1.34.0 l'asset `.sig` porta la firma Ed25519 del centro sull'hash della
+   release, prodotta con una chiave privata che non sta su GitHub: chi controlla
+   solo l'account può pubblicare un file con un `.sha256` coerente, ma non una
+   firma valida (finché la firma resta facoltativa, durante il rollout, una
+   release senza `.sig` passa ancora: per questo diventerà obbligatoria);
 2. anche a valle di questo, **l'update non è mai automatico**: parte solo quando il
    sistema centrale chiama esplicitamente `/update` su ciascun sito. Un attaccante
    che pubblica una release malevola su GitHub non ha comunque modo di *innescare*
