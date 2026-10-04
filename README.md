@@ -1071,7 +1071,8 @@ Il flusso, fail-closed su qualunque anomalia (stesso principio di
    stesso redirect; riga `type: "login"`/`phase: "failed"`, stavolta con lo
    stesso `correlation_id` della riga `token` (recuperato dal transient) e
    `target` = user_id (non si dispone più dello `user_login`);
-5. token valido → `wp_set_current_user()` + `wp_set_auth_cookie( $user_id, true )`
+5. token valido → `wp_set_current_user()` + `wp_set_auth_cookie( $user_id, false )`
+   (cookie di sessione dalla 1.34.0: prima `true`, cioè 14 giorni)
    + `do_action( 'wp_login', ... )` (così i plugin di audit/2FA che si
    aspettano l'hook di login scattano anche sul magic-login), poi riga
    `type: "login"`/`phase: "completed"` con lo stesso `correlation_id` della
@@ -1103,6 +1104,14 @@ Il flusso, fail-closed su qualunque anomalia (stesso principio di
 - **Redirect di destinazione fisso** (`admin_url()`): deliberatamente non
   configurabile dal chiamante, per non introdurre una superficie di open
   redirect.
+- **Throttle e HTTPS (dalla 1.34.0, A-10 della review 2026-10-03)**: il
+  consumo passa da `wphc_throttle_check()` come le rotte autenticate, e ogni
+  token sconosciuto conta come tentativo fallito, quindi una raffica di GET
+  anonime non gonfia più la tabella di log; oltre la soglia o in HTTP si va
+  al login senza leggere il token. `POST /autologin/token` richiede HTTPS.
+- **Sessione, non "Ricordami"**: il cookie impostato dal consumo è di
+  sessione (`remember = false`), così un token da 20 secondi non diventa una
+  sessione amministrativa di due settimane.
 
 ## Tracciamento accessi
 
@@ -1123,8 +1132,13 @@ perderebbe la maggior parte delle chiamate davvero ricevute.
 `$_SERVER['REMOTE_ADDR']`, validato con `filter_var( $ip, FILTER_VALIDATE_IP )`.
 Se il sito è dietro un proxy/CDN fidato che sovrascrive sempre l'header, si può
 attivare l'opzione `wp_health_check_trust_proxy` (va impostata manualmente, non è
-esposta da nessuna rotta di questo plugin): in quel caso l'IP viene letto dal primo
-valore valido in `X-Forwarded-For`. **`X-Forwarded-For` è un header fornito dal
+esposta da nessuna rotta di questo plugin): in quel caso l'IP viene letto
+dall'**ultimo** valore valido in `X-Forwarded-For` (dalla 1.34.0: un proxy accoda
+l'indirizzo del proprio client in fondo, mentre i valori a sinistra li sceglie il
+client; con il primo valore il throttle era aggirabile cambiando l'header). Con
+la stessa opzione, `wphc_require_https()` accetta una richiesta che PHP vede in
+HTTP solo se il proxy dichiara `X-Forwarded-Proto: https` (fino alla 1.33.0
+l'opzione saltava del tutto il controllo). **`X-Forwarded-For` è un header fornito dal
 client e quindi falsificabile a piacere**: è attendibile solo se un proxy fidato lo
 sovrascrive sempre prima che la richiesta raggiunga PHP. Va attivato
 consapevolmente, mai per default.
@@ -1830,8 +1844,10 @@ rotazione elimina questo fatto, lo mitiga.
 single-use): una richiesta intercettata smette di essere una credenziale valida
 per sempre e diventa un artefatto monouso valido pochi minuti. Un rate limit sui
 tentativi falliti (10 in 300s, per IP) risponde `429` prima che un attacco a forza
-bruta sul bearer diventi pratico. `/enroll`, `/rotate`, `/revoke` richiedono inoltre
-HTTPS (salvo l'opt-out già previsto per un reverse proxy fidato).
+bruta sul bearer diventi pratico. `/enroll`, `/rotate`, `/revoke` e, dalla 1.34.0,
+tutte le rotte dati e `/autologin/token` richiedono inoltre HTTPS (dietro un
+reverse proxy fidato vale `X-Forwarded-Proto: https`, vedi [Tracciamento
+accessi](#tracciamento-accessi)).
 
 ## Installazione, enroll, reset, rollback
 

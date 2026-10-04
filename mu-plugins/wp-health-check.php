@@ -365,14 +365,19 @@ function wphc_candidate_site_urls() {
 /**
  * Determina l'IP del chiamante. Per default legge REMOTE_ADDR (l'unico
  * dato affidabile senza un proxy davanti a PHP). Se l'opzione
- * wp_health_check_trust_proxy e' attiva, legge invece il primo IP
- * valido di X-Forwarded-For.
+ * wp_health_check_trust_proxy e' attiva, legge invece l'ULTIMO IP valido
+ * di X-Forwarded-For.
  *
  * ATTENZIONE (documentato anche in README): X-Forwarded-For e' un header
  * HTTP fornito dal CLIENT e quindi falsificabile a piacere. E' attendibile
  * SOLO se davanti a PHP c'e' un proxy/load balancer fidato che lo
  * sovrascrive sempre (CDN, reverse proxy aziendale). Va attivato
  * consapevolmente, non di default.
+ *
+ * Dalla 1.34.0 (A-10, review 2026-10-03) si prende l'IP piu' a destra: un
+ * proxy che accoda l'indirizzo del proprio client lo aggiunge in fondo,
+ * mentre i valori a sinistra arrivano dal client e sono quindi scelti da
+ * lui. Con il primo IP chiunque aggirava il throttle cambiando l'header.
  *
  * @return string IP valido, oppure stringa vuota se non determinabile.
  */
@@ -381,7 +386,7 @@ function wphc_get_client_ip() {
 
 	if ( $trust_proxy && ! empty( $_SERVER['HTTP_X_FORWARDED_FOR'] ) ) {
 		$xff        = sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_FOR'] ) );
-		$candidates = array_map( 'trim', explode( ',', $xff ) );
+		$candidates = array_reverse( array_map( 'trim', explode( ',', $xff ) ) );
 		foreach ( $candidates as $candidate ) {
 			if ( filter_var( $candidate, FILTER_VALIDATE_IP ) ) {
 				return $candidate;
@@ -1287,16 +1292,28 @@ function wphc_throttle_register_failure() {
 
 /**
  * Impone HTTPS sulle rotte che trasportano credenziali (/enroll, /rotate,
- * /revoke, /autologin/token). Dietro un reverse proxy is_ssl() puo' risultare
- * falso pur essendo il traffico reale in HTTPS: l'opt-out riusa lo stesso
- * meccanismo gia' previsto per wphc_get_client_ip() (wp_health_check_trust_proxy),
- * invece di introdurne uno nuovo.
+ * /revoke, /autologin/token e, dalla 1.34.0, le rotte dati protette da
+ * wphc_require_token()). Dietro un reverse proxy is_ssl() puo' risultare
+ * falso pur essendo il traffico reale in HTTPS: con il proxy fidato
+ * (wp_health_check_trust_proxy, lo stesso di wphc_get_client_ip()) vale
+ * l'header X-Forwarded-Proto impostato dal proxy.
  *
- * @return true|WP_Error True se la richiesta e' su HTTPS (o il proxy e' fidato).
+ * Fino alla 1.33.0 trust_proxy saltava del tutto il controllo (A-10, review
+ * 2026-10-03): ora serve che il proxy dichiari https (valore piu' a destra,
+ * come per X-Forwarded-For).
+ *
+ * @return true|WP_Error True se la richiesta e' su HTTPS.
  */
 function wphc_require_https() {
-	if ( is_ssl() || (bool) get_option( 'wp_health_check_trust_proxy', false ) ) {
+	if ( is_ssl() ) {
 		return true;
+	}
+
+	if ( (bool) get_option( 'wp_health_check_trust_proxy', false ) && ! empty( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) {
+		$protos = array_map( 'trim', explode( ',', sanitize_text_field( wp_unslash( $_SERVER['HTTP_X_FORWARDED_PROTO'] ) ) ) );
+		if ( 'https' === strtolower( (string) end( $protos ) ) ) {
+			return true;
+		}
 	}
 
 	return new WP_Error(
@@ -1338,6 +1355,12 @@ function wphc_require_https() {
  */
 function wphc_require_token( WP_REST_Request $request ) {
 	wphc_maybe_send_cors_headers();
+
+	// Dalla 1.34.0 (A-10): il Bearer non deve mai viaggiare in chiaro.
+	$https_check = wphc_require_https();
+	if ( is_wp_error( $https_check ) ) {
+		return $https_check;
+	}
 
 	$stored_token = get_option( 'wp_health_check_token' );
 	if ( empty( $stored_token ) ) {
@@ -6820,13 +6843,21 @@ function wphc_untrack_pending_autologin( $key ) {
  * token in chiaro: chi legge le wp_options non trova il segreto navigabile
  * in tabella.
  *
+ * Dalla 1.34.0 (A-10) richiede HTTPS, come gia' dichiarato da
+ * wphc_require_https() ma finora non applicato a questa rotta.
+ *
  * @param WP_REST_Request $request Richiesta REST corrente (nessun payload richiesto).
- * @return WP_REST_Response Esito con l'URL di autologin e la scadenza.
+ * @return WP_REST_Response|WP_Error Esito con l'URL di autologin e la scadenza.
  */
 function wphc_route_autologin_token( WP_REST_Request $request ) {
 	unset( $request );
 
 	wphc_maybe_send_cors_headers();
+
+	$https_check = wphc_require_https();
+	if ( is_wp_error( $https_check ) ) {
+		return $https_check;
+	}
 
 	$user = wp_get_current_user();
 
@@ -6905,10 +6936,24 @@ function wphc_route_autologin_token( WP_REST_Request $request ) {
  * valido ma l'utente e' stato nel frattempo cancellato, si riusa comunque il
  * correlation_id della riga 'token', con target = user_id (non si dispone
  * piu' dello user_login).
+ *
+ * Dalla 1.34.0 (A-10, review 2026-10-03):
+ * - stesso throttle per IP delle rotte autenticate: ogni GET anonima con
+ *   ?wphc_autologin= scriveva una riga di log e toccava le options senza
+ *   alcun limite; oltre la soglia si va al login senza scrivere nulla, e
+ *   ogni token sconosciuto conta come tentativo fallito;
+ * - HTTPS obbligatorio: in chiaro il token non viene nemmeno letto;
+ * - cookie di sessione (remember = false) invece di 14 giorni: un token da
+ *   pochi secondi non deve diventare una sessione admin di due settimane.
  */
 function wphc_maybe_consume_autologin() {
 	if ( empty( $_GET['wphc_autologin'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- il token stesso e' la credenziale one-time, non serve un nonce di sessione.
 		return;
+	}
+
+	if ( is_wp_error( wphc_throttle_check() ) || is_wp_error( wphc_require_https() ) ) {
+		wp_safe_redirect( wp_login_url() );
+		exit;
 	}
 
 	$token = sanitize_text_field( wp_unslash( $_GET['wphc_autologin'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
@@ -6927,6 +6972,7 @@ function wphc_maybe_consume_autologin() {
 		// recuperabile. target = prefisso dell'hash del token (stesso hash
 		// gia' calcolato per la chiave del transient), per poter comunque
 		// distinguere tentativi ripetuti con lo stesso token nei log.
+		wphc_throttle_register_failure();
 		wphc_log_update_row(
 			wphc_generate_correlation_id(),
 			'login',
@@ -6958,7 +7004,8 @@ function wphc_maybe_consume_autologin() {
 	}
 
 	wp_set_current_user( $user->ID );
-	wp_set_auth_cookie( $user->ID, true );
+	// remember = false: cookie di sessione, non i 14 giorni di "Ricordami".
+	wp_set_auth_cookie( $user->ID, false );
 	// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si invoca l'hook core "wp_login" (non se ne dichiara uno nuovo), cosi' i plugin di audit/2FA che vi si agganciano reagiscono anche a questo login.
 	do_action( 'wp_login', $user->user_login, $user );
 
