@@ -7,6 +7,24 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-10-04
+
+Finding A-1, A-3 e A-10 della review di sicurezza del 2026-10-03, da rilasciare insieme all'hub 0.211.0.
+
+### Security
+
+- **Niente downgrade dell'enroll (A-1).** Un sito già al protocollo 2 rifiuta le buste v1 con `409 wphc_enroll_downgrade` (dopo la verifica della firma): chi possedeva una vecchia busta v1 poteva riportarlo al token derivato, che conosceva e che è anche la chiave HMAC della firma v2, annullando la rotazione. Anche la busta v1 deve ora rientrare nella finestra di ±300 secondi su `issued_at`.
+- **Firma del centro sul self-update (A-3).** Se la release ha l'asset `wp-health-check.php.sig`, `wphc_perform_self_update()` verifica la firma Ed25519 del centro su `"release\n<tag>\n<sha256>"` con la chiave pubblica incorporata, prima di toccare il file: lo SHA-256 da solo stava nella stessa release, quindi non provava l'autenticità. Rollout in due fasi: senza `.sig` l'update procede ancora (`"signature": "missing"` nella risposta), una firma non valida lo ferma sempre. La firma diventerà obbligatoria nella release successiva. Rimosso il ripiego sulla riga `sha256:` nel corpo della release.
+- **`trust_proxy` e autologin (A-10).**
+  - Con `wp_health_check_trust_proxy` l'IP del chiamante è l'**ultimo** valore valido di `X-Forwarded-For` (prima il primo, scelto dal client: throttle aggirabile).
+  - `wphc_require_https()` con `trust_proxy` pretende `X-Forwarded-Proto: https` invece di saltare il controllo, e si applica anche alle rotte dati (`wphc_require_token()`) e a `POST /autologin/token`.
+  - Il consumo dell'autologin passa dal throttle per IP (ogni token sconosciuto conta come tentativo fallito, quindi le GET anonime non gonfiano più la tabella di log), richiede HTTPS e imposta un cookie di sessione (`wp_set_auth_cookie( ..., false )`) invece dei 14 giorni di "Ricordami".
+
+### Changed
+
+- `POST /update` riporta `signature` (`verified` o `missing`) quando l'aggiornamento riesce.
+- Plugin installer 1.1.0: senza l'asset `.sha256` l'installazione si ferma invece di procedere senza verifica.
+
 ## [1.33.0] - 2026-09-30
 
 ### Fixed
@@ -898,7 +916,8 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.30.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.34.0...HEAD
+[1.34.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.33.0...v1.34.0
 [1.30.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.28.0...v1.29.0
 [1.28.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.27.0...v1.28.0
