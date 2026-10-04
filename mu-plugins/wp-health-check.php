@@ -1736,8 +1736,11 @@ add_action( 'rest_api_init', 'wphc_register_routes' );
  * Due formati, distinti dal campo "protocol" del body (default 1 se assente):
  * - protocol 1 (storico): una ripetizione dell'enroll con lo stesso URL
  *   produce sempre lo stesso token (derivazione deterministica lato centro),
- *   quindi un replay e' innocuo, riscrive lo stesso valore. Nessun controllo
- *   anti-replay per questo formato.
+ *   quindi un replay su un sito al protocollo 1 riscrive lo stesso valore.
+ *   Dalla 1.34.0 (A-1, review 2026-10-03) anche la busta v1 deve rientrare
+ *   nella finestra di freschezza di issued_at, e un sito gia' al protocollo
+ *   2 la rifiuta con 409 wphc_enroll_downgrade: il replay lo riportava al
+ *   token derivato, annullando la rotazione.
  * - protocol 2 (dalla 1.30.0, §3.7/§5.B): il token non e' piu' derivato ma
  *   assegnato dal centro e ruotabile, quindi un replay di una busta vecchia
  *   potrebbe riportare il sito a un segreto gia' ruotato. Aggiunge percio'
@@ -1797,14 +1800,16 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 	$kid              = isset( $body['kid'] ) ? sanitize_key( (string) $body['kid'] ) : 'k1';
 	$nonce            = isset( $body['nonce'] ) ? (string) $body['nonce'] : '';
 
-	// 2. Freschezza e anti-replay, solo per protocol 2 (vedi il docblock).
-	if ( $protocol >= 2 ) {
-		if ( abs( time() - $issued_at ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
-			wphc_throttle_register_failure();
-			wphc_record_enroll_error( 'wphc_enroll_stale', __( 'Busta di enroll scaduta (issued_at fuori dalla finestra di freschezza).', 'wp-health-check' ), $reported_site_url );
+	// 2. Freschezza per entrambi i protocolli (dalla 1.34.0 anche per v1,
+	// A-1 della review 2026-10-03: una busta v1 catturata restava valida per
+	// sempre) e anti-replay del nonce, solo per protocol 2.
+	if ( abs( time() - $issued_at ) > WP_HEALTH_CHECK_REPLAY_WINDOW ) {
+		wphc_throttle_register_failure();
+		wphc_record_enroll_error( 'wphc_enroll_stale', __( 'Busta di enroll scaduta (issued_at fuori dalla finestra di freschezza).', 'wp-health-check' ), $reported_site_url );
 
-			return new WP_Error( 'wphc_enroll_stale', __( 'Richiesta di enroll scaduta.', 'wp-health-check' ), array( 'status' => 401 ) );
-		}
+		return new WP_Error( 'wphc_enroll_stale', __( 'Richiesta di enroll scaduta.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+	if ( $protocol >= 2 ) {
 		if ( wphc_nonce_seen( $nonce ) ) {
 			wphc_throttle_register_failure();
 			wphc_record_enroll_error( 'wphc_enroll_replay', __( 'Nonce di enroll gia\' utilizzato.', 'wp-health-check' ), $reported_site_url );
@@ -1841,6 +1846,17 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 		wphc_record_enroll_error( 'wphc_enroll_unauthorized', __( 'Firma non valida (busta non prodotta dal sistema centrale).', 'wp-health-check' ), $reported_site_url );
 
 		return new WP_Error( 'wphc_enroll_unauthorized', __( 'Richiesta di enroll non autorizzata.', 'wp-health-check' ), array( 'status' => 401 ) );
+	}
+
+	// 3-bis. Niente downgrade (dalla 1.34.0, A-1): un sito gia' al protocollo 2
+	// rifiuta le buste v1, che altrimenti lo riporterebbero al token derivato
+	// (noto a chi possiede una vecchia busta) annullando la rotazione. Il
+	// controllo segue la verifica della firma: lo stato del protocollo si
+	// rivela solo a chi presenta una busta autentica del centro.
+	if ( $protocol < 2 && (int) get_option( 'wp_health_check_protocol', 1 ) >= 2 ) {
+		wphc_record_enroll_error( 'wphc_enroll_downgrade', __( 'Busta di enroll v1 rifiutata: il sito e\' gia\' al protocollo 2.', 'wp-health-check' ), $reported_site_url );
+
+		return new WP_Error( 'wphc_enroll_downgrade', __( 'Il sito e\' al protocollo 2: enroll v1 non ammesso.', 'wp-health-check' ), array( 'status' => 409 ) );
 	}
 
 	// 4. Il payload firmato deve riguardare uno degli URL canonici di questo

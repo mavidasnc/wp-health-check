@@ -362,6 +362,15 @@ deterministicamente, quindi una busta di enroll vecchia riprodotta potrebbe
 riportare il sito a un segreto già ruotato. Vedi
 [Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto).
 
+**Niente downgrade (dalla 1.34.0, A-1 della review 2026-10-03).** Anche la busta
+v1 deve rientrare nella finestra di ±300 secondi su `issued_at` (prima una busta
+catturata restava valida per sempre), e un sito già al protocol 2 la rifiuta con
+`409 wphc_enroll_downgrade`: senza questo controllo chi possedeva una vecchia busta
+v1 (log, backup, traffico) riportava il sito al token derivato, che conosceva,
+annullando la rotazione. Il controllo segue la verifica della firma, quindi lo
+stato del protocollo si rivela solo a chi presenta una busta autentica. L'hub
+(dalla 0.211.0) usa da sé la busta v2 per i siti al protocol 2.
+
 **Diagnostica dell'URL mismatch (dalla `1.11.0`).** Quando l'enroll fallisce con
 `wphc_enroll_url_mismatch`, oltre a registrare il dettaglio in
 `wp_health_check_last_enroll_error` (visibile nella [tab Site
