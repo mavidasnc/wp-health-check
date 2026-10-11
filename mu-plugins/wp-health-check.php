@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.34.0
+ * Version:     1.35.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.34.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.35.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -219,14 +219,15 @@ if ( ! defined( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL' ) ) {
 }
 
 /**
- * Slot per una seconda chiave pubblica Ed25519 del centro (kid "k2"), vuoto
- * finche' non serve. Permette di far convivere due chiavi durante una
- * rotazione della chiave di firma del centro, senza un redeploy simultaneo
- * dell'agent su tutta la flotta (dalla 1.30.0). "k1" e' sempre
- * WP_HEALTH_CHECK_CENTRAL_PUBKEY qui sopra: vedi wphc_verify_central_signature().
+ * Chiave pubblica Ed25519 (kid "k2") DEDICATA alle release del plugin
+ * (dalla 1.35.0, M-8 della review 2026-10-11). "k1" (WP_HEALTH_CHECK_CENTRAL_PUBKEY)
+ * firma solo le buste del centro verso il sito (enroll, rotate, revoke);
+ * "k2" firma solo le release: chi custodisce la chiave delle release non puo'
+ * forgiare buste verso i siti, e chi custodisce k1 non puo' firmare release.
+ * La separazione e' imposta da wphc_verify_central_signature() con $purpose.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2' ) ) {
-	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2', '' );
+	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2', 'mGJDfcvmM2lCoaq5+lJaC94mhpvrwjqJIQfjJrC/6Ko=' );
 }
 
 /**
@@ -1120,24 +1121,27 @@ function wphc_base64url_decode( $data ) {
  * lunghezze attese (SODIUM_CRYPTO_SIGN_*), fail-closed su SodiumException.
  * Condivisa da /enroll, /rotate e /revoke.
  *
- * Il kid seleziona quale chiave pubblica di flotta usare (WP_HEALTH_CHECK_CENTRAL_PUBKEY
- * per "k1", WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2 per "k2"): permette di far
- * convivere due chiavi durante una rotazione della chiave di firma del
- * centro. Un payload senza kid (buste v1 di /enroll) assume "k1" di default,
- * quindi le buste esistenti continuano a verificare senza modifiche.
+ * Il kid seleziona quale chiave pubblica usare, ma solo entro lo scopo
+ * dichiarato (dalla 1.35.0, M-8 della review 2026-10-11): le buste del centro
+ * verso il sito ("envelope": enroll, rotate, revoke) si verificano SOLO con
+ * "k1" (WP_HEALTH_CHECK_CENTRAL_PUBKEY); le release ("release") SOLO con "k2"
+ * (WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2). Senza questa separazione bastava
+ * "kid":"k2" nel body per far accettare a una rotta una firma prodotta con la
+ * chiave delle release. Un payload senza kid (buste v1 di /enroll) assume "k1".
  *
  * @param string $message       Messaggio canonico firmato.
  * @param string $signature_b64 Firma Ed25519, base64 standard.
  * @param string $kid           Identificativo della chiave ("k1" o "k2").
- * @return bool True se la firma e' valida per quella chiave.
+ * @param string $purpose       "envelope" (default) o "release".
+ * @return bool True se la firma e' valida per quella chiave in quello scopo.
  */
-function wphc_verify_central_signature( $message, $signature_b64, $kid = 'k1' ) {
-	$keys = array(
-		'k1' => WP_HEALTH_CHECK_CENTRAL_PUBKEY,
-		'k2' => WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2,
-	);
+function wphc_verify_central_signature( $message, $signature_b64, $kid = 'k1', $purpose = 'envelope' ) {
+	$keys = ( 'release' === $purpose )
+		? array( 'k2' => WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2 )
+		: array( 'k1' => WP_HEALTH_CHECK_CENTRAL_PUBKEY );
 
-	if ( ! isset( $keys[ $kid ] ) || '' === $keys[ $kid ] ) {
+	// Le costanti hanno un valore, ma wp-config.php puo' ridefinirle (anche vuote): fail-closed.
+	if ( ! isset( $keys[ $kid ] ) || '' === $keys[ $kid ] ) { // @phpstan-ignore identical.alwaysFalse
 		return false;
 	}
 
@@ -3341,39 +3345,44 @@ function wphc_perform_self_update() {
 		return array( 'result' => 'integrity_check_failed' );
 	}
 
-	// 5-bis. Autenticita' (dalla 1.34.0, A-3 della review 2026-10-03): lo
-	// SHA-256 sta nella stessa release del file, quindi chi controlla il repo
-	// GitHub controlla anche l'hash. L'asset .sig contiene la firma Ed25519
-	// del centro (hub/scripts/sign_release.py) su
-	// "release\n<tag>\n<sha256>", verificata con la chiave pubblica
-	// incorporata: senza la chiave privata non si produce una release valida.
-	// Rollout in due fasi: una release senza .sig e' ancora accettata (esito
-	// 'signature' => 'missing' nella risposta), la firma diventera'
-	// obbligatoria nella release successiva; una firma presente ma non
-	// valida ferma sempre l'aggiornamento.
-	$signature_status = 'missing';
-	if ( null !== $sig_asset_url ) {
-		$sig_response = wp_remote_get( $sig_asset_url, array( 'timeout' => 30 ) );
-		$sig_data     = null;
-		if ( ! is_wp_error( $sig_response ) && 200 === (int) wp_remote_retrieve_response_code( $sig_response ) ) {
-			$sig_data = json_decode( wp_remote_retrieve_body( $sig_response ), true );
+	// 5-bis. Autenticita' (dalla 1.34.0, A-3 della review 2026-10-03; obbligatoria
+	// dalla 1.35.0, A-1 della review 2026-10-11): lo SHA-256 sta nella stessa
+	// release del file, quindi chi controlla il repo GitHub controlla anche
+	// l'hash. L'asset .sig contiene la firma Ed25519 del centro
+	// (hub/scripts/sign_release.py) su "release\n<tag>\n<sha256>", verificata con
+	// la chiave pubblica incorporata delle release (k2): senza la chiave
+	// privata non si produce una release valida. Una release senza .sig o con
+	// una firma non valida ferma sempre l'aggiornamento: l'autenticita' non e'
+	// piu' opzionale per chi pubblica la release.
+	if ( null === $sig_asset_url ) {
+		@unlink( $test_file );
+		if ( WP_DEBUG ) {
+			error_log( sprintf( 'wp-health-check: la release %s non ha la firma (.sig), aggiornamento annullato', (string) $release['tag_name'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 		}
-		$sig_kid        = ( is_array( $sig_data ) && isset( $sig_data['kid'] ) ) ? sanitize_key( (string) $sig_data['kid'] ) : 'k1';
-		$signed_message = "release\n" . (string) $release['tag_name'] . "\n" . $expected_sha256;
-		if (
-			! is_array( $sig_data )
-			|| empty( $sig_data['signature'] )
-			|| ! wphc_verify_central_signature( $signed_message, (string) $sig_data['signature'], $sig_kid )
-		) {
-			@unlink( $test_file );
-			if ( WP_DEBUG ) {
-				error_log( sprintf( 'wp-health-check: firma della release %s non valida, aggiornamento annullato', (string) $release['tag_name'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-			}
 
-			return array( 'result' => 'integrity_check_failed' );
-		}
-		$signature_status = 'verified';
+		return array( 'result' => 'integrity_check_failed' );
 	}
+
+	$sig_response = wp_remote_get( $sig_asset_url, array( 'timeout' => 30 ) );
+	$sig_data     = null;
+	if ( ! is_wp_error( $sig_response ) && 200 === (int) wp_remote_retrieve_response_code( $sig_response ) ) {
+		$sig_data = json_decode( wp_remote_retrieve_body( $sig_response ), true );
+	}
+	$sig_kid        = ( is_array( $sig_data ) && isset( $sig_data['kid'] ) ) ? sanitize_key( (string) $sig_data['kid'] ) : 'k2';
+	$signed_message = "release\n" . (string) $release['tag_name'] . "\n" . $expected_sha256;
+	if (
+		! is_array( $sig_data )
+		|| empty( $sig_data['signature'] )
+		|| ! wphc_verify_central_signature( $signed_message, (string) $sig_data['signature'], $sig_kid, 'release' )
+	) {
+		@unlink( $test_file );
+		if ( WP_DEBUG ) {
+			error_log( sprintf( 'wp-health-check: firma della release %s non valida, aggiornamento annullato', (string) $release['tag_name'] ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		}
+
+		return array( 'result' => 'integrity_check_failed' );
+	}
+	$signature_status = 'verified';
 
 	// 6. Backup del file corrente, prima di qualsiasi scrittura.
 	$plugin_file = __FILE__;

@@ -210,12 +210,16 @@ tentativo di `/enroll` fallisce la verifica della firma: è un comportamento
 volutamente *fail closed* (nessun enroll possibile finché la chiave reale non è
 incorporata), non *fail open*.
 
-Dalla 1.30.0 la costante è anche il kid **"k1"**: `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2`
-è uno slot per una seconda chiave, vuoto finché non serve. Una busta firmata può
-indicare `kid: "k2"`; senza `kid` si assume `"k1"` (retrocompatibile con ogni busta
-`/enroll` esistente). Permette di far convivere due chiavi durante una rotazione
-della chiave di firma del centro, senza un redeploy simultaneo dell'agent su tutta
-la flotta.
+La costante è il kid **"k1"** e verifica solo le buste del centro verso il sito
+(`/enroll`, `/rotate`, `/revoke`); senza `kid` si assume `"k1"` (retrocompatibile con
+ogni busta `/enroll` esistente). Dalla 1.35.0 (M-8 della review 2026-10-11)
+`WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2` è la chiave **"k2" dedicata alle release** del
+plugin: `wphc_verify_central_signature()` accetta `k1` solo per le buste e `k2` solo
+per le release (parametro `$purpose`), quindi un `"kid": "k2"` nel body di una rotta
+non fa accettare una firma prodotta con la chiave delle release, e chi custodisce
+quella chiave non può forgiare buste verso i siti. La coppia delle release è custodita
+fuori dall'hub e dal server; la rotazione di una delle due chiavi richiede un
+rilascio del plugin con la nuova pubblica.
 
 ## Rotazione e revoca del segreto
 
@@ -871,11 +875,12 @@ Risposte possibili:
 { "updated": false, "reason": "integrity_check_failed" }
 ```
 ```json
-{ "updated": true, "from": "1.33.0", "to": "1.34.0", "signature": "missing" }
+{ "updated": true, "from": "1.34.0", "to": "1.35.0", "signature": "verified" }
 ```
 
-`signature` (dalla 1.34.0) vale `verified` se la release aveva l'asset `.sig` e la
-firma è stata verificata, `missing` se l'asset non c'era (vedi il passo 6 del
+`signature` (dalla 1.34.0) vale `verified` quando l'aggiornamento riesce: dalla
+1.35.0 la firma della release è obbligatoria, quindi lo stato `missing` non esiste
+più (una release senza `.sig` risponde `integrity_check_failed`; vedi il passo 6 del
 [flusso di self-update](#self-update-flusso-passo-per-passo)).
 
 ### `POST /update/plugin`, `POST /update/theme`, `POST /update/core` — aggiornamento software di terze parti
@@ -1187,16 +1192,16 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
      costante);
    - il contenuto non deve essere vuoto, deve iniziare con `<?php` e deve
      contenere `"Version: <tag>"` coerente col tag scaricato.
-   - **firma del centro (dalla 1.34.0, A-3 della review 2026-10-03)**: se la
-     release ha l'asset `wp-health-check.php.sig` (JSON `{tag, sha256, kid,
-     signature}` prodotto da `hub/scripts/sign_release.py`), la firma Ed25519 su
-     `"release\n<tag>\n<sha256>"` viene verificata con
-     `wphc_verify_central_signature()` e la chiave pubblica `kid` incorporata. Lo
-     SHA-256 da solo garantiva l'integrità ma non l'autenticità: sta nella stessa
-     release, quindi chi controlla il repository controlla anche l'hash. Rollout in
-     due fasi: una release senza `.sig` è ancora accettata (`"signature":
-     "missing"` nella risposta) e la firma diventerà obbligatoria nella release
-     successiva; una firma presente ma non valida ferma sempre l'aggiornamento.
+   - **firma del centro (dalla 1.34.0, obbligatoria dalla 1.35.0; A-3 della review
+     2026-10-03 e A-1 della review 2026-10-11)**: la release deve avere l'asset
+     `wp-health-check.php.sig` (JSON `{tag, sha256, kid, signature}` prodotto da
+     `hub/scripts/sign_release.py`) e la firma Ed25519 su `"release\n<tag>\n<sha256>"`
+     viene verificata con `wphc_verify_central_signature( ..., 'release' )` e la chiave
+     pubblica **`k2`** incorporata, dedicata alle release. Lo SHA-256 da solo
+     garantiva l'integrità ma non l'autenticità: sta nella stessa release, quindi chi
+     controlla il repository controlla anche l'hash. Una release senza `.sig`, con una
+     firma non valida o firmata con un'altra chiave ferma sempre l'aggiornamento. Il
+     tag nel messaggio firmato è il `tag_name` GitHub grezzo, con la `v`.
    - Se una qualunque verifica fallisce: si cancella il file di test del punto 4
      e si risponde `200 { "updated": false, "reason": "integrity_check_failed" }`.
 7. **Backup**: il file corrente viene copiato in `wp-health-check.php.bak`.
@@ -1682,10 +1687,14 @@ Ogni release del repository deve fornire:
   sopra (formato `sha256sum` o hash nudo); dalla 1.34.0 la riga `sha256: <hash>`
   nelle note della release non è più letta, e anche il plugin installer pretende
   l'asset `.sha256`;
-- dalla 1.34.0, un asset **`wp-health-check.php.sig`** con la firma del centro,
-  prodotto dall'hub con la stessa `PRIVATE_KEY` dell'enroll:
-  `python scripts/sign_release.py --file ../wp-health-check/mu-plugins/wp-health-check.php --tag vX.Y.Z`
-  (eseguito dalla cartella `hub`).
+- un asset **`wp-health-check.php.sig`** con la firma del centro (obbligatorio dalla
+  1.35.0), prodotto con la chiave dedicata alle release (`k2`):
+  `python scripts/sign_release.py --file ../wp-health-check/mu-plugins/wp-health-check.php --tag vX.Y.Z --key-file <seed k2>`
+  (eseguito dalla cartella `hub`). `--tag` deve essere identico al `tag_name` della
+  release GitHub, con la `v`: un mismatch (`1.36.0` contro `v1.36.0`) blocca l'update
+  (fail-closed). La release 1.35.0 è l'eccezione: va firmata con la chiave storica
+  `k1` (`--key-env`, `--kid k1`) perché la 1.34.0, che deve accettarla, non conosce
+  `k2`.
 
 ## Caching per-rotta
 
@@ -1844,8 +1853,7 @@ malevola. Le mitigazioni sono su due livelli indipendenti:
 1. dalla 1.34.0 l'asset `.sig` porta la firma Ed25519 del centro sull'hash della
    release, prodotta con una chiave privata che non sta su GitHub: chi controlla
    solo l'account può pubblicare un file con un `.sha256` coerente, ma non una
-   firma valida (finché la firma resta facoltativa, durante il rollout, una
-   release senza `.sig` passa ancora: per questo diventerà obbligatoria);
+   firma valida (dalla 1.35.0 una release senza `.sig` non passa più);
 2. anche a valle di questo, **l'update non è mai automatico**: parte solo quando il
    sistema centrale chiama esplicitamente `/update` su ciascun sito. Un attaccante
    che pubblica una release malevola su GitHub non ha comunque modo di *innescare*

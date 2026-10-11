@@ -7,6 +7,20 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-10-11
+
+Finding A-1 e M-8 della review del 2026-10-11, da rilasciare con l'hub 0.228.0. **Firmata con la chiave storica `k1`** (la 1.34.0 non conosce `k2`); dalla 1.36.0 le release si firmano con `k2`.
+
+### Security
+
+- **Firma della release obbligatoria (A-1).** `wphc_perform_self_update()` rifiuta (`integrity_check_failed`) una release senza l'asset `wp-health-check.php.sig`: nella 1.34.0 senza `.sig` l'update procedeva (`"signature": "missing"`), quindi l'autenticità era opt-in per chi pubblica la release, cioè per l'attaccante nello scenario che la firma voleva coprire. Lo stato `missing` non esiste più; `signature` vale sempre `verified` quando l'update riesce.
+- **Chiave dedicata alle release e verifica per scopo (M-8).** `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2` ora ha un valore ed è riservata alle release; `wphc_verify_central_signature()` riceve `$purpose` (`envelope`, default, oppure `release`): le buste di enroll, rotate e revoke si verificano solo con `k1`, le release solo con `k2`. Prima il `kid` lo sceglieva il body e una chiave valeva per ogni scopo: chi custodiva la chiave delle release poteva forgiare buste, e viceversa. La chiave privata `k2` non è più la `PRIVATE_KEY` di produzione dell'hub.
+
+### Changed
+
+- `POST /update` riporta `signature: "verified"` quando riesce (mai `missing`).
+- Un firmatario di release deve usare `hub/scripts/sign_release.py --key-file` (kid `k2` di default) e passare `--tag` identico al `tag_name` GitHub, con la `v`.
+
 ## [1.34.0] - 2026-10-04
 
 Finding A-1, A-3 e A-10 della review di sicurezza del 2026-10-03, da rilasciare insieme all'hub 0.211.0.
