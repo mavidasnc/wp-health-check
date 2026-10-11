@@ -7,6 +7,16 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-10-12
+
+Richieste verso GitHub più robuste durante il self-update. **Firmata con la chiave `k2`.**
+
+### Fixed
+
+- **Ripiego senza API.** `wphc_fetch_latest_release()` interroga prima l'API (`api.github.com/.../releases/latest`) e, se risponde con un errore o non è raggiungibile, ricava il tag dal redirect di `github.com/<owner>/<repo>/releases/latest` e costruisce gli URL degli asset (`/releases/download/<tag>/<nome>`). L'API non autenticata concede 60 richieste l'ora per indirizzo IP: sugli hosting condivisi molti siti escono con lo stesso IP e un aggiornamento di massa esaurisce il limite, con 403 su tutti (visto sul rollout della 1.35.0: decine di `wphc_update_github_error`). github.com non ha quel limite. Il tag del redirect deve avere la forma di una versione e l'host deve essere github.com; gli asset restano verificati dallo SHA-256 e dalla firma `k2`, quindi la fonte del tag non è un perimetro di fiducia. Usato anche da `wphc_get_latest_version()` (pannello Site Health).
+- **User-Agent esplicito su ogni richiesta verso GitHub** (`wphc_github_request_args()`: `wp-health-check-agent/<versione>`), anche per il download di `.php`, `.sha256` e `.sig`. L'API di GitHub rifiuta con 403 le richieste senza User-Agent: le due chiamate all'API lo inviavano già, i download degli asset si affidavano al default di WordPress, che un plugin o un proxy possono alterare con `http_headers_useragent`.
+- **Errori diagnosticabili.** Il messaggio di `wphc_update_network_error` include l'errore di trasporto (es. `cURL error 28`) e quello di `wphc_update_github_error` il codice HTTP di GitHub (es. `HTTP 403`); prima restava solo il testo generico.
+
 ## [1.36.0] - 2026-10-11
 
 Finding B-21 della review del 2026-10-11. **Firmata con la chiave `k2`** (la 1.35.0 la conosce).

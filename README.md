@@ -1170,11 +1170,20 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 
 1. **Autenticazione** via token (già garantita dal `permission_callback`) e
    registrazione dell'accesso.
-2. **Interrogazione GitHub**:
+2. **Interrogazione GitHub** (`wphc_fetch_latest_release()`):
    `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`, con header
-   `Accept: application/vnd.github+json` e `User-Agent: wp-health-check-agent`
-   (GitHub rifiuta le richieste API senza User-Agent). Timeout 15s. Errori di rete o
-   status diverso da 200 producono un `WP_Error` con status 502.
+   `Accept: application/vnd.github+json` e `User-Agent: wp-health-check-agent/<versione>`
+   (GitHub rifiuta con 403 le richieste API senza User-Agent: dalla 1.37.0 lo si
+   imposta esplicitamente anche sul download degli asset). Timeout 15s. Se l'API
+   risponde con un errore o non è raggiungibile, dalla 1.37.0 si ripiega su
+   `https://github.com/{owner}/{repo}/releases/latest`: il redirect (senza seguirlo)
+   indica il tag e gli asset hanno URL prevedibili
+   (`/releases/download/<tag>/<nome>`). Serve perché l'API non autenticata concede 60
+   richieste l'ora per indirizzo IP e sugli hosting condivisi un aggiornamento di massa
+   la esaurisce; github.com non ha quel limite. Se anche il ripiego fallisce, errore di
+   rete (`wphc_update_network_error`, con l'errore di trasporto nel messaggio) o status
+   diverso da 200 (`wphc_update_github_error`, con il codice HTTP nel messaggio):
+   `WP_Error` con status 502.
 3. **Normalizzazione e confronto versione**: il `tag_name` della release perde un
    eventuale prefisso `v`, poi si confronta con `WP_HEALTH_CHECK_VERSION` via
    `version_compare()`. Se non è più recente: `200 { "updated": false, "reason": "up_to_date", ... }`.
@@ -1220,7 +1229,8 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 12. Risposta `200 { "updated": true, "from": "...", "to": "..." }`.
 
 Ogni ramo d'errore restituisce un `WP_Error` con status HTTP coerente e un codice
-macchina stabile (`wphc_update_network_error`, `wphc_update_bad_release`,
+macchina stabile (`wphc_update_network_error`, `wphc_update_github_error`,
+`wphc_update_bad_release`,
 `wphc_update_asset_missing`, `wphc_update_download_failed`,
 `wphc_update_backup_failed`, `wphc_update_write_failed`,
 `wphc_update_sanity_failed`). Gli esiti vengono anche loggati con `error_log()`,

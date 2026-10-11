@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.36.0
+ * Version:     1.37.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.36.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.37.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -3180,6 +3180,137 @@ function wphc_route_detail_users( WP_REST_Request $request ) {
 // -----------------------------------------------------------------------
 
 /**
+ * Argomenti comuni delle richieste verso GitHub (API, download degli asset).
+ * L'API di GitHub rifiuta con 403 ogni richiesta senza User-Agent: lo si
+ * imposta esplicitamente su tutte le richieste invece di affidarsi al default
+ * di WordPress, che un plugin o un proxy del sito possono alterare con il
+ * filtro http_headers_useragent.
+ *
+ * @param int                  $timeout       Timeout in secondi.
+ * @param array<string,string> $extra_headers Header aggiuntivi.
+ * @return array<string,mixed> Argomenti per wp_remote_get().
+ */
+function wphc_github_request_args( $timeout, $extra_headers = array() ) {
+	return array(
+		'timeout' => $timeout,
+		'headers' => array_merge(
+			array( 'User-Agent' => 'wp-health-check-agent/' . WP_HEALTH_CHECK_VERSION ),
+			$extra_headers
+		),
+	);
+}
+
+/**
+ * Ultima release del plugin su GitHub, nella forma dell'API (tag_name e
+ * assets[] con name e browser_download_url), oppure un array di errore.
+ *
+ * Prima l'API (api.github.com/.../releases/latest). L'API non autenticata
+ * concede 60 richieste l'ora per indirizzo IP: sugli hosting condivisi molti
+ * siti hanno lo stesso IP in uscita e un aggiornamento di massa esaurisce il
+ * limite, con 403 su tutti. Se l'API risponde con un errore o non e'
+ * raggiungibile si ripiega su github.com, che non ha quel limite: il redirect
+ * di /releases/latest indica il tag e gli asset hanno URL prevedibili
+ * (/releases/download/<tag>/<nome>). Gli asset sono comunque verificati dallo
+ * SHA-256 e dalla firma del centro, quindi la fonte del tag non e' un
+ * perimetro di fiducia.
+ *
+ * @param int $timeout Timeout in secondi per ogni richiesta.
+ * @return array<string,mixed> La release (con "tag_name"), oppure
+ *                              array( 'code' => ..., 'http' => int, 'detail' => string ).
+ */
+function wphc_fetch_latest_release( $timeout = 15 ) {
+	$api_url = sprintf(
+		'https://api.github.com/repos/%s/%s/releases/latest',
+		rawurlencode( WP_HEALTH_CHECK_GH_OWNER ),
+		rawurlencode( WP_HEALTH_CHECK_GH_REPO )
+	);
+
+	$response = wp_remote_get( $api_url, wphc_github_request_args( $timeout, array( 'Accept' => 'application/vnd.github+json' ) ) );
+
+	if ( is_wp_error( $response ) ) {
+		$failure = array(
+			'code'   => 'wphc_update_network_error',
+			'http'   => 0,
+			'detail' => $response->get_error_message(),
+		);
+	} elseif ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
+		$failure = array(
+			'code'   => 'wphc_update_github_error',
+			'http'   => (int) wp_remote_retrieve_response_code( $response ),
+			/* translators: %d: codice HTTP restituito da GitHub. */
+			'detail' => sprintf( __( 'HTTP %d', 'wp-health-check' ), (int) wp_remote_retrieve_response_code( $response ) ),
+		);
+	} else {
+		$release = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( is_array( $release ) && ! empty( $release['tag_name'] ) ) {
+			return $release;
+		}
+		$failure = array(
+			'code'   => 'wphc_update_bad_release',
+			'http'   => 200,
+			'detail' => '',
+		);
+	}
+
+	$fallback = wphc_fetch_latest_release_without_api( $timeout );
+	if ( null !== $fallback ) {
+		return $fallback;
+	}
+
+	return $failure;
+}
+
+/**
+ * Ripiego di wphc_fetch_latest_release(): ricava il tag dal redirect di
+ * https://github.com/<owner>/<repo>/releases/latest (302 verso
+ * /releases/tag/<tag>), senza usare l'API. Il tag deve avere la forma di una
+ * versione: niente altro finisce negli URL degli asset.
+ *
+ * @param int $timeout Timeout in secondi.
+ * @return array<string,mixed>|null La release nella forma dell'API, o null se non determinabile.
+ */
+function wphc_fetch_latest_release_without_api( $timeout ) {
+	$owner = rawurlencode( WP_HEALTH_CHECK_GH_OWNER );
+	$repo  = rawurlencode( WP_HEALTH_CHECK_GH_REPO );
+
+	$args                = wphc_github_request_args( $timeout );
+	$args['redirection'] = 0; // Serve l'header Location della prima risposta, non la pagina di arrivo.
+	$response            = wp_remote_get( sprintf( 'https://github.com/%s/%s/releases/latest', $owner, $repo ), $args );
+	if ( is_wp_error( $response ) ) {
+		return null;
+	}
+
+	$code     = (int) wp_remote_retrieve_response_code( $response );
+	$location = (string) wp_remote_retrieve_header( $response, 'location' );
+	if ( $code < 300 || $code >= 400 || '' === $location ) {
+		return null;
+	}
+
+	$prefix = sprintf( 'https://github.com/%s/%s/releases/tag/', $owner, $repo );
+	if ( 0 !== strpos( $location, $prefix ) ) {
+		return null;
+	}
+	$tag = rawurldecode( substr( $location, strlen( $prefix ) ) );
+	if ( ! preg_match( '/^v?\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.-]+)?$/', $tag ) ) {
+		return null;
+	}
+
+	$base   = sprintf( 'https://github.com/%s/%s/releases/download/%s/', $owner, $repo, rawurlencode( $tag ) );
+	$assets = array();
+	foreach ( array( 'wp-health-check.php', 'wp-health-check.php.sha256', 'wp-health-check.php.sig' ) as $name ) {
+		$assets[] = array(
+			'name'                 => $name,
+			'browser_download_url' => $base . $name,
+		);
+	}
+
+	return array(
+		'tag_name' => $tag,
+		'assets'   => $assets,
+	);
+}
+
+/**
  * Self-update da GitHub. Segue rigorosamente l'ordine: verifica versione
  * -> preflight di scrivibilita' -> download -> verifica integrita' ->
  * backup -> scrittura atomica -> sanity check -> pulizia. Ogni passo che
@@ -3201,48 +3332,33 @@ function wphc_route_detail_users( WP_REST_Request $request ) {
 function wphc_perform_self_update() {
 	$current_version = WP_HEALTH_CHECK_VERSION;
 
-	// 1. Interroga la release piu' recente pubblicata su GitHub.
-	$api_url = sprintf(
-		'https://api.github.com/repos/%s/%s/releases/latest',
-		rawurlencode( WP_HEALTH_CHECK_GH_OWNER ),
-		rawurlencode( WP_HEALTH_CHECK_GH_REPO )
-	);
+	// 1. Interroga la release piu' recente pubblicata su GitHub (API, con
+	// ripiego senza API se questa risponde con un errore: vedi
+	// wphc_fetch_latest_release()).
+	$release = wphc_fetch_latest_release( 15 );
+	if ( ! isset( $release['tag_name'] ) ) {
+		$detail = isset( $release['detail'] ) ? ' (' . $release['detail'] . ')' : '';
+		if ( 'wphc_update_network_error' === ( isset( $release['code'] ) ? $release['code'] : '' ) ) {
+			return array(
+				'result'  => 'error',
+				'code'    => 'wphc_update_network_error',
+				'message' => __( 'Impossibile contattare GitHub.', 'wp-health-check' ) . $detail,
+				'http'    => 502,
+			);
+		}
+		if ( 'wphc_update_bad_release' === ( isset( $release['code'] ) ? $release['code'] : '' ) ) {
+			return array(
+				'result'  => 'error',
+				'code'    => 'wphc_update_bad_release',
+				'message' => __( 'Risposta di GitHub non valida.', 'wp-health-check' ),
+				'http'    => 502,
+			);
+		}
 
-	$response = wp_remote_get(
-		$api_url,
-		array(
-			'timeout' => 15,
-			'headers' => array(
-				'Accept'     => 'application/vnd.github+json',
-				// GitHub rifiuta le richieste API senza uno User-Agent.
-				'User-Agent' => 'wp-health-check-agent',
-			),
-		)
-	);
-
-	if ( is_wp_error( $response ) ) {
-		return array(
-			'result'  => 'error',
-			'code'    => 'wphc_update_network_error',
-			'message' => __( 'Impossibile contattare GitHub.', 'wp-health-check' ),
-			'http'    => 502,
-		);
-	}
-	if ( 200 !== (int) wp_remote_retrieve_response_code( $response ) ) {
 		return array(
 			'result'  => 'error',
 			'code'    => 'wphc_update_github_error',
-			'message' => __( 'GitHub ha risposto con un errore nel recuperare la release.', 'wp-health-check' ),
-			'http'    => 502,
-		);
-	}
-
-	$release = json_decode( wp_remote_retrieve_body( $response ), true );
-	if ( ! is_array( $release ) || empty( $release['tag_name'] ) ) {
-		return array(
-			'result'  => 'error',
-			'code'    => 'wphc_update_bad_release',
-			'message' => __( 'Risposta di GitHub non valida.', 'wp-health-check' ),
+			'message' => __( 'GitHub ha risposto con un errore nel recuperare la release.', 'wp-health-check' ) . $detail,
 			'http'    => 502,
 		);
 	}
@@ -3305,7 +3421,7 @@ function wphc_perform_self_update() {
 		);
 	}
 
-	$download = wp_remote_get( $asset_url, array( 'timeout' => 30 ) );
+	$download = wp_remote_get( $asset_url, wphc_github_request_args( 30 ) );
 	if ( is_wp_error( $download ) || 200 !== (int) wp_remote_retrieve_response_code( $download ) ) {
 		@unlink( $test_file );
 
@@ -3326,7 +3442,7 @@ function wphc_perform_self_update() {
 	// controllato da chi controlla la release.
 	$expected_sha256 = null;
 	if ( null !== $sha_asset_url ) {
-		$sha_response = wp_remote_get( $sha_asset_url, array( 'timeout' => 30 ) );
+		$sha_response = wp_remote_get( $sha_asset_url, wphc_github_request_args( 30 ) );
 		if ( ! is_wp_error( $sha_response ) && 200 === (int) wp_remote_retrieve_response_code( $sha_response ) ) {
 			// Il file .sha256 puo' seguire il formato "sha256sum"
 			// ("<hash>  <nomefile>") oppure contenere il solo hash.
@@ -3372,7 +3488,7 @@ function wphc_perform_self_update() {
 		return array( 'result' => 'integrity_check_failed' );
 	}
 
-	$sig_response = wp_remote_get( $sig_asset_url, array( 'timeout' => 30 ) );
+	$sig_response = wp_remote_get( $sig_asset_url, wphc_github_request_args( 30 ) );
 	$sig_data     = null;
 	if ( ! is_wp_error( $sig_response ) && 200 === (int) wp_remote_retrieve_response_code( $sig_response ) ) {
 		$sig_data = json_decode( wp_remote_retrieve_body( $sig_response ), true );
@@ -3539,30 +3655,8 @@ function wphc_get_latest_version( $force = false ) {
 		}
 	}
 
-	$api_url = sprintf(
-		'https://api.github.com/repos/%s/%s/releases/latest',
-		rawurlencode( WP_HEALTH_CHECK_GH_OWNER ),
-		rawurlencode( WP_HEALTH_CHECK_GH_REPO )
-	);
-
-	$response = wp_remote_get(
-		$api_url,
-		array(
-			'timeout' => 10,
-			'headers' => array(
-				'Accept'     => 'application/vnd.github+json',
-				'User-Agent' => 'wp-health-check-agent',
-			),
-		)
-	);
-
-	$latest = '';
-	if ( ! is_wp_error( $response ) && 200 === (int) wp_remote_retrieve_response_code( $response ) ) {
-		$release = json_decode( wp_remote_retrieve_body( $response ), true );
-		if ( is_array( $release ) && ! empty( $release['tag_name'] ) ) {
-			$latest = ltrim( (string) $release['tag_name'], 'v' );
-		}
-	}
+	$release = wphc_fetch_latest_release( 10 );
+	$latest  = isset( $release['tag_name'] ) ? ltrim( (string) $release['tag_name'], 'v' ) : '';
 
 	// Cache breve anche in caso di fallimento (stringa vuota), per non
 	// martellare GitHub ad ogni apertura della tab se l'API e' irraggiungibile.
