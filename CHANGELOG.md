@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-10-11
+
+Release servita dall'hub e push dell'aggiornamento. **Firmata con la chiave `k2`.** Retrocompatibile: i siti alla 1.37.0 arrivano alla 1.38.0 con il pull da GitHub, come prima.
+
+### Added
+
+- **Fonte hub per il self-update.** `wphc_fetch_latest_release()` interroga prima l'hub (`WP_HEALTH_CHECK_RELEASE_URL`, default `https://hub.mavida.com/api/v1/fleet/agent-release/latest`, sovrascrivibile in `wp-config.php`, stringa vuota per disattivarla) e poi, come prima, l'API di GitHub e il ripiego senza API. L'hub interroga GitHub una sola volta e serve la release alla flotta: i siti sugli hosting condivisi non esauriscono più il limite di 60 richieste l'ora per IP. La risposta ha la forma dell'API GitHub; gli asset sono accettati solo se stanno sotto lo stesso percorso dell'URL dell'hub e il tag deve avere la forma di una versione. Se gli asset dell'hub non sono scaricabili si ritenta una volta con GitHub. L'hub non è un perimetro di fiducia: SHA-256 e firma `k2` sono verificati comunque.
+- **Push dell'hub.** `POST /update` accetta `{"package": {tag, sha256, sig, contents_gz_b64, force}}`: il file arriva (gzip + base64) nel body e il sito non scarica nulla (`wphc_perform_pushed_update()`). Serve ai siti che non raggiungono GitHub o l'hub e alla reinstallazione di riparazione. Con `force` il sito accetta anche la stessa versione; il downgrade è sempre rifiutato (`up_to_date`). Un pacchetto malformato o oltre i limiti (2 MB di base64, 4 MB decompressi) risponde `400 wphc_update_push_invalid`. La risposta porta `"mode": "push"`.
+- **`wphc_install_release()`**: la pipeline di installazione (confronto versione, preflight di scrittura, integrità, firma `k2`, backup, scrittura atomica, sanity check) è ora comune a pull e push. SHA-256, header `Version` e firma sono verificati su qualunque sorgente.
+
+### Changed
+
+- `wphc_perform_self_update()` è diviso in `wphc_download_release_assets()` (download) e `wphc_install_release()`. Ordine invariato: versione, preflight di scrittura (`wphc_probe_mu_dir_writable()`, prima di scaricare), download, integrità, firma, backup, scrittura, sanity.
+- `wphc_get_latest_version()` (tab Site Health) legge anch'essa dall'hub.
+
 ## [1.37.0] - 2026-10-12
 
 Richieste verso GitHub più robuste durante il self-update. **Firmata con la chiave `k2`.**

@@ -1170,7 +1170,17 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 
 1. **Autenticazione** via token (già garantita dal `permission_callback`) e
    registrazione dell'accesso.
-2. **Interrogazione GitHub** (`wphc_fetch_latest_release()`):
+2. **Interrogazione della release** (`wphc_fetch_latest_release()`). Dalla 1.38.0 la
+   prima fonte è l'**hub** (`WP_HEALTH_CHECK_RELEASE_URL`, default
+   `https://hub.mavida.com/api/v1/fleet/agent-release/latest`): l'hub interroga GitHub
+   una sola volta e serve la release alla flotta, così i siti sugli hosting condivisi non
+   consumano il limite dell'API per IP. La risposta ha la forma dell'API GitHub
+   (`tag_name`, `assets[]`); il tag deve avere la forma di una versione e gli asset
+   sono accettati solo se l'URL sta sotto lo stesso percorso dell'URL dell'hub. Se l'hub
+   non risponde o la risposta non è valida si passa a GitHub; se invece gli asset
+   dell'hub non sono scaricabili si ritenta una volta con la release di GitHub. L'hub
+   è solo trasporto, non un perimetro di fiducia: SHA-256 e firma `k2` (punto 6) sono
+   verificati su qualunque fonte. Fonte GitHub:
    `GET https://api.github.com/repos/{owner}/{repo}/releases/latest`, con header
    `Accept: application/vnd.github+json` e `User-Agent: wp-health-check-agent/<versione>`
    (GitHub rifiuta con 403 le richieste API senza User-Agent: dalla 1.37.0 lo si
@@ -1187,7 +1197,8 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 3. **Normalizzazione e confronto versione**: il `tag_name` della release perde un
    eventuale prefisso `v`, poi si confronta con `WP_HEALTH_CHECK_VERSION` via
    `version_compare()`. Se non è più recente: `200 { "updated": false, "reason": "up_to_date", ... }`.
-4. **Preflight di scrittura**: si scrive un file temporaneo a nome casuale in
+4. **Preflight di scrittura** (`wphc_probe_mu_dir_writable()`, eseguito prima di
+   scaricare qualunque cosa): si scrive e si rimuove un file temporaneo a nome casuale in
    `WPMU_PLUGIN_DIR` (es. `.wphc-writetest-<rand>`). Se fallisce:
    `200 { "updated": false, "reason": "not_writable" }`, senza aver toccato altro.
 5. **Download**: si cerca fra gli `assets` della release quello di nome
@@ -1211,8 +1222,8 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
      controlla il repository controlla anche l'hash. Una release senza `.sig`, con una
      firma non valida o firmata con un'altra chiave ferma sempre l'aggiornamento. Il
      tag nel messaggio firmato è il `tag_name` GitHub grezzo, con la `v`.
-   - Se una qualunque verifica fallisce: si cancella il file di test del punto 4
-     e si risponde `200 { "updated": false, "reason": "integrity_check_failed" }`.
+   - Se una qualunque verifica fallisce si risponde
+     `200 { "updated": false, "reason": "integrity_check_failed" }`.
 7. **Backup**: il file corrente viene copiato in `wp-health-check.php.bak`, per il solo
    ripristino immediato dei punti 8 e 9; dalla 1.36.0 viene rimosso a update riuscito.
 8. **Scrittura atomica**: il nuovo contenuto viene scritto in un file temporaneo
@@ -1225,13 +1236,28 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 10. **Invalidazione opcache**: `opcache_invalidate( __FILE__, true )` se
     disponibile; altrimenti la vecchia versione compilata resta in memoria fino al
     riavvio del pool PHP (es. php-fpm).
-11. Il file di test del punto 4 viene cancellato.
-12. Risposta `200 { "updated": true, "from": "...", "to": "..." }`.
+11. Risposta `200 { "updated": true, "from": "...", "to": "..." }`.
+
+**Push dell'hub (dalla 1.38.0).** `POST /update` con un body JSON
+`{"package": {"tag", "sha256", "sig", "contents_gz_b64", "force"}}` salta i punti 2 e 5:
+il file arriva compresso (gzip + base64) nel body e il sito non scarica nulla
+(`wphc_perform_pushed_update()`). Il pacchetto è una sorgente come un'altra: la stessa
+pipeline (`wphc_install_release()`) ripete confronto di versione, preflight di scrittura,
+integrità (SHA-256, `<?php`, `Version:` uguale al tag) e firma `k2` sul messaggio
+`"release\n<tag>\n<sha256>"`. L'hub non possiede il seed `k2` e non può fabbricare una
+release valida. Utile ai siti che non raggiungono GitHub o l'hub e per la reinstallazione
+di riparazione: con `force: true` il sito accetta anche la stessa versione, mentre un
+downgrade è sempre rifiutato (`200 { "updated": false, "reason": "up_to_date" }`). Un
+pacchetto malformato o oltre i limiti (2 MB di base64, 4 MB decompressi) risponde
+`400 wphc_update_push_invalid`. La risposta riporta `"mode": "push"`. Il body pesa circa
+130 KB: su un sito dietro un limite di body di 128 KiB (mod_security) il push viene
+rifiutato dal server prima di arrivare al plugin.
 
 Ogni ramo d'errore restituisce un `WP_Error` con status HTTP coerente e un codice
 macchina stabile (`wphc_update_network_error`, `wphc_update_github_error`,
 `wphc_update_bad_release`,
 `wphc_update_asset_missing`, `wphc_update_download_failed`,
+`wphc_update_push_invalid` (solo push),
 `wphc_update_backup_failed`, `wphc_update_write_failed`,
 `wphc_update_sanity_failed`). Gli esiti vengono anche loggati con `error_log()`,
 ma solo se `WP_DEBUG` è attivo.
