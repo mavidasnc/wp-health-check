@@ -1204,7 +1204,8 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
      tag nel messaggio firmato è il `tag_name` GitHub grezzo, con la `v`.
    - Se una qualunque verifica fallisce: si cancella il file di test del punto 4
      e si risponde `200 { "updated": false, "reason": "integrity_check_failed" }`.
-7. **Backup**: il file corrente viene copiato in `wp-health-check.php.bak`.
+7. **Backup**: il file corrente viene copiato in `wp-health-check.php.bak`, per il solo
+   ripristino immediato dei punti 8 e 9; dalla 1.36.0 viene rimosso a update riuscito.
 8. **Scrittura atomica**: il nuovo contenuto viene scritto in un file temporaneo
    nella *stessa directory* (con estensione neutra, non `.php` — vedi nota sotto),
    poi si esegue `rename()` su `__FILE__`. `rename()` sullo stesso filesystem è
@@ -1790,14 +1791,15 @@ vedi [Rotazione e revoca del segreto](#rotazione-e-revoca-del-segreto)).
 
 Se invece `wp_health_check_dashboard_origin` **non è impostata** (sito appena
 installato, prima del primo `/enroll`, oppure resettato con
-`wp health-check reset`), viene autorizzata **qualunque origin** presente
-nell'header `Origin` della richiesta (riflessa nell'`Access-Control-Allow-Origin`
-della risposta, mai un wildcard letterale `*`): è una scelta deliberata per non
-bloccare le chiamate durante il setup o lo sviluppo, prima che una dashboard sia
-stata registrata. Il controllo di accesso vero e proprio resta comunque il
-bearer token (`/health`, `/detail/*`, `/update`) o la firma Ed25519 (`/enroll`):
-CORS qui è difesa in profondità aggiuntiva, non il perimetro di sicurezza
-primario.
+`wp health-check reset`), dalla 1.36.0 (B-21 della review 2026-10-11) **non si
+invia alcun header CORS**. Fino alla 1.35.0 si rifletteva qualunque `Origin`
+(mai un wildcard letterale `*`), scelta pensata per il setup ma che, in
+produzione, dove l'hub non imposta `HEALTHCHECK_DASHBOARD_ORIGIN`, esponeva ogni
+sito a qualunque pagina web. Nessun consumatore ne dipendeva: la dashboard parla
+con i siti solo tramite l'hub, server-to-server. Il controllo di accesso vero e
+proprio resta comunque il bearer token (`/health`, `/detail/*`, `/update`) o la
+firma Ed25519 (`/enroll`): CORS qui è difesa in profondità aggiuntiva, non il
+perimetro di sicurezza primario.
 
 Le richieste `OPTIONS` (preflight del browser) vengono intercettate a livello di
 `rest_pre_dispatch` per l'intero namespace `health-check/v1`, prima del routing
@@ -1959,18 +1961,18 @@ wp health-check secret --show   # come sopra, ma stampa anche il segreto in chia
 wp health-check status          # enrollment, versione, protocollo, ultimo errore di enroll, stato thumbnail
 ```
 
-### Rollback da `.bak`
+### Rollback dopo un self-update
 
-Se un self-update lascia il sito in uno stato inatteso nonostante i controlli
-(caso limite, dato che il flusso ripristina già automaticamente dal backup se il
-sanity check del passo 9 fallisce), il rollback manuale è immediato: via SFTP/SSH,
+Il flusso ripristina già automaticamente dal backup se la scrittura o il sanity
+check del passo 9 falliscono. Dalla 1.36.0 `wp-health-check.php.bak` **non resta**
+in `mu-plugins/` dopo un update riuscito (restava per sempre una copia del codice
+precedente accanto al plugin): se un update riuscito lascia il sito in uno stato
+inatteso, si reinstalla la release precedente, via SFTP/SSH, dall'asset
+`wp-health-check.php` della pagina release GitHub del tag voluto, dopo aver
+verificato l'hash con l'asset `.sha256`.
 
-```bash
-cp wp-content/mu-plugins/wp-health-check.php.bak wp-content/mu-plugins/wp-health-check.php
-```
-
-Il `.bak` viene sovrascritto ad ogni update riuscito con la versione
-immediatamente precedente (non è uno storico multiplo).
+Fino alla 1.35.0 il `.bak` restava e bastava
+`cp wp-content/mu-plugins/wp-health-check.php.bak wp-content/mu-plugins/wp-health-check.php`.
 
 ## Tab Site Health
 

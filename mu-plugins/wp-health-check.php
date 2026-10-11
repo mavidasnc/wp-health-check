@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.35.0
+ * Version:     1.36.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.35.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.36.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */
@@ -942,14 +942,15 @@ function wphc_detect_site_signals() {
 
 /**
  * Invia gli header CORS. Se wp_health_check_dashboard_origin e' configurata,
- * SOLO quell'origin esatta viene autorizzata (comportamento originale). Se
- * e' vuota (dashboard non ancora registrata via /enroll, o resettata con
- * wp health-check reset), viene autorizzata qualunque origin che invia la
- * richiesta: e' una scelta deliberata per non bloccare le chiamate in fase
- * di setup/sviluppo prima che una dashboard_origin sia stata configurata.
+ * SOLO quell'origin esatta viene autorizzata. Dalla 1.36.0 (B-21 della
+ * review 2026-10-11), se e' vuota (dashboard non registrata via /enroll, o
+ * resettata con wp health-check reset) NON si invia alcun header CORS:
+ * prima si rifletteva qualunque origin, scelta pensata per il setup ma che in
+ * produzione, dove l'hub non imposta HEALTHCHECK_DASHBOARD_ORIGIN, esponeva
+ * ogni sito a qualunque pagina web. Nessun consumatore ne dipende: la
+ * dashboard parla con i siti solo tramite l'hub (server-to-server).
  * Non viene mai inviato il wildcard letterale "*": l'origin della richiesta
- * viene sempre riflessa nell'header, cosi' il comportamento resta corretto
- * anche se in futuro le richieste iniziassero a includere credenziali.
+ * viene riflessa solo se coincide con quella configurata.
  * L'autenticazione resta comunque affidata al bearer token o alla firma
  * Ed25519 (vedi wphc_require_token()): CORS qui e' difesa in profondita'
  * aggiuntiva, non il controllo di accesso primario.
@@ -1000,8 +1001,10 @@ function wphc_maybe_send_cors_headers() {
 		return;
 	}
 
+	// Senza origin configurata nessun header CORS (B-21); con origin
+	// configurata, solo quella esatta.
 	$configured_origin = get_option( 'wp_health_check_dashboard_origin' );
-	if ( ! empty( $configured_origin ) && $request_origin !== $configured_origin ) {
+	if ( empty( $configured_origin ) || $request_origin !== $configured_origin ) {
 		return;
 	}
 
@@ -1770,6 +1773,7 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 
 	$body = json_decode( $request->get_body(), true );
 	if ( ! is_array( $body ) ) {
+		wphc_throttle_register_failure();
 		wphc_record_enroll_error( 'wphc_enroll_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), '' );
 
 		return new WP_Error( 'wphc_enroll_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
@@ -1788,6 +1792,7 @@ function wphc_route_enroll( WP_REST_Request $request ) {
 
 	foreach ( $required_fields as $field ) {
 		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
+			wphc_throttle_register_failure();
 			/* translators: %s: nome del campo mancante. */
 			$reason = sprintf( __( 'Campo obbligatorio mancante: %s', 'wp-health-check' ), $field );
 			wphc_record_enroll_error( 'wphc_enroll_missing_field', $reason, $reported_site_url );
@@ -1982,11 +1987,13 @@ function wphc_route_rotate( WP_REST_Request $request ) {
 
 	$body = json_decode( $request->get_body(), true );
 	if ( ! is_array( $body ) ) {
+		wphc_throttle_register_failure();
 		return new WP_Error( 'wphc_rotate_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
 	}
 
 	foreach ( array( 'site_url', 'new_token', 'nonce', 'issued_at', 'signature' ) as $field ) {
 		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
+			wphc_throttle_register_failure();
 			return new WP_Error(
 				'wphc_rotate_missing_field',
 				/* translators: %s: nome del campo mancante. */
@@ -2093,11 +2100,13 @@ function wphc_route_revoke( WP_REST_Request $request ) {
 
 	$body = json_decode( $request->get_body(), true );
 	if ( ! is_array( $body ) ) {
+		wphc_throttle_register_failure();
 		return new WP_Error( 'wphc_revoke_invalid_body', __( 'Corpo della richiesta non valido o non JSON.', 'wp-health-check' ), array( 'status' => 400 ) );
 	}
 
 	foreach ( array( 'site_url', 'nonce', 'issued_at', 'signature' ) as $field ) {
 		if ( ! isset( $body[ $field ] ) || '' === $body[ $field ] ) {
+			wphc_throttle_register_failure();
 			return new WP_Error(
 				'wphc_revoke_missing_field',
 				/* translators: %s: nome del campo mancante. */
@@ -3443,8 +3452,11 @@ function wphc_perform_self_update() {
 	}
 
 	// 10. Rimuove il file di test di scrivibilita' del punto 3 e invalida
-	// la cache della "ultima versione" (ora e' quella installata).
+	// la cache della "ultima versione" (ora e' quella installata). Il backup
+	// del punto 6 serviva solo al ripristino immediato dei punti 7 e 8 (B-21:
+	// restava per sempre in mu-plugins/, una copia del codice precedente).
 	@unlink( $test_file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+	@unlink( $backup_file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
 	delete_transient( 'wphc_latest_version_cache' );
 
 	if ( WP_DEBUG ) {
@@ -6537,8 +6549,11 @@ function wphc_dispatch_webhook_payload( $event, array $payload, $job_id, $attemp
 		'X-WPHC-Attempt'    => (string) $attempt,
 	);
 
-	$started     = microtime( true );
-	$response    = wp_remote_post(
+	$started = microtime( true );
+	// wp_safe_remote_post (B-21): oltre all'allowlist sugli IP letterali di
+	// wphc_webhook_url_is_allowed(), WordPress rifiuta host che risolvono su IP
+	// privati o riservati e porte non standard, anche se l'URL usa un nome DNS.
+	$response    = wp_safe_remote_post(
 		$url,
 		array(
 			'timeout'     => WP_HEALTH_CHECK_WEBHOOK_TIMEOUT,

@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-10-11
+
+Finding B-21 della review del 2026-10-11. **Firmata con la chiave `k2`** (la 1.35.0 la conosce).
+
+### Security
+
+- **CORS senza origin configurata.** `wphc_maybe_send_cors_headers()` non invia più alcun header quando `wp_health_check_dashboard_origin` è vuota: prima rifletteva qualunque `Origin`, e in produzione l'hub non imposta `HEALTHCHECK_DASHBOARD_ORIGIN`, quindi ogni sito era esposto a qualunque pagina web (l'autenticazione resta il bearer o la firma). La dashboard parla con i siti solo tramite l'hub, quindi nessun consumatore cambia.
+- **Throttle sui rami di validazione.** `wphc_throttle_register_failure()` anche per body non JSON e campi mancanti di `/enroll`, `/rotate` e `/revoke`: prima solo i rami stale, replay e firma contavano, quindi richieste malformate non erano limitate.
+- **Webhook con `wp_safe_remote_post`.** Oltre all'allowlist sugli IP letterali di `wphc_webhook_url_is_allowed()`, WordPress rifiuta host che risolvono su IP privati o riservati e porte non standard anche per URL con nome DNS.
+- **`.bak` rimosso dopo un update riuscito.** `wp-health-check.php.bak` restava per sempre in `mu-plugins/`, una copia del codice precedente accanto al plugin. Serve solo al ripristino immediato dei punti 8 e 9 del self-update. Il rollback manuale diventa la reinstallazione della release precedente (README).
+
+### Note
+
+- Non modificato, in modo deliberato: i 503 `wphc_not_enrolled` e 403 `wphc_revoked` prima del controllo del Bearer. L'hub usa `wphc_not_enrolled` per il messaggio diagnostico di un plugin installato ma non abbinato; il costo di conoscere lo stato di un sito è basso rispetto alla perdita di quella diagnosi.
+
 ## [1.35.0] - 2026-10-11
 
 Finding A-1 e M-8 della review del 2026-10-11, da rilasciare con l'hub 0.228.0. **Firmata con la chiave storica `k1`** (la 1.34.0 non conosce `k2`); dalla 1.36.0 le release si firmano con `k2`.

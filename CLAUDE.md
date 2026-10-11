@@ -42,4 +42,4 @@ php bin/generate-keys.php
 - Function/constant prefixes are `wphc_` and `WP_HEALTH_CHECK_` (not the full plugin slug) — this is intentional, see the `PrefixAllGlobals.ShortPrefixPassed` exclusion in `phpcs.xml.dist`.
 - All token comparisons use `hash_equals()` (constant-time); never use `===` or `==` for secret/token comparison.
 - Filesystem operations in the self-update flow use native PHP functions (`file_put_contents`, `copy`, `rename`), not `WP_Filesystem` — deliberate, since the file must work before `WP_Filesystem` is initialized and without FTP credentials. Errors are still always checked explicitly despite the `@` silencing operator.
-- REST responses only ever send the requesting site's own `Origin` back (never `*`) and only when it matches `wp_health_check_dashboard_origin`, set during enroll.
+- REST responses only ever send the requesting site's own `Origin` back (never `*`) and only when it matches `wp_health_check_dashboard_origin`, set during enroll; with no origin configured no CORS header is sent at all (since 1.36.0).
