@@ -18,6 +18,10 @@ Finding B-21 della review del 2026-10-11. **Firmata con la chiave `k2`** (la 1.3
 - **Webhook con `wp_safe_remote_post`.** Oltre all'allowlist sugli IP letterali di `wphc_webhook_url_is_allowed()`, WordPress rifiuta host che risolvono su IP privati o riservati e porte non standard anche per URL con nome DNS.
 - **`.bak` rimosso dopo un update riuscito.** `wp-health-check.php.bak` restava per sempre in `mu-plugins/`, una copia del codice precedente accanto al plugin. Serve solo al ripristino immediato dei punti 8 e 9 del self-update. Il rollback manuale diventa la reinstallazione della release precedente (README).
 
+### Changed
+
+- **Plugin installer 1.2.0** (A-1 della review 2026-10-11): verifica la firma Ed25519 della release (asset `.sig`, kid `k2`, chiave pubblica incorporata, `sodium_crypto_sign_verify_detached` su `"release\n<tag>\n<sha256>"`) e rifiuta l'installazione senza firma o senza sodium; prima verificava solo lo SHA-256 pubblicato nella stessa release, quindi il primo install su un sito nuovo eseguiva lo zip che GitHub serviva in quel momento senza alcuna prova che venisse dal centro. Controlla anche che la versione nell'header del file coincida con il tag e scrive in modo atomico. Lo zip in `installer/` (e quello servito da fleet.mavida.com, fermo alla 1.0.0) è aggiornato e va allegato alla release GitHub.
+
 ### Note
 
 - Non modificato, in modo deliberato: i 503 `wphc_not_enrolled` e 403 `wphc_revoked` prima del controllo del Bearer. L'hub usa `wphc_not_enrolled` per il messaggio diagnostico di un plugin installato ma non abbinato; il costo di conoscere lo stato di un sito è basso rispetto alla perdita di quella diagnosi.

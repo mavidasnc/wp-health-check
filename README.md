@@ -1913,8 +1913,11 @@ In alternativa alla copia manuale via SFTP, la cartella
 - se `mu-plugins/wp-health-check.php` esiste già → non fa nulla e lo segnala con
   una notice;
 - altrimenti verifica/crea la cartella `mu-plugins`, controlla i permessi di
-  scrittura, **scarica l'ultima release** di `wp-health-check.php` da GitHub (con
-  verifica SHA-256) e la installa;
+  scrittura, **scarica l'ultima release** di `wp-health-check.php` da GitHub, ne
+  verifica lo **SHA-256** e la **firma Ed25519** del centro (chiave `k2`
+  incorporata, obbligatoria dalla 1.2.0: senza firma valida l'installazione si
+  ferma) e la installa con scrittura atomica (file temporaneo e `rename()`); la
+  versione nell'header del file deve coincidere con il tag della release;
 - in caso di problema lascia una notice con il **motivo preciso** (permessi,
   download, integrità, scrittura).
 

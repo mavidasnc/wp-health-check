@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WP Health Check Installer
- * Description: Installa il must-use plugin wp-health-check.php scaricando l'ultima release firmata da GitHub. Da attivare una volta sola: se il mu-plugin e' gia' presente non fa nulla. In caso di problema lascia una notice con il motivo.
- * Version:     1.1.0
+ * Description: Installa il must-use plugin wp-health-check.php scaricando l'ultima release firmata da GitHub e verificandone la firma Ed25519. Da attivare una volta sola: se il mu-plugin e' gia' presente non fa nulla. In caso di problema lascia una notice con il motivo.
+ * Version:     1.2.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -25,6 +25,18 @@ if ( ! defined( 'WPHC_INSTALLER_GH_OWNER' ) ) {
 }
 if ( ! defined( 'WPHC_INSTALLER_GH_REPO' ) ) {
 	define( 'WPHC_INSTALLER_GH_REPO', 'wp-health-check' );
+}
+
+/*
+ * Chiave pubblica Ed25519 (kid "k2") con cui il centro firma le release del
+ * plugin: la stessa WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2 del mu-plugin dalla
+ * 1.35.0. E' una chiave pubblica, quindi puo' stare nel file. Senza una firma
+ * valida su "release\n<tag>\n<sha256>" l'installazione si ferma: lo SHA-256
+ * pubblicato nella stessa release non prova l'autenticita' (A-1, review
+ * 2026-10-11).
+ */
+if ( ! defined( 'WPHC_INSTALLER_RELEASE_PUBKEY' ) ) {
+	define( 'WPHC_INSTALLER_RELEASE_PUBKEY', 'mGJDfcvmM2lCoaq5+lJaC94mhpvrwjqJIQfjJrC/6Ko=' );
 }
 
 register_activation_hook( __FILE__, 'wphc_installer_activate' );
@@ -85,15 +97,22 @@ function wphc_installer_do_install() {
 		);
 	}
 
-	// 5. Scrittura del file con funzioni native (nessuna richiesta di
-	// credenziali FTP durante l'attivazione).
-	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged
-	if ( false === @file_put_contents( $target_file, $download['contents'] ) ) {
+	// 5. Scrittura con funzioni native (nessuna richiesta di credenziali FTP
+	// durante l'attivazione), atomica: prima un temporaneo con estensione neutra
+	// (non .php, cosi' WordPress non lo carica mai a meta') nella stessa
+	// cartella, poi rename(): un'interruzione non lascia un mu-plugin
+	// troncato che andrebbe in fatal a ogni richiesta.
+	$temp_file = $target_dir . '/wp-health-check.tmp-' . wp_generate_password( 12, false );
+	// phpcs:disable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.unlink_unlink
+	if ( false === @file_put_contents( $temp_file, $download['contents'] ) || ! @rename( $temp_file, $target_file ) ) {
+		@unlink( $temp_file );
+		// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.unlink_unlink
 		return array(
 			'type'    => 'error',
 			'message' => sprintf( 'La scrittura di %s e\' fallita nonostante i permessi sembrassero corretti (possibile open_basedir, disco pieno o restrizione dell\'hosting).', $target_file ),
 		);
 	}
+	// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.unlink_unlink
 
 	return array(
 		'type'    => 'success',
@@ -103,8 +122,9 @@ function wphc_installer_do_install() {
 
 /**
  * Interroga la release piu' recente su GitHub, scarica l'asset
- * wp-health-check.php e ne verifica l'integrita' (non vuoto, prefisso "<?php",
- * header del plugin e, se disponibile, l'hash SHA-256 dell'asset affiancato).
+ * wp-health-check.php e ne verifica integrita' e autenticita' (non vuoto,
+ * prefisso "<?php", header del plugin con la versione del tag, hash SHA-256
+ * dell'asset affiancato e firma Ed25519 del centro sul tag e sull'hash).
  *
  * @return array{contents: string, version: string}|WP_Error Contenuto e versione, o errore.
  */
@@ -141,6 +161,7 @@ function wphc_installer_fetch_latest_asset() {
 	// Individua gli asset: il file del plugin e l'hash affiancato.
 	$asset_url = null;
 	$sha_url   = null;
+	$sig_url   = null;
 	if ( ! empty( $release['assets'] ) && is_array( $release['assets'] ) ) {
 		foreach ( $release['assets'] as $asset ) {
 			if ( ! isset( $asset['name'], $asset['browser_download_url'] ) ) {
@@ -150,6 +171,8 @@ function wphc_installer_fetch_latest_asset() {
 				$asset_url = $asset['browser_download_url'];
 			} elseif ( 'wp-health-check.php.sha256' === $asset['name'] ) {
 				$sha_url = $asset['browser_download_url'];
+			} elseif ( 'wp-health-check.php.sig' === $asset['name'] ) {
+				$sig_url = $asset['browser_download_url'];
 			}
 		}
 	}
@@ -166,6 +189,11 @@ function wphc_installer_fetch_latest_asset() {
 	// Integrita' di base.
 	if ( '' === $contents || 0 !== strpos( $contents, '<?php' ) || false === strpos( $contents, 'Plugin Name: WP Health Check' ) ) {
 		return new WP_Error( 'wphc_installer_integrity', 'il file scaricato non e\' valido' );
+	}
+
+	// La versione dichiarata nell'header deve coincidere con il tag della release.
+	if ( ! preg_match( '/^[ \t\/*#@]*Version:\s*(\S+)/mi', $contents, $header_version ) || $header_version[1] !== $version ) {
+		return new WP_Error( 'wphc_installer_integrity', 'la versione nel file non coincide con il tag della release' );
 	}
 
 	// Verifica SHA-256 obbligatoria (A-3, review 2026-10-03): senza l'asset
@@ -185,10 +213,63 @@ function wphc_installer_fetch_latest_asset() {
 		return new WP_Error( 'wphc_installer_integrity', 'verifica SHA-256 fallita (file corrotto o manomesso)' );
 	}
 
+	// Firma Ed25519 del centro (A-1, review 2026-10-11): obbligatoria. Lo
+	// SHA-256 sta nella stessa release del file, quindi chi controlla il
+	// repository controlla anche l'hash; la firma no.
+	$signature_error = wphc_installer_verify_signature( $sig_url, (string) $release['tag_name'], $expected );
+	if ( is_wp_error( $signature_error ) ) {
+		return $signature_error;
+	}
+
 	return array(
 		'contents' => $contents,
 		'version'  => $version,
 	);
+}
+
+/**
+ * Verifica la firma Ed25519 della release sull'asset .sig: JSON
+ * {tag, sha256, kid, signature} con firma su "release\n<tag>\n<sha256>"
+ * (stesso formato di hub/scripts/sign_release.py), kid "k2".
+ *
+ * @param string|null $sig_url  URL dell'asset wp-health-check.php.sig, null se assente.
+ * @param string      $tag_name tag_name GitHub grezzo (con l'eventuale "v").
+ * @param string      $sha256   SHA-256 gia' verificato del file scaricato.
+ * @return true|WP_Error True se la firma e' valida.
+ */
+function wphc_installer_verify_signature( $sig_url, $tag_name, $sha256 ) {
+	if ( null === $sig_url ) {
+		return new WP_Error( 'wphc_installer_signature', 'la release non ha la firma (.sig): installazione annullata' );
+	}
+	if ( ! function_exists( 'sodium_crypto_sign_verify_detached' ) ) {
+		return new WP_Error( 'wphc_installer_signature', 'estensione sodium non disponibile: impossibile verificare la firma, installazione annullata' );
+	}
+
+	$sig_response = wp_remote_get( $sig_url, array( 'timeout' => 20 ) );
+	$sig_data     = null;
+	if ( ! is_wp_error( $sig_response ) && 200 === (int) wp_remote_retrieve_response_code( $sig_response ) ) {
+		$sig_data = json_decode( wp_remote_retrieve_body( $sig_response ), true );
+	}
+	if ( ! is_array( $sig_data ) || empty( $sig_data['signature'] ) || ! isset( $sig_data['kid'] ) || 'k2' !== $sig_data['kid'] ) {
+		return new WP_Error( 'wphc_installer_signature', 'firma della release assente o non valida: installazione annullata' );
+	}
+
+	$pubkey    = base64_decode( WPHC_INSTALLER_RELEASE_PUBKEY, true );
+	$signature = base64_decode( (string) $sig_data['signature'], true );
+	if ( false === $pubkey || false === $signature || 32 !== strlen( $pubkey ) || 64 !== strlen( $signature ) ) {
+		return new WP_Error( 'wphc_installer_signature', 'firma della release non valida: installazione annullata' );
+	}
+
+	try {
+		$valid = sodium_crypto_sign_verify_detached( $signature, "release\n" . $tag_name . "\n" . $sha256, $pubkey );
+	} catch ( Exception $e ) {
+		$valid = false;
+	}
+	if ( ! $valid ) {
+		return new WP_Error( 'wphc_installer_signature', 'firma della release non valida (release non prodotta dal centro): installazione annullata' );
+	}
+
+	return true;
 }
 
 /**

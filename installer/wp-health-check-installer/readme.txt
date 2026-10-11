@@ -2,7 +2,7 @@
 Contributors: mavida
 Requires at least: 5.8
 Requires PHP: 7.4
-Stable tag: 1.1.0
+Stable tag: 1.2.0
 License: GPL-2.0-or-later
 
 Installa il must-use plugin wp-health-check.php scaricando l'ultima release da GitHub.
@@ -17,7 +17,8 @@ All'attivazione:
    lo segnala con una notice.
 2. Altrimenti verifica/crea la cartella mu-plugins, controlla i permessi di
    scrittura, scarica l'ultima release firmata di wp-health-check.php da
-   GitHub (con verifica SHA-256) e la installa.
+   GitHub, ne verifica lo SHA-256 e la firma Ed25519 del centro (obbligatoria: senza
+   firma valida l'installazione si ferma) e la installa con scrittura atomica.
 3. In caso di problema lascia una notice con il motivo preciso (permessi,
    download, integrita', scrittura).
 
