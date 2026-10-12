@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: WP Health Check Installer
- * Description: Installa il must-use plugin wp-health-check.php scaricando l'ultima release firmata da GitHub e verificandone la firma Ed25519. Da attivare una volta sola: se il mu-plugin e' gia' presente non fa nulla. In caso di problema lascia una notice con il motivo.
- * Version:     1.2.0
+ * Description: Installa il must-use plugin wp-health-check.php scaricando l'ultima release firmata da GitHub e verificandone la firma Ed25519. Se il mu-plugin e' gia' presente ma piu' vecchio dell'ultima release lo aggiorna (anche quando il self-update non puo' farlo, es. agent < 1.35.0); se e' gia' aggiornato non fa nulla. In caso di problema lascia una notice con il motivo.
+ * Version:     1.3.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -12,9 +12,11 @@
  *
  * Questo e' un plugin NORMALE (non un mu-plugin): si installa da
  * Plugin -> Aggiungi nuovo -> Carica plugin, poi si attiva. All'attivazione
- * scarica wp-health-check.php e lo colloca in wp-content/mu-plugins/. Dopo di
- * che puo' essere disattivato/eliminato: il mu-plugin resta e si auto-aggiorna
- * da solo.
+ * scarica wp-health-check.php e lo colloca in wp-content/mu-plugins/. Se il
+ * mu-plugin c'e' gia' e la release e' piu' recente lo sostituisce (dalla 1.3.0):
+ * serve ai siti con agent < 1.35.0, che non sanno verificare le release firmate
+ * k2 e quindi non possono aggiornarsi da soli. Dopo di che puo' essere
+ * disattivato/eliminato: il mu-plugin resta e si auto-aggiorna da solo.
  */
 
 defined( 'ABSPATH' ) || exit;
@@ -62,12 +64,13 @@ function wphc_installer_do_install() {
 	$target_dir  = defined( 'WPMU_PLUGIN_DIR' ) ? WPMU_PLUGIN_DIR : WP_CONTENT_DIR . '/mu-plugins';
 	$target_file = $target_dir . '/wp-health-check.php';
 
-	// 1. Se il mu-plugin e' gia' presente: non fare nulla.
-	if ( file_exists( $target_file ) ) {
-		return array(
-			'type'    => 'info',
-			'message' => sprintf( 'wp-health-check e\' gia\' presente (%s): nessuna azione eseguita. Puoi eliminare questo installer.', $target_file ),
-		);
+	// 1. Versione del mu-plugin gia' presente (stringa vuota se assente o
+	// illeggibile: in quel caso si installa/sostituisce comunque).
+	$installed_version = '';
+	$already_present   = file_exists( $target_file );
+	if ( $already_present ) {
+		$file_data         = get_file_data( $target_file, array( 'Version' => 'Version' ) );
+		$installed_version = (string) $file_data['Version'];
 	}
 
 	// 2. Crea la cartella mu-plugins se manca.
@@ -97,6 +100,15 @@ function wphc_installer_do_install() {
 		);
 	}
 
+	// 4-bis. Mu-plugin gia' presente: si sostituisce solo con una release
+	// piu' recente (mai un downgrade, mai una riscrittura inutile).
+	if ( '' !== $installed_version && version_compare( $download['version'], $installed_version, '<=' ) ) {
+		return array(
+			'type'    => 'info',
+			'message' => sprintf( 'wp-health-check %s e\' gia\' aggiornato (ultima release: %s): nessuna azione eseguita. Puoi eliminare questo installer.', $installed_version, $download['version'] ),
+		);
+	}
+
 	// 5. Scrittura con funzioni native (nessuna richiesta di credenziali FTP
 	// durante l'attivazione), atomica: prima un temporaneo con estensione neutra
 	// (non .php, cosi' WordPress non lo carica mai a meta') nella stessa
@@ -113,6 +125,19 @@ function wphc_installer_do_install() {
 		);
 	}
 	// phpcs:enable WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents, WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rename_rename, WordPress.WP.AlternativeFunctions.unlink_unlink
+
+	// 6. Con opcache che non ricontrolla i timestamp la vecchia versione
+	// resterebbe in memoria: la si invalida esplicitamente.
+	if ( function_exists( 'opcache_invalidate' ) ) {
+		@opcache_invalidate( $target_file, true ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+	}
+
+	if ( $already_present ) {
+		return array(
+			'type'    => 'success',
+			'message' => sprintf( 'wp-health-check aggiornato dalla versione %s alla %s. Puoi disattivare/eliminare questo installer.', '' !== $installed_version ? $installed_version : 'sconosciuta', $download['version'] ),
+		);
+	}
 
 	return array(
 		'type'    => 'success',

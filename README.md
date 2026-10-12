@@ -1946,8 +1946,11 @@ In alternativa alla copia manuale via SFTP, la cartella
 **Plugin → Aggiungi nuovo → Carica plugin** con lo ZIP
 `wp-health-check-installer.zip` (allegato alle release GitHub) e, **all'attivazione**:
 
-- se `mu-plugins/wp-health-check.php` esiste già → non fa nulla e lo segnala con
-  una notice;
+- se `mu-plugins/wp-health-check.php` esiste già ed è alla versione dell'ultima
+  release (o più recente) → non fa nulla e lo segnala con una notice; se invece è
+  più vecchio lo **sostituisce con l'ultima release** (dalla 1.3.0), con le stesse
+  verifiche: è la via per i siti con agent < 1.35.0, che non conoscono la chiave
+  `k2` e non possono aggiornarsi da soli (basta ricaricare lo ZIP e riattivare);
 - altrimenti verifica/crea la cartella `mu-plugins`, controlla i permessi di
   scrittura, **scarica l'ultima release** di `wp-health-check.php` da GitHub, ne
   verifica lo **SHA-256** e la **firma Ed25519** del centro (chiave `k2`

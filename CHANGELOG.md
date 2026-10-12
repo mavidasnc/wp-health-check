@@ -7,6 +7,14 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.38.1] - 2026-10-12
+
+Release di sola distribuzione: il mu-plugin non cambia nel codice (solo il numero di versione), serve a pubblicare il nuovo ZIP dell'installer. **Firmata con la chiave `k2`.**
+
+### Changed
+
+- **Plugin installer 1.3.0**: se `mu-plugins/wp-health-check.php` esiste già ma è più vecchio dell'ultima release, all'attivazione lo sostituisce (stessa verifica di SHA-256, firma `k2` e versione, scrittura atomica, invalidazione opcache); se è già alla versione dell'ultima release (o più recente) non fa nulla, mai un downgrade. Serve ai siti con agent < 1.35.0, che non conoscono la chiave `k2` e non possono aggiornarsi da soli (`integrity_check_failed`): si ricarica lo ZIP, si riattiva il plugin e il sito arriva all'ultima release. Prima, con il mu-plugin presente, non faceva nulla. Lo ZIP in `installer/` è rigenerato e va allegato alla release GitHub.
+
 ## [1.38.0] - 2026-10-11
 
 Release servita dall'hub e push dell'aggiornamento. **Firmata con la chiave `k2`.** Retrocompatibile: i siti alla 1.37.0 arrivano alla 1.38.0 con il pull da GitHub, come prima.
