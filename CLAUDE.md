@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> **Documentazione spostata**: la cartella `docs/` di questo progetto è stata unificata in `../__docs/wp-health-check/` (riorganizzazione del 2026-10-13). I percorsi qui sotto puntano già alla nuova posizione.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
