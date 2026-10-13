@@ -260,7 +260,7 @@ centro verificata nel callback, non un token):
 
 > Per un reference tecnico compatto di tutte le rotte (parametri, esempi di
 > richiesta/risposta verificati, tabelle dei campi e dei codici di errore) vedi
-> [docs/API health check.md](docs/API%20health%20check.md). Le sezioni qui sotto restano la spiegazione
+> [../__docs/wp-health-check/API health check.md](../__docs/wp-health-check/API%20health%20check.md). Le sezioni qui sotto restano la spiegazione
 > discorsiva con il razionale di ogni scelta.
 
 Namespace: `health-check/v1`. Tutte le rotte gestiscono il preflight `OPTIONS`
@@ -994,7 +994,7 @@ con `active = NULL` (non `false`), perché scrivere `false` la renderebbe la
 riga più recente e farebbe smettere di rilevare la discrepanza alla chiamata
 successiva — vanificando proprio il ritentativo che la rotta esiste per
 offrire. Vedi il dettaglio completo in
-[docs/API health check.md](docs/API%20health%20check.md#post-updatereactivate).
+[../__docs/wp-health-check/API health check.md](../__docs/wp-health-check/API%20health%20check.md#post-updatereactivate).
 
 ### `POST /autologin/token` — genera un token one-time di autologin
 
@@ -1288,8 +1288,8 @@ ZIP, scompattarlo e sostituire un'intera cartella (non un singolo file), con
 tutte le routine di maintenance-mode e rollback che il core già sa gestire.
 
 Nasce da un'analisi di fattibilità e sicurezza dedicata (vedi
-[docs/plugin-update-via-api-analisi.md](docs/plugin-update-via-api-analisi.md)
-e [docs/plugin-update-via-api-specifiche.md](docs/plugin-update-via-api-specifiche.md))
+[../__docs/wp-health-check/plugin-update-via-api-analisi.md](../__docs/wp-health-check/plugin-update-via-api-analisi.md)
+e [../__docs/wp-health-check/plugin-update-via-api-specifiche.md](../__docs/wp-health-check/plugin-update-via-api-specifiche.md))
 e implementa la sua **Opzione C**: una chiamata REST per singolo elemento,
 sincrona, con la dashboard che orchestra e fa polling — evita i timeout e la
 maintenance mode orfana di un ipotetico aggiornamento "bulk" in un'unica
