@@ -379,7 +379,7 @@ final class WPHC_Health {
 		// Aggiornamento plugin/temi/core via API (vedi sezione dedicata piu'
 		// sotto nel file): tre letture O(1) (due opzioni, un file_exists),
 		// coerenti col contratto economico di questa rotta.
-		$maintenance_file  = wphc_maintenance_file_path();
+		$maintenance_file  = WPHC_Item_Updater::maintenance_file_path();
 		$maintenance_stuck = file_exists( $maintenance_file ) && ( time() - (int) filemtime( $maintenance_file ) ) > 600;
 		$last_update       = get_option( WPHC_Options::OPT_LAST_UPDATE );
 		$core_auto         = self::core_auto_update_state();
@@ -422,7 +422,7 @@ final class WPHC_Health {
 				'core_auto_update_blocked_by' => $core_auto['blocked_by'],
 				'plugins_auto_update_enabled' => self::auto_update_enabled_for( 'plugin' ),
 				'themes_auto_update_enabled'  => self::auto_update_enabled_for( 'theme' ),
-				'bulk_update'                 => wphc_bulk_summary(),
+				'bulk_update'                 => WPHC_Bulk::summary(),
 				'has_gdpr'                    => $signals['has_gdpr'],
 				'has_builder'                 => $signals['has_builder'],
 				'has_ecommerce'               => $signals['has_ecommerce'],

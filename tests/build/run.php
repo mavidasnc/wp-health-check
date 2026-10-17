@@ -586,6 +586,96 @@ $tests['gate (b2): codice non ammesso in un file con ruolo cli'] = function () {
 	);
 };
 
+$tests['gate (i): __FILE__ e __DIR__ fuori dal file constants (legacy, class, cli, boot, header) fanno fallire la build'] = function () {
+	// Un file per ruolo, ciascuno con una delle due costanti magiche: la build deve rifiutarlo e nominare il file.
+	$cases = array(
+		'legacy.php'  => array( 'legacy', "<?php\nfunction t_l() {\n\treturn __FILE__;\n}\n", '__FILE__' ),
+		'class-a.php' => array( 'class', "<?php\nfinal class T_A {\n\tpublic static function f() {\n\t\treturn __DIR__;\n\t}\n}\n", '__DIR__' ),
+		'cli.php'     => array( 'cli', null, '__FILE__' ),
+		'boot.php'    => array( 'boot', "<?php\nt_boot( __FILE__ );\n", '__FILE__' ),
+	);
+	foreach ( $cases as $name => $case ) {
+		$files    = array(
+			'header.php'    => t_header(),
+			'constants.php' => t_constants(),
+		);
+		$manifest = array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+		);
+		if ( 'cli.php' === $name ) {
+			// Il blocco WP-CLI valido, con __FILE__ dentro il guard (dopo la registrazione del comando).
+			$files['legacy.php']    = "<?php\nfunction t_l() {\n\treturn 1;\n}\n";
+			$manifest['legacy.php'] = 'legacy';
+			$files[ $name ]         = t_cli_file( '', "\t\$x = __FILE__;\n" );
+		} else {
+			$files[ $name ] = $case[1];
+		}
+		$manifest[ $name ] = $case[0];
+		$src               = t_make_src( $files, $manifest );
+		t_expect_fail(
+			function () use ( $src ) {
+				wphc_build( $src, false );
+			},
+			$name . ': ' . $case[2] . ' non ammesso fuori dal file con ruolo constants'
+		);
+	}
+
+	// Anche l'header (primo file) e' soggetto al gate.
+	$src = t_make_src(
+		array(
+			'header.php'    => t_header() . "\$f = __FILE__;\n",
+			'constants.php' => t_constants(),
+		),
+		array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+		)
+	);
+	t_expect_fail(
+		function () use ( $src ) {
+			wphc_build( $src, false );
+		},
+		'header.php: __FILE__ non ammesso'
+	);
+};
+
+$tests['gate (i): __FILE__ nel file constants, nei commenti e nelle stringhe di qualunque file sono ammessi'] = function () {
+	$constants = t_constants() . "\nif ( ! defined( 'WP_HEALTH_CHECK_FILE' ) ) {\n\tdefine( 'WP_HEALTH_CHECK_FILE', __FILE__ );\n}\n\$d = __DIR__;\n";
+	$legacy    = "<?php\n// Un commento che nomina __FILE__ e __DIR__ non e' codice.\n/** Docblock: __FILE__ */\nfunction t_l() {\n\t\$a = '__FILE__';\n\t\$b = \"__DIR__\";\n\t\$c = <<<'TXT'\n__FILE__ nel nowdoc\nTXT;\n\treturn WP_HEALTH_CHECK_FILE . \$a . \$b . \$c;\n}\n";
+	$src       = t_make_src(
+		array(
+			'header.php'    => t_header(),
+			'constants.php' => $constants,
+			'legacy.php'    => $legacy,
+		),
+		array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+			'legacy.php'    => 'legacy',
+		)
+	);
+	$dev   = wphc_build( $src, false )['code'];
+	$strip = wphc_build( $src, true )['code'];
+	t_assert( false !== strpos( $dev, "define( 'WP_HEALTH_CHECK_FILE', __FILE__ );" ), 'define della costante assente nella build' );
+	t_assert( false !== strpos( $strip, "define( 'WP_HEALTH_CHECK_FILE', __FILE__ );" ), 'define della costante assente nella build strip' );
+};
+
+$tests['gate (i): sui sorgenti veri __FILE__ e __DIR__ compaiono solo in constants.php (controllo indipendente sui token)'] = function () use ( $root ) {
+	$found = array();
+	foreach ( (array) glob( $root . '/src/*.php' ) as $path ) {
+		foreach ( token_get_all( (string) file_get_contents( $path ) ) as $tok ) {
+			if ( is_array( $tok ) && ( T_FILE === $tok[0] || T_DIR === $tok[0] ) ) {
+				$found[ basename( $path ) ] = true;
+			}
+		}
+	}
+	t_assert( array( 'constants.php' => true ) === $found, 'file con __FILE__/__DIR__: ' . implode( ', ', array_keys( $found ) ) . ' (atteso solo constants.php)' );
+	// La costante e' definita da constants.php con il default __FILE__ e la usa il self-update.
+	t_assert( 1 === preg_match( '/define\(\s*\'WP_HEALTH_CHECK_FILE\',\s*__FILE__\s*\)/', (string) file_get_contents( $root . '/src/constants.php' ) ), 'define( WP_HEALTH_CHECK_FILE, __FILE__ ) assente in constants.php' );
+	t_assert( false !== strpos( (string) file_get_contents( $root . '/src/class-wphc-self-updater.php' ), '$plugin_file = WP_HEALTH_CHECK_FILE;' ), 'install_release() non usa WP_HEALTH_CHECK_FILE' );
+};
+
 $tests['gate (d): versione dell\'header diversa da WP_HEALTH_CHECK_VERSION'] = function () {
 	$src = t_make_src(
 		array(

@@ -38,6 +38,8 @@ final class WPHC_Options {
 	const OPT_AUTOLOGIN_PENDING      = 'wp_health_check_autologin_pending';
 	const OPT_LAST_AUTOLOGIN         = 'wp_health_check_last_autologin';
 	const OPT_TRUST_PROXY            = 'wp_health_check_trust_proxy';
+	const OPT_DB_VERSION             = 'wp_health_check_db_version';
+	const OPT_CORE_VERSION           = 'wp_health_check_core_version';
 	const OPT_LAST_UPDATE            = 'wp_health_check_last_update';
 	const OPT_UPDATES_ENABLED        = 'wp_health_check_updates_enabled';
 	const OPT_RESTRICT_OFFICIAL_ONLY = 'wp_health_check_restrict_official_only';
@@ -45,17 +47,28 @@ final class WPHC_Options {
 	const OPT_THUMB_ID               = 'wp_health_check_thumb_id';
 	const OPT_THUMB_AT               = 'wp_health_check_thumb_at';
 	const OPT_THUMB_ERROR            = 'wp_health_check_thumb_error';
+	const OPT_BULK_JOB               = 'wp_health_check_bulk_job';
+	const OPT_BULK_STATUS            = 'wp_health_check_bulk_status';
+	const OPT_WEBHOOK_URL            = 'wp_health_check_webhook_url';
+	const OPT_WEBHOOK_DISABLED       = 'wp_health_check_webhook_disabled';
+	const OPT_WEBHOOK_LAST           = 'wp_health_check_webhook_last';
+	const OPT_WEBHOOK_PENDING        = 'wp_health_check_webhook_pending';
 
 	// Nomi dei transient e prefissi delle chiavi dei transient.
 	const TRANSIENT_UPDATE_LOCK          = 'wp_health_check_update_lock';
+	const TRANSIENT_BULK_LOCK            = 'wp_health_check_bulk_lock';
+	const TRANSIENT_LOG_PRUNED_AT        = 'wp_health_check_log_pruned_at';
 	const TRANSIENT_HEALTH_CACHE         = 'wphc_health_cache';
 	const TRANSIENT_DETAIL_PLUGINS_CACHE = 'wphc_detail_plugins_cache';
 	const TRANSIENT_DETAIL_THEME_CACHE   = 'wphc_detail_theme_cache';
 	const TRANSIENT_DETAIL_SERVER_CACHE  = 'wphc_detail_server_cache';
+	const TRANSIENT_LATEST_VERSION_CACHE = 'wphc_latest_version_cache';
 	const TRANSIENT_PUBLIC_IP            = 'wphc_public_ip';
 	const TRANSIENT_PUBLIC_IP_RETRY_LOCK = 'wphc_public_ip_retry_lock';
 	const TRANSIENT_THUMB_RETRY_LOCK     = 'wphc_thumb_retry_lock';
 	const TRANSIENT_ENROLL_ALERT_SENT    = 'wphc_enroll_alert_sent';
+	const TRANSIENT_BULK_REARM_LOCK      = 'wphc_bulk_rearm_lock';
+	const TRANSIENT_WEBHOOK_RETRY_LOCK   = 'wphc_webhook_retry_lock';
 	const TRANSIENT_NONCE_PREFIX         = 'wphc_nonce_';
 	const TRANSIENT_FAIL_PREFIX          = 'wphc_fail_';
 	const TRANSIENT_AUTOLOGIN_PREFIX     = 'wphc_autologin_';
@@ -63,4 +76,11 @@ final class WPHC_Options {
 	// Chiavi di user meta.
 	const META_LAST_LOGIN    = 'wphc_last_login';
 	const META_LAST_LOGIN_IP = 'wphc_last_login_ip';
+
+	// Nomi degli hook di WP-Cron.
+	const CRON_BULK_TICK     = 'wphc_bulk_update_tick';
+	const CRON_WEBHOOK_RETRY = 'wphc_webhook_retry';
+
+	// Nome della tabella (senza il prefisso di $wpdb).
+	const TABLE_UPDATE_LOG = 'wphc_update_log';
 }

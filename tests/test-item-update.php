@@ -470,7 +470,7 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$this->assertFalse( get_transient( 'wphc_detail_theme_cache' ) );
 		$this->assertArrayHasKey( $this->plugin, get_site_transient( 'update_plugins' )->response, 'Su rolled_back l\'entry di update resta.' );
 		$this->assert_lock_released();
-		$this->assertArrayNotHasKey( 'wphc_api_update_in_progress', $GLOBALS, 'Il flag anti doppio log viene tolto.' );
+		$this->assertArrayNotHasKey( 'wphc_api_update_in_progress', self::plugin_state(), 'Il flag anti doppio log viene tolto.' );
 	}
 
 	/**

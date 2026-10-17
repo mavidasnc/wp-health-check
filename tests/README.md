@@ -27,6 +27,7 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | `test-hook-registry.php` | registro di TUTTI i callback del plugin agganciati agli hook (priorita', `accepted_args`, ordine, nomi della 1.38.1), delle 22 registrazioni REST (metodi, callback, `permission_callback`), ordine dei quattro callback su `init`, hook dell'upgrader e i 20 hook di flush su `auto_update_*`; golden `fixtures/golden/hooks/registry.json` SENZA maschere |
 | `test-throttle-double-dispatch.php` | pin del finding sul throttle (PRESERVATO: bug noto): il contatore dei fallimenti con la fase `rest_post_dispatch` che in-process manca |
 | `test-core-auto-update-state.php` | valori di `wphc_core_auto_update_state()` (ha una `static $cache`): un processo PHP per test, vedi "Test con processo separato" |
+| `test-plugin-file-constant.php` | `WP_HEALTH_CHECK_FILE` (decisione D-1, dal lotto 3): definita, coincide con il file sotto test, default `__FILE__` (il file che dichiara `WPHC_Self_Updater`), e `install_release()` la usa al posto di `__FILE__`; vale solo per il plugin a classi |
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
@@ -43,7 +44,7 @@ alert non sono su dominio `.invalid`.
 
 ## Guardia anti-sovrascrittura del plugin
 
-Il self-update del plugin (`wphc_install_release`) riscrive `__FILE__` e crea un `.bak` accanto: con le
+Il self-update del plugin (`wphc_install_release`) riscrive `__FILE__` (nel plugin a classi `WP_HEALTH_CHECK_FILE`, che nel file distribuito vale lo stesso `__FILE__`) e crea un `.bak` accanto: con le
 chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
 
 - **Il plugin sotto test e' una COPIA.** Per default il bootstrap copia `mu-plugins/wp-health-check.php`
@@ -330,6 +331,13 @@ $core_auto_update_state`: i test sono a processo separato e non dipendono da com
 `wphc_install_release`, `wphc_is_package_host_allowed`, `wphc_is_release_tag`, `wphc_map_item_update_outcome`,
 `wphc_update_preflight`. Un metodo non statico o con firma diversa da quella della funzione fa fallire il test con un
 messaggio che rimanda alla mappa.
+
+Stato globale del plugin (lotto 3): i tre `$GLOBALS['wphc_version_snapshots']`, `['wphc_api_update_in_progress']` e
+`['wphc_deleting_plugins']` della 1.38.1 sono proprieta' statiche private di `WPHC_Update_Log`. I test non toccano ne'
+`$GLOBALS` ne' le proprieta': usano gli helper a due modi di `WPHC_Update_Test_Case` (`tests/class-wphc-helpers-update.php`):
+`plugin_state()` (array con le stesse chiavi di `$GLOBALS`, per `assertArrayHasKey`/`assertArrayNotHasKey` e per leggere
+una voce), `set_api_update_in_progress( bool )` e `reset_update_log_state()` (chiamato dal `set_up`). Con il plugin a
+funzioni leggono e scrivono `$GLOBALS`; con le classi usano la Reflection sulle proprieta' statiche.
 
 Restano fuori dalla mappa per natura (non sono funzioni del plugin): le costanti `WP_HEALTH_CHECK_*` e le stringhe
 `'wphc_...'` che sono nomi di azioni admin-post/AJAX, di nonce, di campi POST (`wphc_webhook_url`, `wphc_save_webhook`,

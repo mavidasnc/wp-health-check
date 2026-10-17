@@ -41,7 +41,7 @@ final class WPHC_Users {
 			'email'         => $user->user_email,
 			// user_registered e' gia' salvato in UTC: il suffisso esplicito
 			// toglie ogni ambiguita' a strtotime(), come gia' fa
-			// wphc_get_update_log_entries() per created_at.
+			// WPHC_Update_Log::get_entries() per created_at.
 			'registered'    => gmdate( 'c', strtotime( $user->user_registered . ' UTC' ) ),
 			// Null finche' l'utente non effettua un accesso DOPO l'aggiornamento
 			// a questa versione dell'agent (WPHC_Users::record_last_login() e' nuova

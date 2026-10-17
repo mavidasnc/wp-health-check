@@ -461,7 +461,7 @@ final class WPHC_Enrollment {
 		update_option( WPHC_Options::OPT_PROTOCOL, max( 2, $protocol ), false );
 		update_option( WPHC_Options::OPT_SECRET_KID, $kid, false );
 
-		wphc_log_update_row( WPHC_Util::generate_correlation_id(), 'token', 'rotation', __( 'Segreto ruotato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
+		WPHC_Update_Log::log_row( WPHC_Util::generate_correlation_id(), 'token', 'rotation', __( 'Segreto ruotato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
 
 		return rest_ensure_response(
 			array(
@@ -576,7 +576,7 @@ final class WPHC_Enrollment {
 		}
 		delete_option( WPHC_Options::OPT_AUTOLOGIN_PENDING );
 
-		wphc_log_update_row( WPHC_Util::generate_correlation_id(), 'token', 'revocation', __( 'Segreto revocato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
+		WPHC_Update_Log::log_row( WPHC_Util::generate_correlation_id(), 'token', 'revocation', __( 'Segreto revocato dal sistema centrale', 'wp-health-check' ), null, null, 'completed' );
 
 		return rest_ensure_response(
 			array(

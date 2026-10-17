@@ -65,7 +65,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_ALERT_EMAIL' ) ) {
  * Versione dello schema della tabella di log degli update
  * ({$wpdb->prefix}wphc_update_log). Incrementarla forza dbDelta() a
  * rieseguire e allineare lo schema al prossimo caricamento (vedi
- * wphc_maybe_install_update_log_schema()).
+ * WPHC_Update_Log::maybe_install_schema()).
  */
 if ( ! defined( 'WP_HEALTH_CHECK_DB_VERSION' ) ) {
 	define( 'WP_HEALTH_CHECK_DB_VERSION', '4' );
@@ -159,7 +159,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_BULK_JOB_TTL' ) ) {
 
 /**
  * URL di default del webhook di fleet, usato quando il sito non ne ha
- * impostato uno proprio in wp-admin (vedi wphc_webhook_url()) e non ha
+ * impostato uno proprio in wp-admin (vedi WPHC_Webhook::url()) e non ha
  * spuntato "disattiva webhook". Identico per tutta la flotta, non segreto:
  * stesso principio delle altre costanti di flotta in cima al file.
  */
@@ -261,4 +261,21 @@ if ( ! defined( 'WP_HEALTH_CHECK_RATE_WINDOW' ) ) {
  */
 if ( ! defined( 'WP_HEALTH_CHECK_THUMB_SERVICE' ) ) {
 	define( 'WP_HEALTH_CHECK_THUMB_SERVICE', 'https://image.thum.io/get/noanimate/png/width/400/' );
+}
+
+/**
+ * File del plugin: il mu-plugin distribuito. E' il file che WPHC_Self_Updater::install_release() sostituisce nel
+ * self-update (backup .bak accanto, scrittura atomica con rename(), rilettura di controllo, invalidazione di
+ * opcache). Nel file distribuito questo define() vale __FILE__ del mu-plugin: lo stesso valore che la 1.38.1
+ * usava direttamente dentro la funzione. Il default __FILE__ e' corretto SOLO nel file costruito da bin/build.php
+ * (nei file di src/ __FILE__ indicherebbe il file sorgente): per questo la build ammette __FILE__ e __DIR__
+ * soltanto in questo file. Come le altre costanti e' sovrascrivibile (i test possono puntarla su una copia
+ * temporanea), ma chi la ridefinisce deve rispettare due vincoli: il file indicato deve stare sullo stesso
+ * filesystem di WPMU_PLUGIN_DIR, perche' il file temporaneo si crea li' e poi si fa rename() sul percorso della
+ * costante (fra dispositivi diversi il rename fallisce), e il probe di scrittura controlla sempre
+ * WPMU_PLUGIN_DIR, non la cartella del file indicato. La copia non deve mai essere un .php nella radice di
+ * mu-plugins/: WordPress la caricherebbe al giro successivo ("Cannot declare class").
+ */
+if ( ! defined( 'WP_HEALTH_CHECK_FILE' ) ) {
+	define( 'WP_HEALTH_CHECK_FILE', __FILE__ );
 }

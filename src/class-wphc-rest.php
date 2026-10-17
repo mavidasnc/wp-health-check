@@ -144,20 +144,20 @@ final class WPHC_Rest {
 			'/update',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update',
+				'callback'            => array( 'WPHC_Self_Updater', 'route_update' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
 
 		// Aggiornamento di software di terze parti (plugin/temi/core), distinto
-		// dal self-update dell'agent sopra: vedi wphc_perform_item_update() e
-		// wphc_perform_core_update() per il flusso completo.
+		// dal self-update dell'agent sopra: vedi WPHC_Item_Updater::perform_item_update() e
+		// WPHC_Item_Updater::perform_core_update() per il flusso completo.
 		register_rest_route(
 			'health-check/v1',
 			'/update/plugin',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update_plugin',
+				'callback'            => array( 'WPHC_Item_Updater', 'route_update_plugin' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
@@ -167,7 +167,7 @@ final class WPHC_Rest {
 			'/update/theme',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update_theme',
+				'callback'            => array( 'WPHC_Item_Updater', 'route_update_theme' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
@@ -177,40 +177,40 @@ final class WPHC_Rest {
 			'/update/core',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update_core',
+				'callback'            => array( 'WPHC_Item_Updater', 'route_update_core' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
 
 		// Sola lettura: resta accessibile anche a kill-switch spento (vedi
-		// wphc_route_update_log), utile per diagnosticare la flotta a feature
+		// WPHC_Update_Log::route_update_log), utile per diagnosticare la flotta a feature
 		// disattivata.
 		register_rest_route(
 			'health-check/v1',
 			'/update/log',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => 'wphc_route_update_log',
+				'callback'            => array( 'WPHC_Update_Log', 'route_update_log' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
 
 		// Riconciliazione a posteriori dello stato attivo dei plugin (vedi
-		// wphc_perform_reactivate()): rispetta kill-switch e lock come le altre
+		// WPHC_Item_Updater::perform_reactivate()): rispetta kill-switch e lock come le altre
 		// rotte di scrittura, salvo il dry-run (?check=1) che resta sola lettura.
 		register_rest_route(
 			'health-check/v1',
 			'/update/reactivate',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_reactivate',
+				'callback'            => array( 'WPHC_Item_Updater', 'route_reactivate' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
 
 		// Aggiornamenti bulk (plugin/temi) asincroni: POST accoda un job
 		// autenticato, WP-Cron smaltisce la coda gia' autorizzata (mai un update
-		// non richiesto). Vedi wphc_route_update_bulk_enqueue() per il flusso
+		// non richiesto). Vedi WPHC_Bulk::route_enqueue() per il flusso
 		// completo. GET legge lo stato del job da un singolo option, piu'
 		// economico di una query sulla tabella di log.
 		register_rest_route(
@@ -218,7 +218,7 @@ final class WPHC_Rest {
 			'/update/bulk',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update_bulk_enqueue',
+				'callback'            => array( 'WPHC_Bulk', 'route_enqueue' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
@@ -227,7 +227,7 @@ final class WPHC_Rest {
 			'/update/bulk',
 			array(
 				'methods'             => WP_REST_Server::READABLE,
-				'callback'            => 'wphc_route_update_bulk_status',
+				'callback'            => array( 'WPHC_Bulk', 'route_status' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);
@@ -236,7 +236,7 @@ final class WPHC_Rest {
 			'/update/bulk/cancel',
 			array(
 				'methods'             => WP_REST_Server::CREATABLE,
-				'callback'            => 'wphc_route_update_bulk_cancel',
+				'callback'            => array( 'WPHC_Bulk', 'route_cancel' ),
 				'permission_callback' => array( 'WPHC_Auth', 'require_token' ),
 			)
 		);

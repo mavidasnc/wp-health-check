@@ -62,6 +62,9 @@
         <testsuite name="misc-read">
             <file>./tests/test-misc-read.php</file>
         </testsuite>
+        <testsuite name="plugin-file-constant">
+            <file>./tests/test-plugin-file-constant.php</file>
+        </testsuite>
         <testsuite name="read-routes">
             <file>./tests/test-read-routes.php</file>
         </testsuite>

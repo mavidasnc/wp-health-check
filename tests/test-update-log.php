@@ -712,7 +712,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertNull( $rows[0]['message'] );
 		$this->assertSame( 'wp-admin', get_option( 'wp_health_check_last_update' )['source'] );
 		// Lo snapshot e' consumato.
-		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, $GLOBALS['wphc_version_snapshots']['plugin'] );
+		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, self::plugin_state()['wphc_version_snapshots']['plugin'] );
 	}
 
 	/**
@@ -776,10 +776,10 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->fire_upgrader_complete( array() );
 		$this->assertSame( array(), $this->log_rows() );
 
-		$GLOBALS['wphc_api_update_in_progress'] = true;
+		self::set_api_update_in_progress( true );
 		$this->fire_upgrader_complete( array( 'action' => 'update', 'type' => 'plugin', 'plugin' => 'a/a.php' ) );
 		do_action( 'deactivated_plugin', 'a/a.php', false );
-		unset( $GLOBALS['wphc_api_update_in_progress'] );
+		self::set_api_update_in_progress( false );
 		$this->assertSame( array(), $this->log_rows(), 'Durante un update dell\'API non si logga ne\' l\'update ne\' la disattivazione.' );
 	}
 
@@ -817,7 +817,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->install_fixture_plugin( '1.0.0', self::FIXTURE_C_DIR );
 
 		do_action( 'delete_plugin', self::FIXTURE_C_FILE );
-		$this->assertArrayHasKey( self::FIXTURE_C_FILE, $GLOBALS['wphc_deleting_plugins'] );
+		$this->assertArrayHasKey( self::FIXTURE_C_FILE, self::plugin_state()['wphc_deleting_plugins'] );
 		do_action( 'deleted_plugin', self::FIXTURE_C_FILE, true );
 
 		$rows = $this->log_rows( "phase = 'deleted'" );
@@ -825,13 +825,13 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertSame( 'WPHC Fixture', $rows[0]['name'] );
 		$this->assertSame( '1.0.0', $rows[0]['version_from'] );
 		$this->assertSame( '0', $rows[0]['active'] );
-		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, $GLOBALS['wphc_deleting_plugins'] );
+		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, self::plugin_state()['wphc_deleting_plugins'] );
 
 		// Cancellazione non riuscita: nessuna riga.
 		do_action( 'delete_plugin', self::FIXTURE_C_FILE );
 		do_action( 'deleted_plugin', self::FIXTURE_C_FILE, false );
 		$this->assertCount( 1, $this->log_rows( "phase = 'deleted'" ) );
-		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, $GLOBALS['wphc_deleting_plugins'] );
+		$this->assertArrayNotHasKey( self::FIXTURE_C_FILE, self::plugin_state()['wphc_deleting_plugins'] );
 
 		// Senza snapshot (file illeggibile): nome = plugin file, versione NULL.
 		do_action( 'deleted_plugin', 'altro/altro.php', true );

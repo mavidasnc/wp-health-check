@@ -223,6 +223,10 @@ function wphc_build_read_sources( $src_dir ) {
 		if ( "\n" !== substr( $content, -1 ) ) {
 			throw new RuntimeException( $file . ': deve terminare con un a capo (la concatenazione non aggiunge separatori)' );
 		}
+		// Gate (i): __FILE__ e __DIR__ ammessi SOLO nel file con ruolo constants (D-1, lotto 3).
+		if ( 'constants' !== $role ) {
+			wphc_build_check_no_file_constants( $file, $content );
+		}
 		if ( 'class' === $role ) {
 			wphc_build_check_class_file( $file, $content );
 		}
@@ -236,6 +240,28 @@ function wphc_build_read_sources( $src_dir ) {
 		);
 	}
 	return $entries;
+}
+
+/**
+ * Gate (i): le costanti magiche __FILE__ e __DIR__ sono ammesse SOLO nel file con ruolo constants.
+ *
+ * Nel file distribuito __FILE__ e __DIR__ indicano il mu-plugin, ma in un file di src/ indicherebbero il file
+ * sorgente: il codice che ha bisogno del percorso del plugin (il self-update di WPHC_Self_Updater::install_release())
+ * usa la costante WP_HEALTH_CHECK_FILE, definita in src/constants.php con default __FILE__ (decisione D-1 del
+ * progetto). Il controllo e' sui token del solo lessico (nessun parse): commenti e stringhe che contengono il testo
+ * "__FILE__" non lo fanno scattare; un errore di sintassi resta segnalato dal parse del file concatenato.
+ *
+ * @param string $file    Nome del file (per i messaggi).
+ * @param string $content Contenuto del file.
+ * @return void
+ * @throws RuntimeException Se il file usa __FILE__ o __DIR__.
+ */
+function wphc_build_check_no_file_constants( $file, $content ) {
+	foreach ( token_get_all( $content ) as $tok ) {
+		if ( is_array( $tok ) && ( T_FILE === $tok[0] || T_DIR === $tok[0] ) ) {
+			throw new RuntimeException( $file . ': ' . $tok[1] . ' non ammesso fuori dal file con ruolo constants (riga ' . $tok[2] . '): usare WP_HEALTH_CHECK_FILE' );
+		}
+	}
 }
 
 /**
@@ -851,7 +877,7 @@ function wphc_build_gate_output( $code, array $tokens ) {
 		throw new RuntimeException( 'versione dell\'header (' . $header_version . ') diversa da WP_HEALTH_CHECK_VERSION (' . $constant_version . ')' );
 	}
 
-	// Gate (f), seconda parte: stessa regex con cui wphc_install_release() verifica il tag.
+	// Gate (f), seconda parte: stessa regex con cui WPHC_Self_Updater::install_release() verifica il tag.
 	if ( 1 !== preg_match( '/Version:\s+' . preg_quote( $constant_version, '/' ) . '(?:\s|$)/', $code ) ) {
 		throw new RuntimeException( 'il file prodotto non supera la regex "Version:" dell\'installer' );
 	}

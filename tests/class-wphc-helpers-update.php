@@ -113,7 +113,7 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 
 		// Nessun evento cron del plugin pendente, nessun flag di update residuo.
 		$this->clear_plugin_cron();
-		unset( $GLOBALS['wphc_api_update_in_progress'], $GLOBALS['wphc_version_snapshots'], $GLOBALS['wphc_deleting_plugins'] );
+		self::reset_update_log_state();
 
 		// Webhook spento di default: i test che lo vogliono impostano un URL (con IP letterale
 		// pubblico: wp_http_validate_url() risolve i nomi DNS con gethostbyname()).
@@ -152,6 +152,77 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 		parent::tear_down();
 
 		$this->plugin_guard_assert( $problems );
+	}
+
+	/**
+	 * Proprieta' statica privata di WPHC_Update_Log (plugin a classi), accessibile con la Reflection.
+	 *
+	 * @param string $name version_snapshots | api_update_in_progress | deleting_plugins.
+	 * @return ReflectionProperty
+	 */
+	private static function update_log_property( $name ) {
+		$property = new ReflectionProperty( 'WPHC_Update_Log', $name );
+		$property->setAccessible( true ); // Necessario con PHP 7.4 (dalla 8.1 non fa nulla).
+		return $property;
+	}
+
+	/**
+	 * Azzera lo stato di audit del plugin: nel file 1.38.1 sono tre chiavi di $GLOBALS (wphc_version_snapshots,
+	 * wphc_api_update_in_progress, wphc_deleting_plugins), nel refactoring sono le proprieta' statiche private di
+	 * WPHC_Update_Log. A due modi come cb(): la forma a funzioni se il plugin non ha la classe.
+	 */
+	protected static function reset_update_log_state() {
+		if ( ! class_exists( 'WPHC_Update_Log', false ) ) {
+			unset( $GLOBALS['wphc_api_update_in_progress'], $GLOBALS['wphc_version_snapshots'], $GLOBALS['wphc_deleting_plugins'] );
+			return;
+		}
+		self::update_log_property( 'version_snapshots' )->setValue( array() );
+		self::update_log_property( 'api_update_in_progress' )->setValue( false );
+		self::update_log_property( 'deleting_plugins' )->setValue( array() );
+	}
+
+	/**
+	 * Vista "alla $GLOBALS" dello stato di audit del plugin: un array con le STESSE chiavi che il file 1.38.1 teneva
+	 * in $GLOBALS, cosi' le asserzioni dei test (assertArrayHasKey, assertArrayNotHasKey, lettura di una voce)
+	 * restano identiche. Nel plugin a classi le chiavi degli snapshot sono sempre presenti (array, anche vuoto);
+	 * il flag dell'update via API compare solo se e' impostato (nel 1.38.1 la chiave veniva tolta con unset()).
+	 *
+	 * @return array<string,mixed>
+	 */
+	protected static function plugin_state() {
+		if ( ! class_exists( 'WPHC_Update_Log', false ) ) {
+			return array_intersect_key( $GLOBALS, array_flip( array( 'wphc_version_snapshots', 'wphc_api_update_in_progress', 'wphc_deleting_plugins' ) ) );
+		}
+		$state = array(
+			'wphc_version_snapshots' => self::update_log_property( 'version_snapshots' )->getValue(),
+			'wphc_deleting_plugins'  => self::update_log_property( 'deleting_plugins' )->getValue(),
+		);
+		if ( self::update_log_property( 'api_update_in_progress' )->getValue() ) {
+			$state['wphc_api_update_in_progress'] = true;
+		}
+		return $state;
+	}
+
+	/**
+	 * Imposta o toglie il flag "update avviato via API" (nel 1.38.1 $GLOBALS['wphc_api_update_in_progress'] = true
+	 * oppure unset(); nelle classi WPHC_Update_Log::begin_api_update() / end_api_update()).
+	 *
+	 * @param bool $in_progress True per impostarlo, false per toglierlo.
+	 */
+	protected static function set_api_update_in_progress( $in_progress ) {
+		if ( ! class_exists( 'WPHC_Update_Log', false ) ) {
+			if ( $in_progress ) {
+				$GLOBALS['wphc_api_update_in_progress'] = true;
+			} else {
+				unset( $GLOBALS['wphc_api_update_in_progress'] );
+			}
+			return;
+		}
+		if ( $in_progress ) {
+			WPHC_Update_Log::begin_api_update();
+		} else {
+			WPHC_Update_Log::end_api_update();
+		}
 	}
 
 	/**

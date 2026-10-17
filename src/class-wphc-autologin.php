@@ -136,7 +136,7 @@ final class WPHC_Autologin {
 		// l'utente per cui e' stato generato (stesso schema tecnico/leggibile
 		// gia' usato per plugin/temi/core, dove target e' l'identificatore e
 		// name l'etichetta). version_from/to e active non si applicano: null.
-		wphc_log_update_row( $correlation_id, 'token', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
+		WPHC_Update_Log::log_row( $correlation_id, 'token', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
 
 		if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
 			error_log( sprintf( 'wp-health-check: autologin token generato per user #%d (%s)', $user->ID, $user->user_login ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
@@ -210,7 +210,7 @@ final class WPHC_Autologin {
 			// gia' calcolato per la chiave del transient), per poter comunque
 			// distinguere tentativi ripetuti con lo stesso token nei log.
 			WPHC_Guard::throttle_register_failure();
-			wphc_log_update_row(
+			WPHC_Update_Log::log_row(
 				WPHC_Util::generate_correlation_id(),
 				'login',
 				substr( hash( 'sha256', $token ), 0, 16 ),
@@ -226,7 +226,7 @@ final class WPHC_Autologin {
 
 		$user = get_user_by( 'id', (int) $data['user_id'] );
 		if ( ! $user ) {
-			wphc_log_update_row(
+			WPHC_Update_Log::log_row(
 				$data['correlation_id'],
 				'login',
 				(string) $data['user_id'],
@@ -246,7 +246,7 @@ final class WPHC_Autologin {
 		// phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- si invoca l'hook core "wp_login" (non se ne dichiara uno nuovo), cosi' i plugin di audit/2FA che vi si agganciano reagiscono anche a questo login.
 		do_action( 'wp_login', $user->user_login, $user );
 
-		wphc_log_update_row( $data['correlation_id'], 'login', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
+		WPHC_Update_Log::log_row( $data['correlation_id'], 'login', $user->user_login, $user->display_name ? $user->display_name : $user->user_login, null, null, 'completed' );
 
 		wp_safe_redirect( admin_url() );
 		exit;

@@ -171,7 +171,7 @@ final class WPHC_Auth {
 		if ( $using_prev ) {
 			// Riga di log dedicata (§5.B): il segreto precedente e' ancora
 			// dentro la finestra di grazia, ma va tracciato che e' stato usato.
-			wphc_log_update_row( WPHC_Util::generate_correlation_id(), 'token', 'rotation', __( 'Segreto precedente', 'wp-health-check' ), null, null, 'completed', 'grace_window_hit' );
+			WPHC_Update_Log::log_row( WPHC_Util::generate_correlation_id(), 'token', 'rotation', __( 'Segreto precedente', 'wp-health-check' ), null, null, 'completed', 'grace_window_hit' );
 		} elseif ( ! empty( $prev_token ) ) {
 			// Primo uso riuscito del segreto NUOVO dopo una rotazione: il
 			// precedente decade subito, non solo al tempo (la finestra di

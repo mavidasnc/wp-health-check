@@ -11,7 +11,7 @@ uguale SHA-256). Il progetto del refactoring e' in `../../__docs/wp-health-check
 |---|---|---|
 | `manifest.php` | (non entra nel file distribuito) | elenco ORDINATO `file => ruolo`; la build fallisce se diverge dai file presenti |
 | `header.php` | `header` | docblock del plugin (`Plugin Name:`, `Version:` ...) e `defined( 'ABSPATH' ) \|\| exit;` |
-| `constants.php` | `constants` | costanti `WP_HEALTH_CHECK_*`, ognuna in un `if ( ! defined() )` (sovrascrivibili da `wp-config.php`); qui sta `WP_HEALTH_CHECK_VERSION` |
+| `constants.php` | `constants` | costanti `WP_HEALTH_CHECK_*`, ognuna in un `if ( ! defined() )` (sovrascrivibili da `wp-config.php`); qui sta `WP_HEALTH_CHECK_VERSION` e (dal lotto 3) `WP_HEALTH_CHECK_FILE`, con default `__FILE__`: l'unico file che puo' usare `__FILE__` e `__DIR__` |
 | `legacy.php` | `legacy` | tutto il resto del plugin 1.38.1 (funzioni `wphc_*` e registrazione degli hook): si svuota lotto dopo lotto e sparisce a fine refactoring |
 | `class-wphc-*.php` | `class` | (dai lotti 1-4) una sola classe `final` per file, nessun altro codice top-level |
 | `class-wphc-cli-command.php` | `cli` | (dal lotto 1) il blocco del comando WP-CLI: guard `if ( defined( 'WP_CLI' ) && WP_CLI )`, classe `WPHC_CLI_Command`, registrazione del comando; ultimo del manifest, come nel file 1.38.1 |
@@ -80,9 +80,12 @@ verifica che i token non commento (con la riga) siano identici prima e dopo.
 
 La build non scrive nulla se uno di questi controlli fallisce: parse completo con `token_get_all( ..., TOKEN_PARSE )`
 sul concatenato e sul risultato; file `class` con una sola classe; file `cli` con solo il blocco del comando WP-CLI
-(al massimo uno); nessuna classe che estende una classe piu' avanti; versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`; nessun `?>` o HTML inline fuori dalle funzioni
+(al massimo uno); nessuna classe che estende una classe piu' avanti; versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`;
+`__FILE__` e `__DIR__` ammessi SOLO nel file con ruolo `constants` (controllo sui token di ogni altro file, quindi non
+scattano per commenti e stringhe: nel file concatenato indicano il mu-plugin, in un file di `src/` indicherebbero il file
+sorgente; il codice che ha bisogno del percorso del plugin usa `WP_HEALTH_CHECK_FILE`, vedi sotto); nessun `?>` o HTML inline fuori dalle funzioni
 (i template dentro i metodi sono ammessi); file che inizia con `<?php` e con header `Plugin Name:`/`Version:`
-come lo vogliono WordPress, l'installer e `wphc_install_release()`; solo LF; per la build strippata il body JSON
+come lo vogliono WordPress, l'installer e `WPHC_Self_Updater::install_release()`; solo LF; per la build strippata il body JSON
 intero del push (`{"package": {...}}`, come lo spedisce l'hub e lo misurano gli e2e: firma da 88 caratteri e
 `force: true`; e' una stima: il gzip di PHP e quello di Python differiscono di qualche decina di byte, il margine
 esatto lo misura l'e2e) sotto 131072 byte, con avviso oltre il budget di 110000 caratteri di
@@ -119,6 +122,43 @@ docblock di file; si toglie quando `legacy.php` sparisce e `constants.php` ricev
   ereditato il codice, sopra il metodo che seguivano nel file 1.38.1 (per `/detail/users` e' `WPHC_Users::build_summary()`,
   per l'ultimo login `WPHC_Users::record_last_login()`). Il banner «UTILITY CONDIVISE», che apriva `legacy.php`
   e non aveva piu' codice sotto di se', e' stato tolto (titolo generico, nessun testo da conservare).
+
+- **Stato globale (lotto 3).** Le tre chiavi di `$GLOBALS` della 1.38.1 (prefisso `wphc_`) sono proprieta' statiche private di
+  `WPHC_Update_Log`: `$version_snapshots` (default `array()`), `$api_update_in_progress` (default `false`) e
+  `$deleting_plugins` (default `array()`). Le leggono e scrivono solo i metodi di quella classe, tranne il flag
+  dell'update via API, che imposta `WPHC_Item_Updater` (in `perform_item_update()` e `perform_core_update()`, a coppie
+  attorno a `upgrade()`) tramite i due metodi aggiunti `WPHC_Update_Log::begin_api_update()` (`true`) ed
+  `end_api_update()` (`false`, al posto dell'`unset()`: `empty()` da' lo stesso esito). Se `upgrade()` muore con un
+  fatal il flag resta impostato fino a fine richiesta, come con `$GLOBALS`. Nei test li legge e li scrive solo
+  l'helper `WPHC_Update_Test_Case::plugin_state()`/`set_api_update_in_progress()`/`reset_update_log_state()` (Reflection).
+- **`WP_HEALTH_CHECK_FILE` (D-1, lotto 3).** `WPHC_Self_Updater::install_release()` riscrive il file indicato dalla
+  costante `WP_HEALTH_CHECK_FILE` (backup `.bak`, temporaneo `.wphc-new-*.tmp`, `rename()`, rilettura di controllo,
+  `opcache_invalidate()`, cancellazione del `.bak`): nella 1.38.1 era `__FILE__`. La costante e' definita in
+  `constants.php` con `if ( ! defined() )` e default `__FILE__`, che nel file costruito e' il mu-plugin distribuito:
+  in produzione il comportamento non cambia di un byte e `dirname( WP_HEALTH_CHECK_FILE )` e' `WPMU_PLUGIN_DIR`.
+  Limiti di una ridefinizione (da `wp-config.php` o dai test): il file indicato deve stare sullo stesso filesystem di
+  `WPMU_PLUGIN_DIR`, perche' il temporaneo si crea in `WPMU_PLUGIN_DIR` e poi si fa `rename()` sul percorso della
+  costante (fra dispositivi diversi il `rename()` fallisce); `probe_mu_dir_writable()` controlla sempre
+  `WPMU_PLUGIN_DIR`, non la cartella del file indicato; la copia non deve mai essere un `.php` nella radice di
+  `mu-plugins/` (WordPress la caricherebbe al giro successivo: "Cannot declare class"). Chi puo' scrivere
+  `wp-config.php` controlla gia' il sito, quindi la sovrascrivibilita' non apre un vettore nuovo. Non si legge ne'
+  `__FILE__` ne' `__DIR__` altrove: i test PHPUnit caricano una copia in `sys_get_temp_dir()` e lasciano il default.
+- **Banner del lotto 3.** I banner del file 1.38.1 che precedevano le funzioni spostate stanno sopra il metodo che
+  seguivano: «CALLBACK: POST /update» sopra `WPHC_Self_Updater::github_request_args()` (come nel 1.38.1 precede gli
+  helper di GitHub e non il callback), «AGGIORNAMENTO PLUGIN/TEMI/CORE VIA API» (con il vincolo di sicurezza «mai da
+  dove ne' a quale versione») sopra `WPHC_Update_Log::table()`, «CALLBACK: POST /update/reactivate» sopra
+  `WPHC_Item_Updater::route_reactivate()`, «AGGIORNAMENTI BULK (...) VIA POST /update/bulk + WP-CRON» sopra
+  `WPHC_Bulk::get_job()`, «CALLBACK: POST|GET /update/bulk, POST /update/bulk/cancel» sopra
+  `WPHC_Bulk::route_enqueue()`, «WEBHOOK DI NOTIFICA FIRMATO (a fine job bulk, o su richiesta di prova)» sopra
+  `WPHC_Webhook::url()`.
+- **Stringa SQL di `WPHC_Update_Log::maybe_install_schema()`.** Le righe interne alla stringa multilinea della
+  `CREATE TABLE` NON sono reindentate (la tabulazione fa parte della stringa passata a `dbDelta()`): non lanciare
+  `composer run lint:fix` su `class-wphc-update-log.php` senza ricontrollare quelle righe.
+- **Accorpamenti rimandati (decisione D-4).** Nel lotto 3 NON si accorpano ne' i due backoff identici
+  (`WPHC_Bulk::backoff_for_attempt()` e `WPHC_Webhook::backoff_for_attempt()`: l'helper previsto dal progetto, privato in
+  `WPHC_Util`, sarebbe chiamato da due classi e quindi pubblico, un metodo fuori dalla mappa in una classe del lotto 1)
+  ne' la regex del tag di release ripetuta in `fetch_latest_release_without_api()` (identica a `is_release_tag()`, ma
+  si lascia rimandata per tenere lo spostamento uno a uno, verificabile token per token).
 
 ## Checklist del passaggio finale alla build strip (da fare nel commit che porta lo strip in `mu-plugins/`)
 
