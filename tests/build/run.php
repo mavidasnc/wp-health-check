@@ -688,6 +688,146 @@ $tests['gate (i): sui sorgenti veri __FILE__ e __DIR__ compaiono solo in constan
 	t_assert( false !== strpos( (string) file_get_contents( $root . '/src/class-wphc-self-updater.php' ), '$plugin_file = WP_HEALTH_CHECK_FILE;' ), 'install_release() non usa WP_HEALTH_CHECK_FILE' );
 };
 
+$tests['gate (i): __CLASS__, __FUNCTION__, __METHOD__ e __LINE__ non sono ammessi in nessun file (anche constants e header)'] = function () {
+	// Ogni costante magica vietata, in un file per ruolo: la build deve rifiutarla e nominare il file e la costante.
+	$magic = array( '__CLASS__', '__FUNCTION__', '__METHOD__', '__LINE__' );
+	foreach ( $magic as $const ) {
+		$cases = array(
+			'constants.php' => array( 'constants', t_constants() . "\$x = {$const};\n" ),
+			'class-a.php'   => array( 'class', "<?php\nfinal class T_A {\n\tpublic static function f() {\n\t\treturn {$const};\n\t}\n}\n" ),
+			'boot.php'      => array( 'boot', "<?php\nt_boot( {$const} );\n" ),
+			'cli.php'       => array( 'cli', t_cli_file( '', "\t\$x = {$const};\n" ) ),
+		);
+		foreach ( $cases as $name => $case ) {
+			$files    = array(
+				'header.php'    => t_header(),
+				'constants.php' => t_constants(),
+			);
+			$manifest = array(
+				'header.php'    => 'header',
+				'constants.php' => 'constants',
+			);
+			if ( 'constants.php' === $name ) {
+				$files['constants.php'] = $case[1];
+			} else {
+				$files[ $name ]    = $case[1];
+				$manifest[ $name ] = $case[0];
+			}
+			$src = t_make_src( $files, $manifest );
+			t_expect_fail(
+				function () use ( $src ) {
+					wphc_build( $src, false );
+				},
+				$name . ': ' . $const . ' non ammesso in nessun file di src/'
+			);
+		}
+		// Anche l'header (primo file) e' soggetto al gate.
+		$src = t_make_src(
+			array(
+				'header.php'    => t_header() . "\$f = {$const};\n",
+				'constants.php' => t_constants(),
+			),
+			array(
+				'header.php'    => 'header',
+				'constants.php' => 'constants',
+			)
+		);
+		t_expect_fail(
+			function () use ( $src ) {
+				wphc_build( $src, false );
+			},
+			'header.php: ' . $const . ' non ammesso in nessun file di src/'
+		);
+	}
+};
+
+$tests['gate (i): le quattro costanti magiche nei commenti, nelle stringhe e come ::class non fanno scattare il gate'] = function () {
+	$code = "\n// Un commento che nomina __CLASS__, __FUNCTION__, __METHOD__ e __LINE__ non e' codice.\n/** Docblock: __LINE__ */\nfunction t_l() {\n\t\$a = '__CLASS__';\n\t\$b = \"__FUNCTION__\";\n\t\$c = <<<'TXT'\n__METHOD__ e __LINE__ nel nowdoc\nTXT;\n\treturn T_Child::class . \$a . \$b . \$c;\n}\n";
+	$dev  = wphc_build( t_simple_src( $code ), false )['code'];
+	t_assert( false !== strpos( $dev, "\$b = \"__FUNCTION__\";" ), 'la stringa con la costante magica manca nella build' );
+};
+
+$tests['gate (i): sui sorgenti veri nessuna delle quattro costanti magiche compare (controllo indipendente sui token)'] = function () use ( $root ) {
+	$found = array();
+	foreach ( (array) glob( $root . '/src/*.php' ) as $path ) {
+		foreach ( token_get_all( (string) file_get_contents( $path ) ) as $tok ) {
+			if ( is_array( $tok ) && in_array( $tok[0], array( T_FUNC_C, T_METHOD_C, T_CLASS_C, T_LINE ), true ) ) {
+				$found[] = basename( $path ) . ':' . $tok[2] . ' ' . $tok[1];
+			}
+		}
+	}
+	t_assert( array() === $found, 'costanti magiche vietate nei sorgenti: ' . implode( ', ', $found ) );
+};
+
+$tests['gate (j): marcatore dev in coda alla build dev di src (una volta, senza a capo finale), assente nello strip'] = function () use ( $root ) {
+	$dev   = wphc_build( $root . '/src', false )['code'];
+	$strip = wphc_build( $root . '/src', true )['code'];
+	$tail  = "\n// WPHC-BUILD: dev (non distribuibile)";
+	// Controllo indipendente dalla build: conteggio e posizione del marcatore con funzioni PHP elementari.
+	t_assert( 1 === substr_count( $dev, 'WPHC-BUILD' ), 'la dev deve avere UNA occorrenza di WPHC-BUILD, trovate ' . substr_count( $dev, 'WPHC-BUILD' ) );
+	t_assert( substr( $dev, -strlen( $tail ) ) === $tail, 'il marcatore non e\' l\'ultima riga della dev senza a capo finale' );
+	t_assert( 0 === substr_count( $strip, 'WPHC-BUILD' ), 'lo strip contiene WPHC-BUILD' );
+	// Il marcatore non sposta il corpo: stesse righe dello strip e stesso codice.
+	t_assert( substr_count( $dev, "\n" ) === substr_count( $strip, "\n" ), 'il marcatore ha cambiato il numero di righe' );
+	t_assert( t_signature( $dev ) === t_signature( $strip ), 'il marcatore ha cambiato i token non commento' );
+};
+
+$tests['gate (j): la parola WPHC-BUILD nei sorgenti (commento o stringa) fa fallire la build, dev e strip'] = function () {
+	foreach ( array( "// WPHC-BUILD: nel commento\nfunction t_l() {\n\treturn 1;\n}\n", "function t_l() {\n\treturn 'WPHC-BUILD';\n}\n" ) as $legacy ) {
+		$src = t_simple_src( $legacy );
+		foreach ( array( false, true ) as $strip ) {
+			t_expect_fail(
+				function () use ( $src, $strip ) {
+					wphc_build( $src, $strip );
+				},
+				'i sorgenti contengono WPHC-BUILD'
+			);
+		}
+	}
+};
+
+$tests['gate (j): il gate sul marcatore (chiamata diretta) rifiuta strip con marcatore e dev senza, doppio, non ultimo o con a capo finale'] = function () {
+	$body   = "<?php\nfunction t_l() {\n\treturn 1;\n}\n";
+	$marker = '// WPHC-BUILD: dev (non distribuibile)';
+	wphc_build_gate_marker( $body . $marker, false ); // Deve passare: dev con il marcatore in coda.
+	wphc_build_gate_marker( $body, true ); // Deve passare: strip senza marcatore.
+	// Strip con il marcatore (anche come stringa: i commenti sparirebbero, la stringa no).
+	foreach ( array( $body . $marker, $body . "\$m = 'WPHC-BUILD';\n" ) as $bad ) {
+		t_expect_fail(
+			function () use ( $bad ) {
+				wphc_build_gate_marker( $bad, true );
+			},
+			'la build strip (distribuibile) contiene WPHC-BUILD'
+		);
+	}
+	// Dev: marcatore assente, doppio, seguito da altro codice, con a capo finale, o attaccato all'ultima riga.
+	foreach ( array( $body, $body . $marker . "\n" . $marker, $body . $marker . "\nfunction t_m() {\n}\n", $body . $marker . "\n", rtrim( $body ) . $marker ) as $bad ) {
+		t_expect_fail(
+			function () use ( $bad ) {
+				wphc_build_gate_marker( $bad, false );
+			},
+			'la build dev deve contenere il marcatore'
+		);
+	}
+};
+
+$tests['gate (j): la CLI scrive il marcatore solo con --no-strip (--output), mai con lo strip'] = function () use ( $root ) {
+	$dir = sys_get_temp_dir() . '/wphc-build-marker-' . uniqid( '', true );
+	mkdir( $dir );
+	$dev   = $dir . '/dev.php';
+	$strip = $dir . '/strip.php';
+	// File prima della cartella: la pulizia finale li cancella nell'ordine di registrazione.
+	$GLOBALS['build_test_dirs'][] = $dev;
+	$GLOBALS['build_test_dirs'][] = $strip;
+	$GLOBALS['build_test_dirs'][] = $dir;
+	$r = t_run_cli( $root, array( '--no-strip', '--output', $dev ) );
+	t_assert( 0 === $r[0], 'build dev --output: exit ' . $r[0] . ' ' . $r[2] );
+	$r = t_run_cli( $root, array( '--strip', '--output', $strip ) );
+	t_assert( 0 === $r[0], 'build strip --output: exit ' . $r[0] . ' ' . $r[2] );
+	t_assert( 1 === substr_count( (string) file_get_contents( $dev ), 'WPHC-BUILD' ), 'il file dev scritto dalla CLI non ha il marcatore' );
+	t_assert( 0 === substr_count( (string) file_get_contents( $strip ), 'WPHC-BUILD' ), 'il file strip scritto dalla CLI ha il marcatore' );
+};
+
 $tests['gate (d): versione dell\'header diversa da WP_HEALTH_CHECK_VERSION'] = function () {
 	$src = t_make_src(
 		array(
@@ -904,7 +1044,9 @@ $tests['gate (h): il limite si misura sul body JSON intero del push, non sulla s
 	$found = null;
 	for ( $bytes = 96500; $bytes <= 99500 && null === $found; $bytes += 40 ) {
 		$src   = t_simple_src( $make( $bytes ) );
-		$sizes = wphc_build( $src, false )['sizes']; // La dev non e' mai bloccata: serve solo per le misure.
+		// Si misura lo STRIP (la grandezza che il gate controlla), senza passare dal gate che bloccherebbe la build: la dev
+		// ha in piu' il marcatore in coda e darebbe una misura leggermente diversa.
+		$sizes = wphc_build_sizes( wphc_build_strip( wphc_build_concat( wphc_build_read_sources( $src ) ) ), '9.9.9' );
 		if ( $sizes['b64'] <= WPHC_BUILD_PUSH_LIMIT && $sizes['body'] > WPHC_BUILD_PUSH_LIMIT ) {
 			$found = $src;
 			t_assert( $sizes['body'] - $sizes['b64'] > 300, 'l\'overhead del body JSON e\' troppo piccolo: ' . ( $sizes['body'] - $sizes['b64'] ) );

@@ -10,7 +10,7 @@
  * accesso di ciascun utente in due user meta (WPHC_Options::META_LAST_LOGIN e META_LAST_LOGIN_IP).
  *
  * Raccoglie, dal file 1.38.1, build_user_summary() e route_detail_users() (sezione K) e record_last_login()
- * (sezione R). Hook servito (registrato per ora in legacy.php): azione wp_login con 2 argomenti, che scatta
+ * (sezione R). Hook servito (registrato in WPHC_Plugin::boot()): azione wp_login con 2 argomenti, che scatta
  * anche dall'autologin tramite do_action( 'wp_login' ).
  */
 final class WPHC_Users {

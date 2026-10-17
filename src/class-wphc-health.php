@@ -12,8 +12,8 @@
  * del sito (GDPR, builder, e-commerce) e i tre flush delle cache.
  *
  * Raccoglie la sezione K del file 1.38.1 (tranne /detail/users, che sta in WPHC_Users) e, dalla sezione C,
- * l'auto-update, i flush e detect_site_signals(). Hook serviti (registrati per ora in legacy.php, dal
- * lotto 4 in WPHC_Plugin::boot()): i 20 hook update_option_/add_option_ sulle option auto_update_* che
+ * l'auto-update, i flush e detect_site_signals(). Hook serviti (registrati
+ * in WPHC_Plugin::boot()): i 20 hook update_option_/add_option_ sulle option auto_update_* che
  * invalidano le cache. route_health() ha effetti collaterali: puo' generare la thumbnail (chiamata
  * remota) e chiamare api.ipify.org, e scrive la micro-cache.
  *

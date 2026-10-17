@@ -13,10 +13,10 @@
  * di log). Una costante con un valore sbagliato "perde" i dati del sito, quindi ogni valore va controllato
  * contro la tabella 1.8 di __docs/wp-health-check/refactoring-classi.md.
  *
- * Le costanti entrano lotto per lotto (decisione D-3 del progetto): questa classe contiene solo i nomi usati
- * dal codice gia' spostato in classi. Il codice ancora in legacy.php usa i letterali (stessi valori) e li
- * sostituira' quando passera' in classi. I nomi del core WordPress (active_plugins, update_plugins, ...)
- * restano sempre letterali, come i nomi di azioni admin-post, AJAX, nonce e campi POST.
+ * Le costanti sono entrate lotto per lotto (decisione D-3 del progetto) e dal lotto 4 coprono tutto il codice del
+ * plugin: ogni nome di option, transient, user meta, hook cron e tabella passa da qui. I nomi del core WordPress
+ * (active_plugins, update_plugins, ...) restano sempre letterali, come i nomi di azioni admin-post, AJAX, nonce e
+ * campi POST.
  */
 final class WPHC_Options {
 
@@ -55,23 +55,24 @@ final class WPHC_Options {
 	const OPT_WEBHOOK_PENDING        = 'wp_health_check_webhook_pending';
 
 	// Nomi dei transient e prefissi delle chiavi dei transient.
-	const TRANSIENT_UPDATE_LOCK          = 'wp_health_check_update_lock';
-	const TRANSIENT_BULK_LOCK            = 'wp_health_check_bulk_lock';
-	const TRANSIENT_LOG_PRUNED_AT        = 'wp_health_check_log_pruned_at';
-	const TRANSIENT_HEALTH_CACHE         = 'wphc_health_cache';
-	const TRANSIENT_DETAIL_PLUGINS_CACHE = 'wphc_detail_plugins_cache';
-	const TRANSIENT_DETAIL_THEME_CACHE   = 'wphc_detail_theme_cache';
-	const TRANSIENT_DETAIL_SERVER_CACHE  = 'wphc_detail_server_cache';
-	const TRANSIENT_LATEST_VERSION_CACHE = 'wphc_latest_version_cache';
-	const TRANSIENT_PUBLIC_IP            = 'wphc_public_ip';
-	const TRANSIENT_PUBLIC_IP_RETRY_LOCK = 'wphc_public_ip_retry_lock';
-	const TRANSIENT_THUMB_RETRY_LOCK     = 'wphc_thumb_retry_lock';
-	const TRANSIENT_ENROLL_ALERT_SENT    = 'wphc_enroll_alert_sent';
-	const TRANSIENT_BULK_REARM_LOCK      = 'wphc_bulk_rearm_lock';
-	const TRANSIENT_WEBHOOK_RETRY_LOCK   = 'wphc_webhook_retry_lock';
-	const TRANSIENT_NONCE_PREFIX         = 'wphc_nonce_';
-	const TRANSIENT_FAIL_PREFIX          = 'wphc_fail_';
-	const TRANSIENT_AUTOLOGIN_PREFIX     = 'wphc_autologin_';
+	const TRANSIENT_UPDATE_LOCK            = 'wp_health_check_update_lock';
+	const TRANSIENT_BULK_LOCK              = 'wp_health_check_bulk_lock';
+	const TRANSIENT_LOG_PRUNED_AT          = 'wp_health_check_log_pruned_at';
+	const TRANSIENT_HEALTH_CACHE           = 'wphc_health_cache';
+	const TRANSIENT_DETAIL_PLUGINS_CACHE   = 'wphc_detail_plugins_cache';
+	const TRANSIENT_DETAIL_THEME_CACHE     = 'wphc_detail_theme_cache';
+	const TRANSIENT_DETAIL_SERVER_CACHE    = 'wphc_detail_server_cache';
+	const TRANSIENT_LATEST_VERSION_CACHE   = 'wphc_latest_version_cache';
+	const TRANSIENT_PUBLIC_IP              = 'wphc_public_ip';
+	const TRANSIENT_PUBLIC_IP_RETRY_LOCK   = 'wphc_public_ip_retry_lock';
+	const TRANSIENT_THUMB_RETRY_LOCK       = 'wphc_thumb_retry_lock';
+	const TRANSIENT_ENROLL_ALERT_SENT      = 'wphc_enroll_alert_sent';
+	const TRANSIENT_BULK_REARM_LOCK        = 'wphc_bulk_rearm_lock';
+	const TRANSIENT_WEBHOOK_RETRY_LOCK     = 'wphc_webhook_retry_lock';
+	const TRANSIENT_NONCE_PREFIX           = 'wphc_nonce_';
+	const TRANSIENT_FAIL_PREFIX            = 'wphc_fail_';
+	const TRANSIENT_AUTOLOGIN_PREFIX       = 'wphc_autologin_';
+	const TRANSIENT_WEBHOOK_BAD_URL_PREFIX = 'wphc_webhook_bad_url_';
 
 	// Chiavi di user meta.
 	const META_LAST_LOGIN    = 'wphc_last_login';

@@ -170,7 +170,7 @@ final class WPHC_Thumbnail {
 		if ( $force ) {
 			// Rigenerazione esplicita: elimina l'attachment precedente (se
 			// esiste) prima di generarne uno nuovo, stessa pulizia gia' fatta dal
-			// pulsante admin "Elimina e rigenera", vedi wphc_handle_delete_thumbnail().
+			// pulsante admin "Elimina e rigenera", vedi WPHC_Admin::handle_delete_thumbnail().
 			$previous_id = (int) get_option( WPHC_Options::OPT_THUMB_ID );
 			if ( $previous_id ) {
 				wp_delete_attachment( $previous_id, true );

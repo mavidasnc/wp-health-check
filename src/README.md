@@ -12,10 +12,9 @@ uguale SHA-256). Il progetto del refactoring e' in `../../__docs/wp-health-check
 | `manifest.php` | (non entra nel file distribuito) | elenco ORDINATO `file => ruolo`; la build fallisce se diverge dai file presenti |
 | `header.php` | `header` | docblock del plugin (`Plugin Name:`, `Version:` ...) e `defined( 'ABSPATH' ) \|\| exit;` |
 | `constants.php` | `constants` | costanti `WP_HEALTH_CHECK_*`, ognuna in un `if ( ! defined() )` (sovrascrivibili da `wp-config.php`); qui sta `WP_HEALTH_CHECK_VERSION` e (dal lotto 3) `WP_HEALTH_CHECK_FILE`, con default `__FILE__`: l'unico file che puo' usare `__FILE__` e `__DIR__` |
-| `legacy.php` | `legacy` | tutto il resto del plugin 1.38.1 (funzioni `wphc_*` e registrazione degli hook): si svuota lotto dopo lotto e sparisce a fine refactoring |
-| `class-wphc-*.php` | `class` | (dai lotti 1-4) una sola classe `final` per file, nessun altro codice top-level |
+| `class-wphc-*.php` | `class` | una sola classe `final` per file (21 file: `WPHC_Options` e altre 20 classi), nessun altro codice top-level; dal lotto 4 comprendono `WPHC_Admin`, `WPHC_Admin_View` (template della tab Site Health) e `WPHC_Plugin` (`boot()`) |
 | `class-wphc-cli-command.php` | `cli` | (dal lotto 1) il blocco del comando WP-CLI: guard `if ( defined( 'WP_CLI' ) && WP_CLI )`, classe `WPHC_CLI_Command`, registrazione del comando; ultimo del manifest, come nel file 1.38.1 |
-| `boot.php` | `boot` | (lotto 4) `WPHC_Plugin::boot();`, in coda alle classi (prima del file `cli`) |
+| `boot.php` | `boot` | (dal lotto 4) docblock di file e `WPHC_Plugin::boot();`: l'unica istruzione al livello del file, in coda alle classi (prima del file `cli`) |
 
 Ogni file inizia con `<?php` seguito da un a capo e termina con un a capo; solo LF. La concatenazione toglie il
 `<?php` iniziale (e un eventuale `?>` finale) dai file successivi al primo e NON inserisce separatori: e' un
@@ -25,7 +24,11 @@ taglio a byte riproducibile.
 
 - `header`: uno solo, il primo del manifest.
 - `class`: la build verifica che il file contenga una sola classe e nessun altro codice al livello del file.
-- `header`, `constants`, `legacy`, `boot`: eccezioni dichiarate, possono avere codice al livello del file.
+- `header`, `constants`, `boot`: eccezioni dichiarate, possono avere codice al livello del file.
+- `legacy`: ruolo dei lotti 1-3 (il corpo del file 1.38.1 non ancora spostato in classi). Dal lotto 4 `src/legacy.php` non
+  esiste piu' e il manifest non lo usa, ma `bin/build.php` accetta ancora il ruolo (un "file con codice libero")
+  perche' le sorgenti sintetiche di `tests/build/run.php` lo usano: toglierlo dalla build significa riscrivere quei
+  fixture, ed e' un passo di pulizia da fare in un secondo momento.
 - `cli`: al massimo un file, e se esiste e' l'ULTIMA voce del manifest. `WPHC_CLI_Command` non estende
   `WP_CLI_Command`, ha metodi d'istanza e deve esistere solo con WP-CLI attivo, quindi non puo' avere il ruolo
   `class`. Il codice top-level ammesso e' SOLO il guard `if ( defined( 'WP_CLI' ) && WP_CLI ) {`, una
@@ -40,7 +43,9 @@ taglio a byte riproducibile.
 - Una classe non puo' estendere una classe dichiarata PIU' AVANTI nel file concatenato (le classi esterne di
   WordPress e WP-CLI sono ammesse). Le classi vanno nel manifest in ordine di dipendenza, il boot in fondo.
 - Niente `namespace`, niente funzioni o classi dichiarate due volte al livello del file.
-- Durante i lotti i file di classe entrano nel manifest PRIMA di `legacy.php` (vedi sezioni 3.3 e 7 del progetto).
+- Ordine del manifest (sezione 3.3 del progetto): `header`, `constants`, le classi (in ordine di dipendenza: prima
+  `WPHC_Options`, poi le classi che la usano; `WPHC_Admin`, `WPHC_Admin_View` e `WPHC_Plugin` per ultime), `boot.php` e,
+  ultimo, il file `cli`.
 
 ### Versione
 
@@ -91,7 +96,11 @@ sul concatenato e sul risultato; file `class` con una sola classe; file `cli` co
 (al massimo uno); nessuna classe che estende una classe piu' avanti; versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`;
 `__FILE__` e `__DIR__` ammessi SOLO nel file con ruolo `constants` (controllo sui token di ogni altro file, quindi non
 scattano per commenti e stringhe: nel file concatenato indicano il mu-plugin, in un file di `src/` indicherebbero il file
-sorgente; il codice che ha bisogno del percorso del plugin usa `WP_HEALTH_CHECK_FILE`, vedi sotto); nessun `?>` o HTML inline fuori dalle funzioni
+sorgente; il codice che ha bisogno del percorso del plugin usa `WP_HEALTH_CHECK_FILE`, vedi sotto); `__CLASS__`,
+`__FUNCTION__`, `__METHOD__` e `__LINE__` vietati in OGNI file, `constants.php` e header compresi (non compaiono nella
+1.38.1 e il loro valore dipende da dove vive il codice, quindi un uso cambierebbe il comportamento senza che nessun test
+se ne accorga); la parola `WPHC-BUILD` assente dai sorgenti e dalla build strip, presente una sola volta, in coda, nella
+build dev (vedi «Marcatore della build dev»); nessun `?>` o HTML inline fuori dalle funzioni
 (i template dentro i metodi sono ammessi); file che inizia con `<?php` e con header `Plugin Name:`/`Version:`
 come lo vogliono WordPress, l'installer e `WPHC_Self_Updater::install_release()`; solo LF; per la build strippata il body JSON
 intero del push (`{"package": {...}}`, come lo spedisce l'hub e lo misurano gli e2e: firma da 88 caratteri e
@@ -99,12 +108,28 @@ intero del push (`{"package": {...}}`, come lo spedisce l'hub e lo misurano gli 
 esatto lo misura l'e2e) sotto 131072 byte, con avviso oltre il budget di 110000 caratteri di
 gzip + base64.
 
+### Marcatore della build dev
+
+La build `--no-strip` (`composer run build:dev`, il file committato in `mu-plugins/` finche' dura il refactoring) aggiunge in
+coda al file, DOPO l'ultima riga di codice, il commento `// WPHC-BUILD: dev (non distribuibile)`, senza a capo finale:
+il corpo non cambia di una riga (la dev ha lo stesso numero di righe dello strip e gli stessi token non commento). Lo
+strip NON lo contiene e la build fallisce se lo trova (anche in una stringa); i sorgenti di `src/` non possono contenere
+la parola `WPHC-BUILD`, cosi' il marcatore e' l'unica occorrenza.
+
+**Un file con il marcatore NON va mai firmato ne' pubblicato.** `sign_release.py` sta nel repository dell'hub e non si
+tocca da qui: la protezione e' la checklist del passaggio finale (punto 8), che richiede `grep -L WPHC-BUILD <file>` PRIMA
+della firma. Attenzione al senso del comando: `grep -L` stampa il nome dei file che NON contengono la parola, quindi
+l'output vuoto significa che il marcatore e' presente (file dev, da non firmare) e l'output uguale al nome del file
+significa che il marcatore e' assente (file strip, firmabile).
+
 ## phpcs e phpstan
 
 Girano su `src/` e `bin/`, non sul file generato (lo strip toglie le annotazioni `phpcs:ignore`: darebbe
-centinaia di falsi errori). Unica esclusione nuova: `Squiz.Commenting.FileComment.WrongStyle` su `constants.php`
-e `legacy.php`, che sono tagli a byte del file 1.38.1 e iniziano con un commento di riga invece che con un
-docblock di file; si toglie quando `legacy.php` sparisce e `constants.php` riceve il suo docblock.
+centinaia di falsi errori). Unica esclusione nuova: `Squiz.Commenting.FileComment.WrongStyle` su `constants.php`,
+che e' un taglio a byte del file 1.38.1 e inizia con un commento di riga invece che con un docblock di file; si
+toglie quando `constants.php` riceve il suo docblock. Dal lotto 4 non c'e' piu' l'esclusione
+`Universal.Files.SeparateFunctionsFromOO.Mixed` (nessun file mescola funzioni e classi) e `strict_class_file_names`
+vale `true` (ogni classe sta in `class-<nome>.php`).
 
 ## Note per chi sposta il codice
 
@@ -168,6 +193,39 @@ docblock di file; si toglie quando `legacy.php` sparisce e `constants.php` ricev
   ne' la regex del tag di release ripetuta in `fetch_latest_release_without_api()` (identica a `is_release_tag()`, ma
   si lascia rimandata per tenere lo spostamento uno a uno, verificabile token per token).
 
+- **Banner del lotto 4.** Il banner «TAB SITE HEALTH: stato e configurazione da wp-admin» (con il paragrafo sulla
+  capability) sta sopra `WPHC_Admin::register_tab()`; i commenti liberi che precedevano le registrazioni
+  (perche' servono entrambe le famiglie `update_site_option_*` e `update_option_*`, i titoli «CORS» e «REGISTRAZIONE ROTTE
+  REST») sono in `WPHC_Plugin::boot()`.
+- **Template della tab (lotto 4).** `WPHC_Admin_View::render_tab()` contiene il template HTML della tab Site Health
+  (circa 700 righe con `?>` e `<?php`, `<style>` e `<script>` inline) DENTRO il metodo, mai al livello del file. Il prologo
+  PHP e' reindentato di una tabulazione; il template, dalla riga dopo il `?>` fino alla riga `<?php` finale inclusa, e'
+  copiato verbatim: le tabulazioni e gli spazi sono output, e nemmeno una virgola del testo e' cambiata (le isole PHP
+  nel template cambiano solo nei letterali di option, diventati costanti di `WPHC_Options`). Due commenti
+  `phpcs:disable`/`phpcs:enable Generic.WhiteSpace.ScopeIndent.Incorrect` racchiudono il template perche' la
+  tabulazione di una riga non corrisponde a quella del codice che la circonda. **Non lanciare `composer run lint:fix` su
+  `class-wphc-admin-view.php`**: phpcbf reindenterebbe l'HTML e cambierebbe l'output. Se un giorno lo si lancia lo stesso,
+  ripetere subito il confronto con `tests/test-admin.php` (golden `admin/tab-*.json`) e il diff dell'HTML (10.3 del progetto).
+- **`WPHC_Plugin::boot()` (lotto 4).** Registra tutti gli hook nello stesso ordine in cui comparivano nel file 1.38.1
+  (confronto token per token con le istruzioni al livello del file dell'originale; golden `hooks/registry.json`
+  identico): 20 hook di flush sulle option `auto_update_*` (il nome dinamico dell'option del core e' la variabile
+  locale `$core_auto_option`, senza `unset()`: nel file 1.38.1 era una variabile globale creata e distrutta al livello
+  del file), CORS, `rest_api_init`, i quattro callback su `init` nell'ordine schema del log, versione del core, ri-armo
+  del bulk, autologin, upgrader, `wp_login`, cron del tick e del retry, tab Site Health, tre azioni AJAX e otto azioni
+  admin-post. Gira al caricamento del file (da `boot.php`), prima di `muplugins_loaded`: non va mai spostata su un
+  hook di ritardo. Le rotte REST non si registrano qui ma in `WPHC_Rest::register_routes()`.
+- **Costanti (lotto 4).** `WPHC_Options` ha 55 costanti, tutte le righe della tabella 1.8: l'ultima entrata e'
+  `TRANSIENT_WEBHOOK_BAD_URL_PREFIX` (`wphc_webhook_bad_url_`, usata dalla tab e da `handle_save_webhook()`).
+  `'wphc_webhook_retry'` in `handle_save_webhook()` e' `WPHC_Options::CRON_WEBHOOK_RETRY`. Restano letterali i nomi di
+  azioni admin-post, AJAX, nonce, campi POST e flag di redirect della tabella 1.7 del progetto.
+- **Handler admin-post non accorpati (D-4, lotto 4).** I prologhi (capability e nonce) e gli epiloghi (redirect e
+  `exit`) degli otto handler restano ripetuti: gli helper `authorize()` e `redirect_to_tab()` previsti dal progetto
+  sarebbero metodi fuori mappa e lo spostamento resta verificabile token per token senza eccezioni.
+- **`tests/test-plugin-file-constant.php`.** Presuppone il plugin a classi (usa `WPHC_Self_Updater` e
+  `WP_HEALTH_CHECK_FILE`): con il file 1.38.1 fallirebbe, e non se ne maschera il fallimento con un `markTestSkipped()`
+  perche' il progetto ha `failOnSkipped="true"` e un test saltato in silenzio non proverebbe piu' nulla. Nessuna
+  configurazione utile esegue quel test sulla 1.38.1 (la suite gira sempre sul file costruito da `src/`).
+
 ## Checklist del passaggio finale alla build strip (da fare nel commit che porta lo strip in `mu-plugins/`)
 
 Oggi il file committato in `mu-plugins/` e' la build `--no-strip` e `build:check` confronta in modo `dev` per
@@ -192,3 +250,8 @@ default. Nel commit che lo sostituisce con la build strip (non prima) vanno camb
    `mu-plugins/` e la variabile `WPHC_BUILD_ALLOW_STRIP_IN_PLACE` vanno RIMOSSI (dopo il passaggio il file committato e'
    lo strip e `composer run build` deve scriverlo senza consenso), insieme alla prova «lo strip non si scrive su
    mu-plugins/ senza --output» di `tests/build/run.php`.
+8. **Prima di firmare o pubblicare QUALUNQUE file**, verificare che non sia la build dev: `grep -L WPHC-BUILD
+   mu-plugins/wp-health-check.php` deve STAMPARE il nome del file (`-L` elenca i file che NON contengono la parola: il
+   marcatore `// WPHC-BUILD: dev (non distribuibile)` e' assente). Output vuoto = marcatore presente = file dev: NON
+   firmarlo e NON pubblicarlo. `sign_release.py` (repo dell'hub) non fa questo controllo e non si modifica da qui, quindi
+   la verifica sta in questa checklist; controllare anche che `build:check` con `WPHC_BUILD_MODE=strip` dia `CHECK OK`.

@@ -11,8 +11,8 @@
  * dell'ultimo esito e ripianificazione dei tentativi falliti.
  *
  * Raccoglie la sezione O del file 1.38.1 tranne le due funzioni che conoscono il documento del job bulk
- * (payload e invio del report di fine job), che stanno in WPHC_Bulk. Hook servito (registrato per ora in
- * legacy.php, dal lotto 4 in WPHC_Plugin::boot()): evento cron wphc_webhook_retry, che esegue maybe_retry().
+ * (payload e invio del report di fine job), che stanno in WPHC_Bulk. Hook servito (registrato in
+ * WPHC_Plugin::boot()): evento cron wphc_webhook_retry, che esegue maybe_retry().
  * dispatch_payload() su un sito revocato cancella l'option pendente e gli eventi di retry.
  */
 final class WPHC_Webhook {

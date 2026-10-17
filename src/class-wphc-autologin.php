@@ -11,7 +11,7 @@
  * con una normale navigazione del browser, imposta il cookie di sessione ed esegue do_action( 'wp_login' ).
  * Le chiavi dei token pendenti sono tracciate in un'option perche' POST /revoke possa invalidarle tutte.
  *
- * Raccoglie la sezione Q del file 1.38.1. Hook servito (registrato per ora in legacy.php, dal lotto 4 in
+ * Raccoglie la sezione Q del file 1.38.1. Hook servito (registrato in
  * WPHC_Plugin::boot()): init, priorita' 10, QUARTO e ultimo callback del plugin su init (l'ordine conta:
  * maybe_consume() termina sempre con redirect ed exit). I rami di errore e di successo sono coperti dal golden.
  */

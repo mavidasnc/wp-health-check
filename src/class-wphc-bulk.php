@@ -14,7 +14,7 @@
  *
  * Raccoglie le sezioni N e O (payload e invio del report di fine job) del file 1.38.1: 32 metodi in un solo
  * file perche' otto prendono `array &$job` per riferimento e vanno spostati insieme (la firma resta identica).
- * Hook serviti (registrati per ora in legacy.php, dal lotto 4 in WPHC_Plugin::boot()): init (ri-armo del tick,
+ * Hook serviti (registrati in WPHC_Plugin::boot()): init (ri-armo del tick,
  * TERZO dei quattro callback del plugin) e l'evento cron wphc_bulk_update_tick, che esegue run_tick().
  * route_status() ha effetti collaterali (ripara gli item orfani, puo' finalizzare il job e inviare il webhook).
  */

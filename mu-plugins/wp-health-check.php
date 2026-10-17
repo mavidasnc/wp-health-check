@@ -325,10 +325,10 @@ if ( ! defined( 'WP_HEALTH_CHECK_FILE' ) ) {
  * di log). Una costante con un valore sbagliato "perde" i dati del sito, quindi ogni valore va controllato
  * contro la tabella 1.8 di __docs/wp-health-check/refactoring-classi.md.
  *
- * Le costanti entrano lotto per lotto (decisione D-3 del progetto): questa classe contiene solo i nomi usati
- * dal codice gia' spostato in classi. Il codice ancora in legacy.php usa i letterali (stessi valori) e li
- * sostituira' quando passera' in classi. I nomi del core WordPress (active_plugins, update_plugins, ...)
- * restano sempre letterali, come i nomi di azioni admin-post, AJAX, nonce e campi POST.
+ * Le costanti sono entrate lotto per lotto (decisione D-3 del progetto) e dal lotto 4 coprono tutto il codice del
+ * plugin: ogni nome di option, transient, user meta, hook cron e tabella passa da qui. I nomi del core WordPress
+ * (active_plugins, update_plugins, ...) restano sempre letterali, come i nomi di azioni admin-post, AJAX, nonce e
+ * campi POST.
  */
 final class WPHC_Options {
 
@@ -367,23 +367,24 @@ final class WPHC_Options {
 	const OPT_WEBHOOK_PENDING        = 'wp_health_check_webhook_pending';
 
 	// Nomi dei transient e prefissi delle chiavi dei transient.
-	const TRANSIENT_UPDATE_LOCK          = 'wp_health_check_update_lock';
-	const TRANSIENT_BULK_LOCK            = 'wp_health_check_bulk_lock';
-	const TRANSIENT_LOG_PRUNED_AT        = 'wp_health_check_log_pruned_at';
-	const TRANSIENT_HEALTH_CACHE         = 'wphc_health_cache';
-	const TRANSIENT_DETAIL_PLUGINS_CACHE = 'wphc_detail_plugins_cache';
-	const TRANSIENT_DETAIL_THEME_CACHE   = 'wphc_detail_theme_cache';
-	const TRANSIENT_DETAIL_SERVER_CACHE  = 'wphc_detail_server_cache';
-	const TRANSIENT_LATEST_VERSION_CACHE = 'wphc_latest_version_cache';
-	const TRANSIENT_PUBLIC_IP            = 'wphc_public_ip';
-	const TRANSIENT_PUBLIC_IP_RETRY_LOCK = 'wphc_public_ip_retry_lock';
-	const TRANSIENT_THUMB_RETRY_LOCK     = 'wphc_thumb_retry_lock';
-	const TRANSIENT_ENROLL_ALERT_SENT    = 'wphc_enroll_alert_sent';
-	const TRANSIENT_BULK_REARM_LOCK      = 'wphc_bulk_rearm_lock';
-	const TRANSIENT_WEBHOOK_RETRY_LOCK   = 'wphc_webhook_retry_lock';
-	const TRANSIENT_NONCE_PREFIX         = 'wphc_nonce_';
-	const TRANSIENT_FAIL_PREFIX          = 'wphc_fail_';
-	const TRANSIENT_AUTOLOGIN_PREFIX     = 'wphc_autologin_';
+	const TRANSIENT_UPDATE_LOCK            = 'wp_health_check_update_lock';
+	const TRANSIENT_BULK_LOCK              = 'wp_health_check_bulk_lock';
+	const TRANSIENT_LOG_PRUNED_AT          = 'wp_health_check_log_pruned_at';
+	const TRANSIENT_HEALTH_CACHE           = 'wphc_health_cache';
+	const TRANSIENT_DETAIL_PLUGINS_CACHE   = 'wphc_detail_plugins_cache';
+	const TRANSIENT_DETAIL_THEME_CACHE     = 'wphc_detail_theme_cache';
+	const TRANSIENT_DETAIL_SERVER_CACHE    = 'wphc_detail_server_cache';
+	const TRANSIENT_LATEST_VERSION_CACHE   = 'wphc_latest_version_cache';
+	const TRANSIENT_PUBLIC_IP              = 'wphc_public_ip';
+	const TRANSIENT_PUBLIC_IP_RETRY_LOCK   = 'wphc_public_ip_retry_lock';
+	const TRANSIENT_THUMB_RETRY_LOCK       = 'wphc_thumb_retry_lock';
+	const TRANSIENT_ENROLL_ALERT_SENT      = 'wphc_enroll_alert_sent';
+	const TRANSIENT_BULK_REARM_LOCK        = 'wphc_bulk_rearm_lock';
+	const TRANSIENT_WEBHOOK_RETRY_LOCK     = 'wphc_webhook_retry_lock';
+	const TRANSIENT_NONCE_PREFIX           = 'wphc_nonce_';
+	const TRANSIENT_FAIL_PREFIX            = 'wphc_fail_';
+	const TRANSIENT_AUTOLOGIN_PREFIX       = 'wphc_autologin_';
+	const TRANSIENT_WEBHOOK_BAD_URL_PREFIX = 'wphc_webhook_bad_url_';
 
 	// Chiavi di user meta.
 	const META_LAST_LOGIN    = 'wphc_last_login';
@@ -989,7 +990,7 @@ final class WPHC_Guard {
  * wp_health_check_dashboard_origin) viene autorizzata solo quell'origin esatta; senza, nessun header CORS.
  * Dice anche ai plugin di page cache di non mettere in cache la risposta.
  *
- * Raccoglie la sezione D del file 1.38.1. Hook serviti (registrati per ora in legacy.php, dal lotto 4 in
+ * Raccoglie la sezione D del file 1.38.1. Hook serviti (registrati in
  * WPHC_Plugin::boot()): filtro rest_pre_serve_request con priorita' 20 e 3 argomenti
  * (reassert_headers) e filtro rest_pre_dispatch con 3 argomenti (handle_options_preflight).
  */
@@ -1649,7 +1650,7 @@ final class WPHC_Rest {
  * Raccoglie, dalla sezione M del file 1.38.1, il nome e lo schema della tabella (dbDelta), l'inserimento e la
  * lettura con filtri, la potatura, il rilevamento di chi ha avviato l'operazione (api, wp-admin, cron, wp-cli),
  * i callback degli hook dell'upgrader e della versione del core e il callback REST GET /update/log.
- * Hook serviti (registrati per ora in legacy.php, dal lotto 4 in WPHC_Plugin::boot()): init (schema della
+ * Hook serviti (registrati in WPHC_Plugin::boot()): init (schema della
  * tabella, PRIMO dei quattro callback del plugin; versione del core, SECONDO), upgrader_pre_install,
  * upgrader_process_complete, deactivated_plugin, delete_plugin e deleted_plugin.
  *
@@ -2196,7 +2197,7 @@ final class WPHC_Update_Log {
 	 * Query paginata sulla tabella di log update, con filtro opzionale per tipo
 	 * e/o origine. Estratta dalla callback REST di GET /update/log perche' ha un
 	 * secondo consumatore: l'handler AJAX del pulsante "Visualizza log" della
-	 * tab Site Health (wphc_ajax_view_log()), che legge la stessa tabella senza
+	 * tab Site Health (WPHC_Admin::ajax_view_log()), che legge la stessa tabella senza
 	 * passare da una richiesta REST autenticata col bearer token (l'utente e'
 	 * gia' autenticato in wp-admin).
 	 *
@@ -3063,7 +3064,7 @@ final class WPHC_Thumbnail {
 		if ( $force ) {
 			// Rigenerazione esplicita: elimina l'attachment precedente (se
 			// esiste) prima di generarne uno nuovo, stessa pulizia gia' fatta dal
-			// pulsante admin "Elimina e rigenera", vedi wphc_handle_delete_thumbnail().
+			// pulsante admin "Elimina e rigenera", vedi WPHC_Admin::handle_delete_thumbnail().
 			$previous_id = (int) get_option( WPHC_Options::OPT_THUMB_ID );
 			if ( $previous_id ) {
 				wp_delete_attachment( $previous_id, true );
@@ -3186,8 +3187,8 @@ final class WPHC_Thumbnail {
  * del sito (GDPR, builder, e-commerce) e i tre flush delle cache.
  *
  * Raccoglie la sezione K del file 1.38.1 (tranne /detail/users, che sta in WPHC_Users) e, dalla sezione C,
- * l'auto-update, i flush e detect_site_signals(). Hook serviti (registrati per ora in legacy.php, dal
- * lotto 4 in WPHC_Plugin::boot()): i 20 hook update_option_/add_option_ sulle option auto_update_* che
+ * l'auto-update, i flush e detect_site_signals(). Hook serviti (registrati
+ * in WPHC_Plugin::boot()): i 20 hook update_option_/add_option_ sulle option auto_update_* che
  * invalidano le cache. route_health() ha effetti collaterali: puo' generare la thumbnail (chiamata
  * remota) e chiamare api.ipify.org, e scrive la micro-cache.
  *
@@ -4022,7 +4023,7 @@ final class WPHC_Health {
  * accesso di ciascun utente in due user meta (WPHC_Options::META_LAST_LOGIN e META_LAST_LOGIN_IP).
  *
  * Raccoglie, dal file 1.38.1, build_user_summary() e route_detail_users() (sezione K) e record_last_login()
- * (sezione R). Hook servito (registrato per ora in legacy.php): azione wp_login con 2 argomenti, che scatta
+ * (sezione R). Hook servito (registrato in WPHC_Plugin::boot()): azione wp_login con 2 argomenti, che scatta
  * anche dall'autologin tramite do_action( 'wp_login' ).
  */
 final class WPHC_Users {
@@ -4338,7 +4339,7 @@ final class WPHC_Debug {
  * con una normale navigazione del browser, imposta il cookie di sessione ed esegue do_action( 'wp_login' ).
  * Le chiavi dei token pendenti sono tracciate in un'option perche' POST /revoke possa invalidarle tutte.
  *
- * Raccoglie la sezione Q del file 1.38.1. Hook servito (registrato per ora in legacy.php, dal lotto 4 in
+ * Raccoglie la sezione Q del file 1.38.1. Hook servito (registrato in
  * WPHC_Plugin::boot()): init, priorita' 10, QUARTO e ultimo callback del plugin su init (l'ordine conta:
  * maybe_consume() termina sempre con redirect ed exit). I rami di errore e di successo sono coperti dal golden.
  */
@@ -6297,8 +6298,8 @@ final class WPHC_Item_Updater {
  * dell'ultimo esito e ripianificazione dei tentativi falliti.
  *
  * Raccoglie la sezione O del file 1.38.1 tranne le due funzioni che conoscono il documento del job bulk
- * (payload e invio del report di fine job), che stanno in WPHC_Bulk. Hook servito (registrato per ora in
- * legacy.php, dal lotto 4 in WPHC_Plugin::boot()): evento cron wphc_webhook_retry, che esegue maybe_retry().
+ * (payload e invio del report di fine job), che stanno in WPHC_Bulk. Hook servito (registrato in
+ * WPHC_Plugin::boot()): evento cron wphc_webhook_retry, che esegue maybe_retry().
  * dispatch_payload() su un sito revocato cancella l'option pendente e gli eventi di retry.
  */
 final class WPHC_Webhook {
@@ -6605,7 +6606,7 @@ final class WPHC_Webhook {
  *
  * Raccoglie le sezioni N e O (payload e invio del report di fine job) del file 1.38.1: 32 metodi in un solo
  * file perche' otto prendono `array &$job` per riferimento e vanno spostati insieme (la firma resta identica).
- * Hook serviti (registrati per ora in legacy.php, dal lotto 4 in WPHC_Plugin::boot()): init (ri-armo del tick,
+ * Hook serviti (registrati in WPHC_Plugin::boot()): init (ri-armo del tick,
  * TERZO dei quattro callback del plugin) e l'evento cron wphc_bulk_update_tick, che esegue run_tick().
  * route_status() ha effetti collaterali (ripara gli item orfani, puo' finalizzare il job e inviare il webhook).
  */
@@ -7879,175 +7880,652 @@ final class WPHC_Bulk {
 		}
 	}
 }
-
-// Entrambe le famiglie servono: su multisite update_site_option() e' quella
-// che effettivamente scrive (i suoi hook update_option_*/add_option_* NON
-// scattano li'); su single-site update_site_option() ricade su
-// update_option() e sono invece gli hook update_option_*/add_option_* a
-// scattare. Registrare solo una famiglia lascerebbe l'altro contesto stantio.
-add_action( 'update_site_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
-add_action( 'add_site_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
-add_action( 'update_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
-add_action( 'add_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
-add_action( 'update_site_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
-add_action( 'add_site_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
-add_action( 'update_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
-add_action( 'add_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
-foreach ( array( 'auto_update_core_dev', 'auto_update_core_minor', 'auto_update_core_major' ) as $wphc_core_auto_option ) {
-	add_action( "update_site_option_{$wphc_core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
-	add_action( "add_site_option_{$wphc_core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
-	add_action( "update_option_{$wphc_core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
-	add_action( "add_option_{$wphc_core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
-}
-unset( $wphc_core_auto_option );
-
-// -----------------------------------------------------------------------
-// CORS
-// -----------------------------------------------------------------------
-
-add_filter( 'rest_pre_serve_request', array( 'WPHC_Cors', 'reassert_headers' ), 20, 3 );
-
-add_filter( 'rest_pre_dispatch', array( 'WPHC_Cors', 'handle_options_preflight' ), 10, 3 );
-
-// -----------------------------------------------------------------------
-// REGISTRAZIONE ROTTE REST
-// -----------------------------------------------------------------------
-
-add_action( 'rest_api_init', array( 'WPHC_Rest', 'register_routes' ) );
-
-add_action( 'init', array( 'WPHC_Update_Log', 'maybe_install_schema' ) );
-
-add_filter( 'upgrader_pre_install', array( 'WPHC_Update_Log', 'snapshot_version_before_upgrade' ), 10, 2 );
-
-add_action( 'upgrader_process_complete', array( 'WPHC_Update_Log', 'log_wp_initiated_update' ), 10, 2 );
-
-add_action( 'deactivated_plugin', array( 'WPHC_Update_Log', 'log_plugin_deactivation' ), 10, 2 );
-
-add_action( 'delete_plugin', array( 'WPHC_Update_Log', 'snapshot_plugin_before_delete' ) );
-
-add_action( 'deleted_plugin', array( 'WPHC_Update_Log', 'log_plugin_deletion' ), 10, 2 );
-
-add_action( 'init', array( 'WPHC_Update_Log', 'maybe_log_core_version_change' ) );
-
-add_action( 'init', array( 'WPHC_Bulk', 'maybe_rearm' ) );
-
-add_action( 'wphc_bulk_update_tick', array( 'WPHC_Bulk', 'run_tick' ) );
-
-add_action( 'wphc_webhook_retry', array( 'WPHC_Webhook', 'maybe_retry' ) );
-
-add_action( 'init', array( 'WPHC_Autologin', 'maybe_consume' ) );
-
-add_action( 'wp_login', array( 'WPHC_Users', 'record_last_login' ), 10, 2 );
-
-// -----------------------------------------------------------------------
-// TAB SITE HEALTH: stato e configurazione da wp-admin
-// -----------------------------------------------------------------------
-//
-// Aggiunge una tab dedicata in Strumenti -> Salute del sito (disponibile
-// da WordPress 5.8 via i filtri/azioni site_health_navigation_tabs e
-// site_health_tab_content), visibile solo a chi puo' manage_options: qui si
-// puo' anche innescare il self-update e resettare l'enrollment, quindi il
-// controllo di accesso e' piu' stretto della sola capacita' di visualizzare
-// la Salute del sito.
+/**
+ * Tab Site Health del plugin e relativi handler AJAX e admin-post.
+ *
+ * @package WP_Health_Check
+ */
 
 /**
- * Registra la tab "WP Health Check" nella pagina Salute del sito.
+ * Parte amministrativa del plugin: registrazione della tab "WP Health Check" in Strumenti -> Salute del sito, i tre
+ * handler AJAX (tester degli endpoint, visualizzatore del log, rivelazione del segreto) e gli otto handler di
+ * admin-post.php (self-update, svuotamento cache, thumbnail, reset enrollment, interruttori degli aggiornamenti via
+ * API, salvataggio e prova del webhook).
  *
- * @param array<string,string> $tabs Tab gia' registrate (slug => etichetta).
- * @return array<string,string> Tab con l'eventuale aggiunta.
+ * Raccoglie la sezione S del file 1.38.1, tranne il template HTML della tab (WPHC_Admin_View::render_tab()).
+ * Hook serviti (registrati in WPHC_Plugin::boot()): il filtro site_health_navigation_tabs (register_tab), le azioni
+ * wp_ajax_wphc_test_endpoint, wp_ajax_wphc_view_log e wp_ajax_wphc_reveal_secret, e le otto azioni
+ * admin_post_wphc_* (una per handler). Ogni handler verifica la capability manage_options e il nonce, poi risponde
+ * o reindirizza alla tab (pattern POST-redirect-GET).
  */
-function wphc_register_site_health_tab( $tabs ) {
-	if ( ! current_user_can( 'manage_options' ) ) {
+final class WPHC_Admin {
+
+	// -----------------------------------------------------------------------
+	// TAB SITE HEALTH: stato e configurazione da wp-admin
+	// -----------------------------------------------------------------------
+	//
+	// Aggiunge una tab dedicata in Strumenti -> Salute del sito (disponibile
+	// da WordPress 5.8 via i filtri/azioni site_health_navigation_tabs e
+	// site_health_tab_content), visibile solo a chi puo' manage_options: qui si
+	// puo' anche innescare il self-update e resettare l'enrollment, quindi il
+	// controllo di accesso e' piu' stretto della sola capacita' di visualizzare
+	// la Salute del sito.
+
+	/**
+	 * Registra la tab "WP Health Check" nella pagina Salute del sito.
+	 *
+	 * @param array<string,string> $tabs Tab gia' registrate (slug => etichetta).
+	 * @return array<string,string> Tab con l'eventuale aggiunta.
+	 */
+	public static function register_tab( $tabs ) {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return $tabs;
+		}
+
+		$tabs['wp-health-check'] = __( 'WP Health Check', 'wp-health-check' );
+
 		return $tabs;
 	}
 
-	$tabs['wp-health-check'] = __( 'WP Health Check', 'wp-health-check' );
+	/**
+	 * Handler AJAX (admin) del tester di endpoint della tab Site Health. Fa una
+	 * richiesta loopback all'endpoint REST richiesto, aggiungendo il bearer token
+	 * (lato server: non viene mai esposto al browser) e un cache-buster "_cb"
+	 * casuale, e restituisce status/corpo/latenza da mostrare nella modale. Solo
+	 * endpoint GET dati in whitelist: nessun effetto collaterale.
+	 */
+	public static function ajax_test_endpoint() {
+		check_ajax_referer( 'wphc_test_endpoint' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+		}
 
-	return $tabs;
+		$key = isset( $_POST['endpoint'] ) ? sanitize_key( wp_unslash( $_POST['endpoint'] ) ) : '';
+		$map = array(
+			'health'               => array(
+				'path'  => 'health',
+				'fresh' => false,
+			),
+			'health_fresh'         => array(
+				'path'  => 'health',
+				'fresh' => true,
+			),
+			'detail_plugins'       => array(
+				'path'  => 'detail/plugins',
+				'fresh' => false,
+			),
+			'detail_plugins_fresh' => array(
+				'path'  => 'detail/plugins',
+				'fresh' => true,
+			),
+			'detail_theme'         => array(
+				'path'  => 'detail/theme',
+				'fresh' => false,
+			),
+			'detail_theme_fresh'   => array(
+				'path'  => 'detail/theme',
+				'fresh' => true,
+			),
+			'detail_server'        => array(
+				'path'  => 'detail/server',
+				'fresh' => false,
+			),
+			'detail_server_fresh'  => array(
+				'path'  => 'detail/server',
+				'fresh' => true,
+			),
+		);
+		if ( ! isset( $map[ $key ] ) ) {
+			wp_send_json_error( array( 'message' => __( 'Endpoint non valido.', 'wp-health-check' ) ), 400 );
+		}
+
+		$endpoint = $map[ $key ];
+
+		// Cache-buster casuale ad ogni chiamata + eventuale fresh=1.
+		$query_args = array( '_cb' => wp_generate_password( 16, false, false ) );
+		if ( $endpoint['fresh'] ) {
+			$query_args['fresh'] = '1';
+		}
+		$url = add_query_arg( $query_args, rest_url( 'health-check/v1/' . $endpoint['path'] ) );
+
+		// Il token resta lato server: viaggia solo nell'header della richiesta
+		// loopback, mai verso il browser.
+		$headers = array();
+		$token   = (string) get_option( WPHC_Options::OPT_TOKEN, '' );
+		if ( '' !== $token ) {
+			$headers['Authorization'] = 'Bearer ' . $token;
+		}
+
+		$start    = microtime( true );
+		$response = wp_remote_get(
+			$url,
+			array(
+				'timeout' => 20,
+				'headers' => $headers,
+			)
+		);
+		$took_ms  = (int) round( ( microtime( true ) - $start ) * 1000 );
+
+		if ( is_wp_error( $response ) ) {
+			wp_send_json_success(
+				array(
+					'url'     => $url,
+					'status'  => 0,
+					'took_ms' => $took_ms,
+					/* translators: %s: messaggio di errore della richiesta loopback. */
+					'body'    => sprintf( __( 'Errore loopback: %s', 'wp-health-check' ), $response->get_error_message() ),
+				)
+			);
+		}
+
+		wp_send_json_success(
+			array(
+				'url'     => $url,
+				'status'  => (int) wp_remote_retrieve_response_code( $response ),
+				'took_ms' => $took_ms,
+				'body'    => wp_remote_retrieve_body( $response ),
+			)
+		);
+	}
+
+	/**
+	 * Handler AJAX (admin) del pulsante "Visualizza log" della tab Site Health:
+	 * legge la stessa tabella di GET /update/log tramite WPHC_Update_Log::get_entries(),
+	 * ma con una query diretta invece che via loopback REST, perche' qui
+	 * l'utente e' gia' autenticato in wp-admin e non serve il bearer token.
+	 */
+	public static function ajax_view_log() {
+		check_ajax_referer( 'wphc_view_log' );
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+		}
+
+		$type   = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
+		$source = isset( $_POST['source'] ) ? sanitize_key( wp_unslash( $_POST['source'] ) ) : '';
+		$offset = isset( $_POST['offset'] ) ? (int) $_POST['offset'] : 0;
+
+		$result = WPHC_Update_Log::get_entries( $type, $source, 50, $offset );
+
+		wp_send_json_success(
+			array(
+				'entries' => $result['entries'],
+				'total'   => $result['total'],
+			)
+		);
+	}
+
+	/**
+	 * Handler AJAX (admin) del pulsante "Mostra" nella riga "Segreto di flotta"
+	 * (dalla 1.30.0): l'unico punto in cui il segreto in chiaro raggiunge il
+	 * browser, e solo in risposta a questa chiamata esplicita — mai stampato
+	 * nell'HTML della pagina, per non finire in cache di pagina, view-source o
+	 * screenshot automatici. Su multisite richiede anche manage_network: su una
+	 * rete il segreto e' condiviso da tutti i siti, non del singolo sito, quindi
+	 * la sola capacita' locale manage_options non basta. Ogni reveal lascia una
+	 * riga nella tabella di log (type='token', message='secret_revealed').
+	 */
+	public static function ajax_reveal_secret() {
+		check_ajax_referer( 'wphc_reveal_secret' );
+		if ( ! current_user_can( 'manage_options' ) || ( is_multisite() && ! current_user_can( 'manage_network' ) ) ) {
+			wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
+		}
+
+		$secret = (string) get_option( WPHC_Options::OPT_TOKEN, '' );
+		if ( '' === $secret ) {
+			wp_send_json_error( array( 'message' => __( 'Nessun segreto registrato.', 'wp-health-check' ) ), 404 );
+		}
+
+		$user = wp_get_current_user();
+		WPHC_Update_Log::log_row(
+			WPHC_Util::generate_correlation_id(),
+			'token',
+			'reveal',
+			$user->display_name ? $user->display_name : $user->user_login,
+			null,
+			null,
+			'completed',
+			'secret_revealed',
+			null,
+			'wp-admin',
+			$user->user_login
+		);
+
+		wp_send_json_success( array( 'secret' => $secret ) );
+	}
+
+	/**
+	 * Handler di admin-post.php per il pulsante di self-update nella tab Site
+	 * Health: esegue lo stesso flusso condiviso di POST /update
+	 * (WPHC_Self_Updater::perform_self_update()) e reindirizza alla tab con l'esito
+	 * (pattern POST-redirect-GET). Non richiede enrollment: e' un'azione
+	 * amministrativa, protetta da manage_options + nonce.
+	 */
+	public static function handle_self_update() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_self_update' );
+
+		$outcome       = WPHC_Self_Updater::perform_self_update();
+		$redirect_args = array( 'tab' => 'wp-health-check' );
+
+		switch ( $outcome['result'] ) {
+			case 'updated':
+				$redirect_args['wphc_updated'] = '1';
+				$redirect_args['to']           = $outcome['to'];
+				break;
+
+			case 'up_to_date':
+				$redirect_args['wphc_uptodate'] = '1';
+				break;
+
+			case 'error':
+				$redirect_args['wphc_update_failed'] = '1';
+				$redirect_args['reason']             = $outcome['code'];
+				break;
+
+			default: // esiti non riusciti ma non erronei: not_writable / integrity_check_failed.
+				$redirect_args['wphc_update_failed'] = '1';
+				$redirect_args['reason']             = $outcome['result'];
+				break;
+		}
+
+		wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'site-health.php' ) ) );
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per il pulsante "Svuota cache e ricontrolla":
+	 * cancella le cache dell'agent (transient wphc_*) e forza un ricontrollo
+	 * COMPLETO degli aggiornamenti di core/plugin/temi. Gira in contesto
+	 * amministrativo (admin-post), dove gli update-checker dei plugin/temi
+	 * premium sono attivi: a differenza di ?fresh=1 via REST, qui
+	 * wp_update_plugins()/wp_update_themes() ricostruiscono transient COMPLETI.
+	 */
+	public static function handle_clear_caches() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_clear_caches' );
+
+		// 1. Cache dei payload dell'agent.
+		delete_transient( WPHC_Options::TRANSIENT_HEALTH_CACHE );
+		delete_transient( WPHC_Options::TRANSIENT_DETAIL_PLUGINS_CACHE );
+		delete_transient( WPHC_Options::TRANSIENT_DETAIL_THEME_CACHE );
+		delete_transient( WPHC_Options::TRANSIENT_DETAIL_SERVER_CACHE );
+		delete_transient( WPHC_Options::TRANSIENT_LATEST_VERSION_CACHE );
+		delete_transient( WPHC_Options::TRANSIENT_PUBLIC_IP );
+		delete_transient( WPHC_Options::TRANSIENT_PUBLIC_IP_RETRY_LOCK );
+
+		// 2. Ricontrollo completo degli aggiornamenti. wp_clean_*_cache( true )
+		// svuota sia la lista sia il transient degli update, cosi' wp_update_*()
+		// ricostruisce da zero (in contesto admin, quindi con i premium inclusi).
+		require_once ABSPATH . 'wp-admin/includes/update.php';
+		wp_clean_plugins_cache( true );
+		wp_clean_themes_cache( true );
+		wp_version_check();
+		wp_update_plugins();
+		wp_update_themes();
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'          => 'wp-health-check',
+					'wphc_cleared' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per il pulsante "Elimina e rigenera" della
+	 * riga "Anteprima sito": elimina l'attachment dal Media Library e le
+	 * opzioni collegate, cosi' la prossima /health rigenera la thumbnail.
+	 * Il delete_transient() finale rimuove anche l'eventuale cooldown residuo,
+	 * per non far attendere l'utente che ha appena chiesto una rigenerazione.
+	 */
+	public static function handle_delete_thumbnail() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_delete_thumbnail' );
+
+		$attachment_id = (int) get_option( WPHC_Options::OPT_THUMB_ID );
+		if ( ! $attachment_id ) {
+			// Retrocompatibilita' con le thumbnail create dalla 1.27.0, che
+			// salvava solo l'URL (wp_health_check_thumb_id non esisteva ancora).
+			$attachment_id = attachment_url_to_postid( (string) get_option( WPHC_Options::OPT_THUMB ) );
+		}
+		if ( $attachment_id ) {
+			wp_delete_attachment( $attachment_id, true );
+		}
+
+		delete_option( WPHC_Options::OPT_THUMB );
+		delete_option( WPHC_Options::OPT_THUMB_ID );
+		delete_option( WPHC_Options::OPT_THUMB_ERROR );
+		delete_option( WPHC_Options::OPT_THUMB_AT );
+		delete_transient( WPHC_Options::TRANSIENT_THUMB_RETRY_LOCK );
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                => 'wp-health-check',
+					'wphc_thumb_deleted' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per il pulsante "Rigenera anteprima ora" (dalla
+	 * 1.30.0): a differenza di "Elimina e rigenera" (che si limita a cancellare
+	 * e demanda la rigenerazione alla prossima /health), questo chiama
+	 * WPHC_Thumbnail::maybe_generate( true ) sincronamente nella stessa richiesta
+	 * admin, cosi' un eventuale errore e' visibile subito nella riga "Anteprima
+	 * sito" invece di scoprirlo solo al prossimo polling.
+	 */
+	public static function handle_regenerate_thumbnail() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_regenerate_thumbnail' );
+
+		WPHC_Thumbnail::maybe_generate( true );
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                    => 'wp-health-check',
+					'wphc_thumb_regenerated' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per il pulsante di reset enrollment nella tab
+	 * Site Health: stessa logica condivisa con "wp health-check reset"
+	 * (WPHC_Enrollment::reset()), poi redirect alla tab (POST-redirect-GET).
+	 */
+	public static function handle_reset_enrollment() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_reset_enrollment' );
+
+		WPHC_Enrollment::reset();
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'        => 'wp-health-check',
+					'wphc_reset' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per i checkbox "Consenti aggiornamenti (plugin,
+	 * temi, core) via API" e "Limita gli aggiornamenti ai soli pacchetti
+	 * ospitati su wordpress.org" nella tab Site Health: stesso form/nonce, unico
+	 * interruttore master (§5 della specifica) da cui dipendono le rotte
+	 * POST /update/{plugin,theme,core}, piu' la sotto-opzione che ne restringe
+	 * l'host del pacchetto (vedi WPHC_Item_Updater::is_package_host_allowed()).
+	 */
+	public static function handle_toggle_updates() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_toggle_updates' );
+
+		update_option( WPHC_Options::OPT_UPDATES_ENABLED, ! empty( $_POST['wphc_updates_enabled'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+		update_option( WPHC_Options::OPT_RESTRICT_OFFICIAL_ONLY, ! empty( $_POST['wphc_restrict_official_only'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                  => 'wp-health-check',
+					'wphc_updates_toggled' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per il campo "Webhook di notifica aggiornamenti
+	 * bulk". Pipeline di validazione: esc_url_raw() normalizza (non valida),
+	 * wp_http_validate_url() e' il gate vero (lo stesso validatore che l'HTTP
+	 * API di WP applica gia' alle richieste sicure, quindi si rifiuta esattamente
+	 * cio' che il trasporto rifiuterebbe comunque), poi scheme https esplicito
+	 * (il validatore da solo accetta anche http) e, se l'host e' un IP letterale,
+	 * WPHC_Util::ip_is_public() (riusata, non riscritta). Un valore rifiutato non
+	 * sovrascrive mai un URL funzionante gia' salvato.
+	 *
+	 * Gestisce anche la checkbox "disattiva webhook", indipendente dal campo
+	 * URL: da quando esiste un default di flotta (WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL),
+	 * un campo vuoto non significa piu' "spento" ma "usa il default", quindi
+	 * serve un modo esplicito di dire "niente notifiche per questo sito".
+	 */
+	public static function handle_save_webhook() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_save_webhook' );
+
+		$raw      = isset( $_POST['wphc_webhook_url'] ) ? trim( (string) wp_unslash( $_POST['wphc_webhook_url'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+		$disabled = ! empty( $_POST['wphc_webhook_disabled'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
+
+		update_option( WPHC_Options::OPT_WEBHOOK_DISABLED, $disabled );
+		if ( $disabled ) {
+			// Nessuna notifica deve restare in volo (retry pianificato) quando
+			// l'operatore ha appena chiesto di spegnere tutto, a prescindere dal
+			// campo URL sotto.
+			delete_option( WPHC_Options::OPT_WEBHOOK_PENDING );
+			wp_clear_scheduled_hook( WPHC_Options::CRON_WEBHOOK_RETRY );
+		}
+
+		if ( '' === $raw ) {
+			delete_option( WPHC_Options::OPT_WEBHOOK_URL );
+			delete_option( WPHC_Options::OPT_WEBHOOK_PENDING );
+			wp_clear_scheduled_hook( WPHC_Options::CRON_WEBHOOK_RETRY );
+			wp_safe_redirect(
+				add_query_arg(
+					array(
+						'tab'                => 'wp-health-check',
+						'wphc_webhook_saved' => '1',
+					),
+					admin_url( 'site-health.php' )
+				)
+			);
+			exit;
+		}
+
+		$url    = esc_url_raw( $raw );
+		$reason = '';
+		if ( '' === $url || ! wp_http_validate_url( $url ) ) {
+			$reason = 'bad_url';
+		} elseif ( 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) {
+			$reason = 'not_https';
+		} elseif ( ! WPHC_Webhook::url_is_allowed( $url ) ) {
+			$reason = 'blocked_host';
+		}
+
+		if ( '' !== $reason ) {
+			// Il valore rifiutato viaggia in un transient per utente, non nella
+			// query string (contenuto riflesso): serve solo a ripresentarlo nel
+			// campo dopo il redirect.
+			set_transient( WPHC_Options::TRANSIENT_WEBHOOK_BAD_URL_PREFIX . get_current_user_id(), $raw, 5 * MINUTE_IN_SECONDS );
+			wp_safe_redirect(
+				add_query_arg(
+					array(
+						'tab'                  => 'wp-health-check',
+						'wphc_webhook_invalid' => '1',
+						'reason'               => $reason,
+					),
+					admin_url( 'site-health.php' )
+				)
+			);
+			exit;
+		}
+
+		update_option( WPHC_Options::OPT_WEBHOOK_URL, $url, false );
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                => 'wp-health-check',
+					'wphc_webhook_saved' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
+
+	/**
+	 * Handler di admin-post.php per "Invia un webhook di prova": invio sincrono
+	 * dell'evento wphc.test, MAI un retry pianificato (a differenza del report di
+	 * fine job bulk). Unico modo pratico per un admin di verificare che la
+	 * propria integrazione HMAC sia corretta prima che giri un job reale.
+	 */
+	public static function handle_test_webhook() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+		}
+		check_admin_referer( 'wphc_test_webhook' );
+
+		$payload = array(
+			'schema'        => 'wphc.test/1',
+			'event'         => 'wphc.test',
+			'site'          => WPHC_Util::normalize_site_url(),
+			'agent_version' => WP_HEALTH_CHECK_VERSION,
+			'secret_kid'    => (string) get_option( WPHC_Options::OPT_SECRET_KID, '' ),
+			'generated_at'  => gmdate( 'c' ),
+		);
+		WPHC_Webhook::dispatch_payload( 'wphc.test', $payload, 'test-' . WPHC_Util::generate_correlation_id(), 1 );
+
+		wp_safe_redirect(
+			add_query_arg(
+				array(
+					'tab'                 => 'wp-health-check',
+					'wphc_webhook_tested' => '1',
+				),
+				admin_url( 'site-health.php' )
+			)
+		);
+		exit;
+	}
 }
-add_filter( 'site_health_navigation_tabs', 'wphc_register_site_health_tab' );
+/**
+ * Template HTML della tab Site Health del plugin.
+ *
+ * @package WP_Health_Check
+ */
 
 /**
- * Renderizza il contenuto della tab "WP Health Check": versioni installata e
- * disponibile, stato di enrollment, URL da usare per l'enroll, ultimo enroll
- * fallito, ultimo accesso, pulsante di self-update e pulsante di reset.
+ * Rendering della tab "WP Health Check" in Strumenti -> Salute del sito.
  *
- * @param string $tab Slug della tab richiesta.
+ * Raccoglie render_tab() della sezione S del file 1.38.1: un prologo PHP che legge lo stato (option, transient,
+ * conteggi di plugin e temi), poi il template HTML con le sue isole PHP, i blocchi <style> e <script> inline. Il
+ * template sta DENTRO il metodo (mai HTML al livello del file) ed e' copiato verbatim, spazi compresi: la
+ * tabulazione prima di ogni riga e' output. Per questo il file non va mai passato a phpcbf (lint:fix).
+ * Hook servito (registrato in WPHC_Plugin::boot()): l'azione site_health_tab_content.
  */
-function wphc_render_site_health_tab( $tab ) {
-	if ( 'wp-health-check' !== $tab || ! current_user_can( 'manage_options' ) ) {
-		return;
-	}
+final class WPHC_Admin_View {
 
-	$is_enrolled             = ! empty( get_option( 'wp_health_check_token' ) );
-	$signed_site_url         = (string) get_option( 'wp_health_check_site_url', '' );
-	$enrolled_at             = get_option( 'wp_health_check_enrolled_at' );
-	$enrolled_ip             = get_option( 'wp_health_check_enrolled_ip' );
-	$last_request_at         = get_option( 'wp_health_check_last_request_at' );
-	$last_request_ip         = get_option( 'wp_health_check_last_request_ip' );
-	$trust_proxy             = (bool) get_option( 'wp_health_check_trust_proxy', false );
-	$last_enroll_error       = get_option( 'wp_health_check_last_enroll_error' );
-	$updates_via_api_enabled = (bool) get_option( 'wp_health_check_updates_enabled', true );
-	$restrict_official_only  = (bool) get_option( 'wp_health_check_restrict_official_only', false );
-	$thumbnail               = get_option( 'wp_health_check_thumb' );
-	$current_secret          = (string) get_option( 'wp_health_check_token', '' );
-	$secret_kid              = (string) get_option( 'wp_health_check_secret_kid', '' );
-	$secret_rotated_at       = get_option( 'wp_health_check_token_rotated_at' );
-	$secret_revoked_at       = get_option( 'wp_health_check_revoked_at' );
-	$protocol_version        = (int) get_option( 'wp_health_check_protocol', 1 );
-	// $webhook_url_raw e' il SOLO override del sito (campo del form): resta
-	// vuoto se il sito non ha impostato nulla, anche quando il default di
-	// flotta e' attivo. $webhook_url e' invece l'URL EFFETTIVO (con fallback
-	// al default), usato solo per decidere se mostrare il pulsante di test e
-	// per il testo informativo sotto il campo.
-	$webhook_url_raw   = (string) get_option( 'wp_health_check_webhook_url', '' );
-	$webhook_disabled  = (bool) get_option( 'wp_health_check_webhook_disabled', false );
-	$webhook_url       = WPHC_Webhook::url();
-	$webhook_last      = get_option( 'wp_health_check_webhook_last' );
-	$webhook_url_field = $webhook_url_raw;
-	$webhook_bad_url   = get_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
-	if ( false !== $webhook_bad_url ) {
-		$webhook_url_field = $webhook_bad_url;
-		delete_transient( 'wphc_webhook_bad_url_' . get_current_user_id() );
-	}
+	/**
+	 * Renderizza il contenuto della tab "WP Health Check": versioni installata e
+	 * disponibile, stato di enrollment, URL da usare per l'enroll, ultimo enroll
+	 * fallito, ultimo accesso, pulsante di self-update e pulsante di reset.
+	 *
+	 * @param string $tab Slug della tab richiesta.
+	 */
+	public static function render_tab( $tab ) {
+		if ( 'wp-health-check' !== $tab || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
 
-	// Il segreto non viene MAI stampato per intero nell'HTML della pagina
-	// (finirebbe in cache di pagina, view-source, screenshot automatici):
-	// qui solo una versione mascherata e un fingerprint, sufficienti a
-	// verificare "e' il segreto giusto?" senza esporlo. Il valore completo
-	// arriva al browser solo in risposta al pulsante "Mostra" (vedi
-	// wphc_ajax_reveal_secret()).
-	$secret_masked = '';
-	if ( '' !== $current_secret ) {
-		$secret_masked = ( strlen( $current_secret ) > 10 )
-			? substr( $current_secret, 0, 6 ) . str_repeat( '•', 8 ) . substr( $current_secret, -4 )
-			: str_repeat( '•', strlen( $current_secret ) );
-	}
-	$secret_fingerprint = ( '' !== $current_secret ) ? substr( hash( 'sha256', $current_secret ), 0, 12 ) : '';
-	$thumb_error        = get_option( 'wp_health_check_thumb_error' );
+		$is_enrolled             = ! empty( get_option( WPHC_Options::OPT_TOKEN ) );
+		$signed_site_url         = (string) get_option( WPHC_Options::OPT_SITE_URL, '' );
+		$enrolled_at             = get_option( WPHC_Options::OPT_ENROLLED_AT );
+		$enrolled_ip             = get_option( WPHC_Options::OPT_ENROLLED_IP );
+		$last_request_at         = get_option( WPHC_Options::OPT_LAST_REQUEST_AT );
+		$last_request_ip         = get_option( WPHC_Options::OPT_LAST_REQUEST_IP );
+		$trust_proxy             = (bool) get_option( WPHC_Options::OPT_TRUST_PROXY, false );
+		$last_enroll_error       = get_option( WPHC_Options::OPT_LAST_ENROLL_ERROR );
+		$updates_via_api_enabled = (bool) get_option( WPHC_Options::OPT_UPDATES_ENABLED, true );
+		$restrict_official_only  = (bool) get_option( WPHC_Options::OPT_RESTRICT_OFFICIAL_ONLY, false );
+		$thumbnail               = get_option( WPHC_Options::OPT_THUMB );
+		$current_secret          = (string) get_option( WPHC_Options::OPT_TOKEN, '' );
+		$secret_kid              = (string) get_option( WPHC_Options::OPT_SECRET_KID, '' );
+		$secret_rotated_at       = get_option( WPHC_Options::OPT_TOKEN_ROTATED_AT );
+		$secret_revoked_at       = get_option( WPHC_Options::OPT_REVOKED_AT );
+		$protocol_version        = (int) get_option( WPHC_Options::OPT_PROTOCOL, 1 );
+		// $webhook_url_raw e' il SOLO override del sito (campo del form): resta
+		// vuoto se il sito non ha impostato nulla, anche quando il default di
+		// flotta e' attivo. $webhook_url e' invece l'URL EFFETTIVO (con fallback
+		// al default), usato solo per decidere se mostrare il pulsante di test e
+		// per il testo informativo sotto il campo.
+		$webhook_url_raw   = (string) get_option( WPHC_Options::OPT_WEBHOOK_URL, '' );
+		$webhook_disabled  = (bool) get_option( WPHC_Options::OPT_WEBHOOK_DISABLED, false );
+		$webhook_url       = WPHC_Webhook::url();
+		$webhook_last      = get_option( WPHC_Options::OPT_WEBHOOK_LAST );
+		$webhook_url_field = $webhook_url_raw;
+		$webhook_bad_url   = get_transient( WPHC_Options::TRANSIENT_WEBHOOK_BAD_URL_PREFIX . get_current_user_id() );
+		if ( false !== $webhook_bad_url ) {
+			$webhook_url_field = $webhook_bad_url;
+			delete_transient( WPHC_Options::TRANSIENT_WEBHOOK_BAD_URL_PREFIX . get_current_user_id() );
+		}
 
-	$candidates       = WPHC_Util::candidate_site_urls();
-	$canonical_home   = WPHC_Util::normalize_site_url();
-	$latest_version   = WPHC_Self_Updater::get_latest_version();
-	$update_available = ( null !== $latest_version ) && version_compare( $latest_version, WP_HEALTH_CHECK_VERSION, '>' );
+		// Il segreto non viene MAI stampato per intero nell'HTML della pagina
+		// (finirebbe in cache di pagina, view-source, screenshot automatici):
+		// qui solo una versione mascherata e un fingerprint, sufficienti a
+		// verificare "e' il segreto giusto?" senza esporlo. Il valore completo
+		// arriva al browser solo in risposta al pulsante "Mostra" (vedi
+		// WPHC_Admin::ajax_reveal_secret()).
+		$secret_masked = '';
+		if ( '' !== $current_secret ) {
+			$secret_masked = ( strlen( $current_secret ) > 10 )
+				? substr( $current_secret, 0, 6 ) . str_repeat( '•', 8 ) . substr( $current_secret, -4 )
+				: str_repeat( '•', strlen( $current_secret ) );
+		}
+		$secret_fingerprint = ( '' !== $current_secret ) ? substr( hash( 'sha256', $current_secret ), 0, 12 ) : '';
+		$thumb_error        = get_option( WPHC_Options::OPT_THUMB_ERROR );
 
-	// Conteggi plugin/temi. Siamo in contesto amministrativo: i transient
-	// degli update sono quelli completi mantenuti dal cron/admin (premium
-	// inclusi), quindi questi numeri rispecchiano la schermata Plugin/Temi.
-	require_once ABSPATH . 'wp-admin/includes/plugin.php';
+		$candidates       = WPHC_Util::candidate_site_urls();
+		$canonical_home   = WPHC_Util::normalize_site_url();
+		$latest_version   = WPHC_Self_Updater::get_latest_version();
+		$update_available = ( null !== $latest_version ) && version_compare( $latest_version, WP_HEALTH_CHECK_VERSION, '>' );
 
-	$all_plugins     = get_plugins();
-	$plugins_total   = count( $all_plugins );
-	$plugins_active  = count( (array) get_option( 'active_plugins', array() ) );
-	$upd_plugins_t   = get_site_transient( 'update_plugins' );
-	$plugins_updates = ( is_object( $upd_plugins_t ) && ! empty( $upd_plugins_t->response ) ) ? count( $upd_plugins_t->response ) : 0;
+		// Conteggi plugin/temi. Siamo in contesto amministrativo: i transient
+		// degli update sono quelli completi mantenuti dal cron/admin (premium
+		// inclusi), quindi questi numeri rispecchiano la schermata Plugin/Temi.
+		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
-	$all_themes        = wp_get_themes();
-	$themes_total      = count( $all_themes );
-	$active_theme_name = (string) wp_get_theme()->get( 'Name' );
-	$upd_themes_t      = get_site_transient( 'update_themes' );
-	$themes_updates    = ( is_object( $upd_themes_t ) && ! empty( $upd_themes_t->response ) ) ? count( $upd_themes_t->response ) : 0;
-	?>
+		$all_plugins     = get_plugins();
+		$plugins_total   = count( $all_plugins );
+		$plugins_active  = count( (array) get_option( 'active_plugins', array() ) );
+		$upd_plugins_t   = get_site_transient( 'update_plugins' );
+		$plugins_updates = ( is_object( $upd_plugins_t ) && ! empty( $upd_plugins_t->response ) ) ? count( $upd_plugins_t->response ) : 0;
+
+		$all_themes        = wp_get_themes();
+		$themes_total      = count( $all_themes );
+		$active_theme_name = (string) wp_get_theme()->get( 'Name' );
+		$upd_themes_t      = get_site_transient( 'update_themes' );
+		$themes_updates    = ( is_object( $upd_themes_t ) && ! empty( $upd_themes_t->response ) ) ? count( $upd_themes_t->response ) : 0;
+		// phpcs:disable Generic.WhiteSpace.ScopeIndent.Incorrect -- template HTML copiato verbatim: l'indentazione e' output.
+		?>
 	<div class="health-check-body health-check-wp-health-check-tab hide-if-no-js">
 		<h2><?php esc_html_e( 'WP Health Check — Fleet Agent', 'wp-health-check' ); ?></h2>
 
@@ -8084,7 +8562,7 @@ function wphc_render_site_health_tab( $tab ) {
 		<?php elseif ( isset( $_GET['wphc_thumb_deleted'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
 			<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima del sito eliminata: verra\' rigenerata alla prossima chiamata /health.', 'wp-health-check' ); ?></p></div>
 		<?php elseif ( isset( $_GET['wphc_thumb_regenerated'] ) ) : // phpcs:ignore WordPress.Security.NonceVerification.Recommended ?>
-			<?php if ( get_option( 'wp_health_check_thumb' ) ) : ?>
+			<?php if ( get_option( WPHC_Options::OPT_THUMB ) ) : ?>
 				<div class="notice notice-success"><p><?php esc_html_e( 'Anteprima rigenerata con successo.', 'wp-health-check' ); ?></p></div>
 			<?php else : ?>
 				<div class="notice notice-error"><p><?php esc_html_e( 'Rigenerazione non riuscita: vedi il dettaglio dell\'errore nella riga "Anteprima sito" qui sotto.', 'wp-health-check' ); ?></p></div>
@@ -8745,519 +9223,128 @@ function wphc_render_site_health_tab( $tab ) {
 		</form>
 	</div>
 	<?php
+		// phpcs:enable Generic.WhiteSpace.ScopeIndent.Incorrect
+	}
 }
-add_action( 'site_health_tab_content', 'wphc_render_site_health_tab' );
-
 /**
- * Handler AJAX (admin) del tester di endpoint della tab Site Health. Fa una
- * richiesta loopback all'endpoint REST richiesto, aggiungendo il bearer token
- * (lato server: non viene mai esposto al browser) e un cache-buster "_cb"
- * casuale, e restituisce status/corpo/latenza da mostrare nella modale. Solo
- * endpoint GET dati in whitelist: nessun effetto collaterale.
- */
-function wphc_ajax_test_endpoint() {
-	check_ajax_referer( 'wphc_test_endpoint' );
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
-	}
-
-	$key = isset( $_POST['endpoint'] ) ? sanitize_key( wp_unslash( $_POST['endpoint'] ) ) : '';
-	$map = array(
-		'health'               => array(
-			'path'  => 'health',
-			'fresh' => false,
-		),
-		'health_fresh'         => array(
-			'path'  => 'health',
-			'fresh' => true,
-		),
-		'detail_plugins'       => array(
-			'path'  => 'detail/plugins',
-			'fresh' => false,
-		),
-		'detail_plugins_fresh' => array(
-			'path'  => 'detail/plugins',
-			'fresh' => true,
-		),
-		'detail_theme'         => array(
-			'path'  => 'detail/theme',
-			'fresh' => false,
-		),
-		'detail_theme_fresh'   => array(
-			'path'  => 'detail/theme',
-			'fresh' => true,
-		),
-		'detail_server'        => array(
-			'path'  => 'detail/server',
-			'fresh' => false,
-		),
-		'detail_server_fresh'  => array(
-			'path'  => 'detail/server',
-			'fresh' => true,
-		),
-	);
-	if ( ! isset( $map[ $key ] ) ) {
-		wp_send_json_error( array( 'message' => __( 'Endpoint non valido.', 'wp-health-check' ) ), 400 );
-	}
-
-	$endpoint = $map[ $key ];
-
-	// Cache-buster casuale ad ogni chiamata + eventuale fresh=1.
-	$query_args = array( '_cb' => wp_generate_password( 16, false, false ) );
-	if ( $endpoint['fresh'] ) {
-		$query_args['fresh'] = '1';
-	}
-	$url = add_query_arg( $query_args, rest_url( 'health-check/v1/' . $endpoint['path'] ) );
-
-	// Il token resta lato server: viaggia solo nell'header della richiesta
-	// loopback, mai verso il browser.
-	$headers = array();
-	$token   = (string) get_option( 'wp_health_check_token', '' );
-	if ( '' !== $token ) {
-		$headers['Authorization'] = 'Bearer ' . $token;
-	}
-
-	$start    = microtime( true );
-	$response = wp_remote_get(
-		$url,
-		array(
-			'timeout' => 20,
-			'headers' => $headers,
-		)
-	);
-	$took_ms  = (int) round( ( microtime( true ) - $start ) * 1000 );
-
-	if ( is_wp_error( $response ) ) {
-		wp_send_json_success(
-			array(
-				'url'     => $url,
-				'status'  => 0,
-				'took_ms' => $took_ms,
-				/* translators: %s: messaggio di errore della richiesta loopback. */
-				'body'    => sprintf( __( 'Errore loopback: %s', 'wp-health-check' ), $response->get_error_message() ),
-			)
-		);
-	}
-
-	wp_send_json_success(
-		array(
-			'url'     => $url,
-			'status'  => (int) wp_remote_retrieve_response_code( $response ),
-			'took_ms' => $took_ms,
-			'body'    => wp_remote_retrieve_body( $response ),
-		)
-	);
-}
-add_action( 'wp_ajax_wphc_test_endpoint', 'wphc_ajax_test_endpoint' );
-
-/**
- * Handler AJAX (admin) del pulsante "Visualizza log" della tab Site Health:
- * legge la stessa tabella di GET /update/log tramite WPHC_Update_Log::get_entries(),
- * ma con una query diretta invece che via loopback REST, perche' qui
- * l'utente e' gia' autenticato in wp-admin e non serve il bearer token.
- */
-function wphc_ajax_view_log() {
-	check_ajax_referer( 'wphc_view_log' );
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
-	}
-
-	$type   = isset( $_POST['type'] ) ? sanitize_key( wp_unslash( $_POST['type'] ) ) : '';
-	$source = isset( $_POST['source'] ) ? sanitize_key( wp_unslash( $_POST['source'] ) ) : '';
-	$offset = isset( $_POST['offset'] ) ? (int) $_POST['offset'] : 0;
-
-	$result = WPHC_Update_Log::get_entries( $type, $source, 50, $offset );
-
-	wp_send_json_success(
-		array(
-			'entries' => $result['entries'],
-			'total'   => $result['total'],
-		)
-	);
-}
-add_action( 'wp_ajax_wphc_view_log', 'wphc_ajax_view_log' );
-
-/**
- * Handler AJAX (admin) del pulsante "Mostra" nella riga "Segreto di flotta"
- * (dalla 1.30.0): l'unico punto in cui il segreto in chiaro raggiunge il
- * browser, e solo in risposta a questa chiamata esplicita — mai stampato
- * nell'HTML della pagina, per non finire in cache di pagina, view-source o
- * screenshot automatici. Su multisite richiede anche manage_network: su una
- * rete il segreto e' condiviso da tutti i siti, non del singolo sito, quindi
- * la sola capacita' locale manage_options non basta. Ogni reveal lascia una
- * riga nella tabella di log (type='token', message='secret_revealed').
- */
-function wphc_ajax_reveal_secret() {
-	check_ajax_referer( 'wphc_reveal_secret' );
-	if ( ! current_user_can( 'manage_options' ) || ( is_multisite() && ! current_user_can( 'manage_network' ) ) ) {
-		wp_send_json_error( array( 'message' => __( 'Non autorizzato.', 'wp-health-check' ) ), 403 );
-	}
-
-	$secret = (string) get_option( 'wp_health_check_token', '' );
-	if ( '' === $secret ) {
-		wp_send_json_error( array( 'message' => __( 'Nessun segreto registrato.', 'wp-health-check' ) ), 404 );
-	}
-
-	$user = wp_get_current_user();
-	WPHC_Update_Log::log_row(
-		WPHC_Util::generate_correlation_id(),
-		'token',
-		'reveal',
-		$user->display_name ? $user->display_name : $user->user_login,
-		null,
-		null,
-		'completed',
-		'secret_revealed',
-		null,
-		'wp-admin',
-		$user->user_login
-	);
-
-	wp_send_json_success( array( 'secret' => $secret ) );
-}
-add_action( 'wp_ajax_wphc_reveal_secret', 'wphc_ajax_reveal_secret' );
-
-/**
- * Handler di admin-post.php per il pulsante di self-update nella tab Site
- * Health: esegue lo stesso flusso condiviso di POST /update
- * (WPHC_Self_Updater::perform_self_update()) e reindirizza alla tab con l'esito
- * (pattern POST-redirect-GET). Non richiede enrollment: e' un'azione
- * amministrativa, protetta da manage_options + nonce.
- */
-function wphc_handle_self_update() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_self_update' );
-
-	$outcome       = WPHC_Self_Updater::perform_self_update();
-	$redirect_args = array( 'tab' => 'wp-health-check' );
-
-	switch ( $outcome['result'] ) {
-		case 'updated':
-			$redirect_args['wphc_updated'] = '1';
-			$redirect_args['to']           = $outcome['to'];
-			break;
-
-		case 'up_to_date':
-			$redirect_args['wphc_uptodate'] = '1';
-			break;
-
-		case 'error':
-			$redirect_args['wphc_update_failed'] = '1';
-			$redirect_args['reason']             = $outcome['code'];
-			break;
-
-		default: // esiti non riusciti ma non erronei: not_writable / integrity_check_failed.
-			$redirect_args['wphc_update_failed'] = '1';
-			$redirect_args['reason']             = $outcome['result'];
-			break;
-	}
-
-	wp_safe_redirect( add_query_arg( $redirect_args, admin_url( 'site-health.php' ) ) );
-	exit;
-}
-add_action( 'admin_post_wphc_self_update', 'wphc_handle_self_update' );
-
-/**
- * Handler di admin-post.php per il pulsante "Svuota cache e ricontrolla":
- * cancella le cache dell'agent (transient wphc_*) e forza un ricontrollo
- * COMPLETO degli aggiornamenti di core/plugin/temi. Gira in contesto
- * amministrativo (admin-post), dove gli update-checker dei plugin/temi
- * premium sono attivi: a differenza di ?fresh=1 via REST, qui
- * wp_update_plugins()/wp_update_themes() ricostruiscono transient COMPLETI.
- */
-function wphc_handle_clear_caches() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_clear_caches' );
-
-	// 1. Cache dei payload dell'agent.
-	delete_transient( 'wphc_health_cache' );
-	delete_transient( 'wphc_detail_plugins_cache' );
-	delete_transient( 'wphc_detail_theme_cache' );
-	delete_transient( 'wphc_detail_server_cache' );
-	delete_transient( 'wphc_latest_version_cache' );
-	delete_transient( 'wphc_public_ip' );
-	delete_transient( 'wphc_public_ip_retry_lock' );
-
-	// 2. Ricontrollo completo degli aggiornamenti. wp_clean_*_cache( true )
-	// svuota sia la lista sia il transient degli update, cosi' wp_update_*()
-	// ricostruisce da zero (in contesto admin, quindi con i premium inclusi).
-	require_once ABSPATH . 'wp-admin/includes/update.php';
-	wp_clean_plugins_cache( true );
-	wp_clean_themes_cache( true );
-	wp_version_check();
-	wp_update_plugins();
-	wp_update_themes();
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'          => 'wp-health-check',
-				'wphc_cleared' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_clear_caches', 'wphc_handle_clear_caches' );
-
-/**
- * Handler di admin-post.php per il pulsante "Elimina e rigenera" della
- * riga "Anteprima sito": elimina l'attachment dal Media Library e le
- * opzioni collegate, cosi' la prossima /health rigenera la thumbnail.
- * Il delete_transient() finale rimuove anche l'eventuale cooldown residuo,
- * per non far attendere l'utente che ha appena chiesto una rigenerazione.
- */
-function wphc_handle_delete_thumbnail() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_delete_thumbnail' );
-
-	$attachment_id = (int) get_option( 'wp_health_check_thumb_id' );
-	if ( ! $attachment_id ) {
-		// Retrocompatibilita' con le thumbnail create dalla 1.27.0, che
-		// salvava solo l'URL (wp_health_check_thumb_id non esisteva ancora).
-		$attachment_id = attachment_url_to_postid( (string) get_option( 'wp_health_check_thumb' ) );
-	}
-	if ( $attachment_id ) {
-		wp_delete_attachment( $attachment_id, true );
-	}
-
-	delete_option( 'wp_health_check_thumb' );
-	delete_option( 'wp_health_check_thumb_id' );
-	delete_option( 'wp_health_check_thumb_error' );
-	delete_option( 'wp_health_check_thumb_at' );
-	delete_transient( 'wphc_thumb_retry_lock' );
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'                => 'wp-health-check',
-				'wphc_thumb_deleted' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_delete_thumbnail', 'wphc_handle_delete_thumbnail' );
-
-/**
- * Handler di admin-post.php per il pulsante "Rigenera anteprima ora" (dalla
- * 1.30.0): a differenza di "Elimina e rigenera" (che si limita a cancellare
- * e demanda la rigenerazione alla prossima /health), questo chiama
- * WPHC_Thumbnail::maybe_generate( true ) sincronamente nella stessa richiesta
- * admin, cosi' un eventuale errore e' visibile subito nella riga "Anteprima
- * sito" invece di scoprirlo solo al prossimo polling.
- */
-function wphc_handle_regenerate_thumbnail() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_regenerate_thumbnail' );
-
-	WPHC_Thumbnail::maybe_generate( true );
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'                    => 'wp-health-check',
-				'wphc_thumb_regenerated' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_regenerate_thumbnail', 'wphc_handle_regenerate_thumbnail' );
-
-/**
- * Handler di admin-post.php per il pulsante di reset enrollment nella tab
- * Site Health: stessa logica condivisa con "wp health-check reset"
- * (WPHC_Enrollment::reset()), poi redirect alla tab (POST-redirect-GET).
- */
-function wphc_handle_reset_enrollment() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_reset_enrollment' );
-
-	WPHC_Enrollment::reset();
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'        => 'wp-health-check',
-				'wphc_reset' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_reset_enrollment', 'wphc_handle_reset_enrollment' );
-
-/**
- * Handler di admin-post.php per i checkbox "Consenti aggiornamenti (plugin,
- * temi, core) via API" e "Limita gli aggiornamenti ai soli pacchetti
- * ospitati su wordpress.org" nella tab Site Health: stesso form/nonce, unico
- * interruttore master (§5 della specifica) da cui dipendono le rotte
- * POST /update/{plugin,theme,core}, piu' la sotto-opzione che ne restringe
- * l'host del pacchetto (vedi WPHC_Item_Updater::is_package_host_allowed()).
- */
-function wphc_handle_toggle_updates() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_toggle_updates' );
-
-	update_option( 'wp_health_check_updates_enabled', ! empty( $_POST['wphc_updates_enabled'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
-	update_option( 'wp_health_check_restrict_official_only', ! empty( $_POST['wphc_restrict_official_only'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'                  => 'wp-health-check',
-				'wphc_updates_toggled' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_toggle_updates', 'wphc_handle_toggle_updates' );
-
-/**
- * Handler di admin-post.php per il campo "Webhook di notifica aggiornamenti
- * bulk". Pipeline di validazione: esc_url_raw() normalizza (non valida),
- * wp_http_validate_url() e' il gate vero (lo stesso validatore che l'HTTP
- * API di WP applica gia' alle richieste sicure, quindi si rifiuta esattamente
- * cio' che il trasporto rifiuterebbe comunque), poi scheme https esplicito
- * (il validatore da solo accetta anche http) e, se l'host e' un IP letterale,
- * WPHC_Util::ip_is_public() (riusata, non riscritta). Un valore rifiutato non
- * sovrascrive mai un URL funzionante gia' salvato.
+ * Registrazione di tutti gli hook di WordPress del plugin.
  *
- * Gestisce anche la checkbox "disattiva webhook", indipendente dal campo
- * URL: da quando esiste un default di flotta (WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL),
- * un campo vuoto non significa piu' "spento" ma "usa il default", quindi
- * serve un modo esplicito di dire "niente notifiche per questo sito".
+ * @package WP_Health_Check
  */
-function wphc_handle_save_webhook() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
-	}
-	check_admin_referer( 'wphc_save_webhook' );
-
-	$raw      = isset( $_POST['wphc_webhook_url'] ) ? trim( (string) wp_unslash( $_POST['wphc_webhook_url'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
-	$disabled = ! empty( $_POST['wphc_webhook_disabled'] ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- verificato sopra da check_admin_referer().
-
-	update_option( 'wp_health_check_webhook_disabled', $disabled );
-	if ( $disabled ) {
-		// Nessuna notifica deve restare in volo (retry pianificato) quando
-		// l'operatore ha appena chiesto di spegnere tutto, a prescindere dal
-		// campo URL sotto.
-		delete_option( 'wp_health_check_webhook_pending' );
-		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
-	}
-
-	if ( '' === $raw ) {
-		delete_option( 'wp_health_check_webhook_url' );
-		delete_option( 'wp_health_check_webhook_pending' );
-		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
-		wp_safe_redirect(
-			add_query_arg(
-				array(
-					'tab'                => 'wp-health-check',
-					'wphc_webhook_saved' => '1',
-				),
-				admin_url( 'site-health.php' )
-			)
-		);
-		exit;
-	}
-
-	$url    = esc_url_raw( $raw );
-	$reason = '';
-	if ( '' === $url || ! wp_http_validate_url( $url ) ) {
-		$reason = 'bad_url';
-	} elseif ( 'https' !== strtolower( (string) wp_parse_url( $url, PHP_URL_SCHEME ) ) ) {
-		$reason = 'not_https';
-	} elseif ( ! WPHC_Webhook::url_is_allowed( $url ) ) {
-		$reason = 'blocked_host';
-	}
-
-	if ( '' !== $reason ) {
-		// Il valore rifiutato viaggia in un transient per utente, non nella
-		// query string (contenuto riflesso): serve solo a ripresentarlo nel
-		// campo dopo il redirect.
-		set_transient( 'wphc_webhook_bad_url_' . get_current_user_id(), $raw, 5 * MINUTE_IN_SECONDS );
-		wp_safe_redirect(
-			add_query_arg(
-				array(
-					'tab'                  => 'wp-health-check',
-					'wphc_webhook_invalid' => '1',
-					'reason'               => $reason,
-				),
-				admin_url( 'site-health.php' )
-			)
-		);
-		exit;
-	}
-
-	update_option( 'wp_health_check_webhook_url', $url, false );
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'                => 'wp-health-check',
-				'wphc_webhook_saved' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
-}
-add_action( 'admin_post_wphc_save_webhook', 'wphc_handle_save_webhook' );
 
 /**
- * Handler di admin-post.php per "Invia un webhook di prova": invio sincrono
- * dell'evento wphc.test, MAI un retry pianificato (a differenza del report di
- * fine job bulk). Unico modo pratico per un admin di verificare che la
- * propria integrazione HMAC sia corretta prima che giri un job reale.
+ * Punto unico in cui il plugin si aggancia a WordPress.
+ *
+ * Nel file 1.38.1 le chiamate add_action() e add_filter() stavano al livello del file, sparse fra le funzioni;
+ * ora le fa tutte boot(), nello stesso identico ordine. L'ordine conta: per ogni hook e priorita' WordPress esegue i
+ * callback nell'ordine di registrazione, e i quattro callback del plugin su init (schema del log, versione del core,
+ * ri-armo del bulk, consumo dell'autologin) dipendono l'uno dall'altro. Le rotte REST non si registrano qui ma
+ * dentro WPHC_Rest::register_routes(), agganciata a rest_api_init; il comando WP-CLI sta nel proprio file.
  */
-function wphc_handle_test_webhook() {
-	if ( ! current_user_can( 'manage_options' ) ) {
-		wp_die( esc_html__( 'Non autorizzato.', 'wp-health-check' ), '', array( 'response' => 403 ) );
+final class WPHC_Plugin {
+
+	/**
+	 * Registra tutti gli hook del plugin, nello stesso ordine del file 1.38.1.
+	 *
+	 * Va invocata una sola volta, al livello del file (boot.php, in coda alle classi), durante l'inclusione del
+	 * mu-plugin: prima di muplugins_loaded e quindi prima di qualunque plugin normale. Non va mai spostata dentro un
+	 * altro hook (per esempio muplugins_loaded o plugins_loaded): cambierebbe l'ordine relativo dei nostri callback
+	 * rispetto a quelli di terzi con la stessa priorita'.
+	 *
+	 * @return void
+	 */
+	public static function boot() {
+		// 1. Invalidazione delle cache dei payload quando cambiano le option di auto-update di plugin, temi e core.
+		// Sono 20 registrazioni: 4 per plugin, 4 per temi e 4 per ciascuna delle tre option del core (dev, minor,
+		// major).
+		// Entrambe le famiglie servono: su multisite update_site_option() e' quella
+		// che effettivamente scrive (i suoi hook update_option_*/add_option_* NON
+		// scattano li'); su single-site update_site_option() ricade su
+		// update_option() e sono invece gli hook update_option_*/add_option_* a
+		// scattare. Registrare solo una famiglia lascerebbe l'altro contesto stantio.
+		add_action( 'update_site_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
+		add_action( 'add_site_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
+		add_action( 'update_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
+		add_action( 'add_option_auto_update_plugins', array( 'WPHC_Health', 'flush_plugins_detail_cache' ) );
+		add_action( 'update_site_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
+		add_action( 'add_site_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
+		add_action( 'update_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
+		add_action( 'add_option_auto_update_themes', array( 'WPHC_Health', 'flush_theme_detail_cache' ) );
+		foreach ( array( 'auto_update_core_dev', 'auto_update_core_minor', 'auto_update_core_major' ) as $core_auto_option ) {
+			add_action( "update_site_option_{$core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
+			add_action( "add_site_option_{$core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
+			add_action( "update_option_{$core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
+			add_action( "add_option_{$core_auto_option}", array( 'WPHC_Health', 'flush_health_cache_only' ) );
+		}
+
+		// 2. CORS e rotte REST: i filtri sulla risposta REST e sul preflight, poi la registrazione delle rotte.
+
+		// -----------------------------------------------------------------------
+		// CORS
+		// -----------------------------------------------------------------------
+
+		add_filter( 'rest_pre_serve_request', array( 'WPHC_Cors', 'reassert_headers' ), 20, 3 );
+
+		add_filter( 'rest_pre_dispatch', array( 'WPHC_Cors', 'handle_options_preflight' ), 10, 3 );
+
+		// -----------------------------------------------------------------------
+		// REGISTRAZIONE ROTTE REST
+		// -----------------------------------------------------------------------
+
+		add_action( 'rest_api_init', array( 'WPHC_Rest', 'register_routes' ) );
+
+		// 3. Schema della tabella di log e audit degli aggiornamenti. Primo e secondo callback su init, in questo ordine:
+		// prima lo schema, poi il confronto con la versione del core, che scrive nella tabella.
+		add_action( 'init', array( 'WPHC_Update_Log', 'maybe_install_schema' ) );
+
+		add_filter( 'upgrader_pre_install', array( 'WPHC_Update_Log', 'snapshot_version_before_upgrade' ), 10, 2 );
+
+		add_action( 'upgrader_process_complete', array( 'WPHC_Update_Log', 'log_wp_initiated_update' ), 10, 2 );
+
+		add_action( 'deactivated_plugin', array( 'WPHC_Update_Log', 'log_plugin_deactivation' ), 10, 2 );
+
+		add_action( 'delete_plugin', array( 'WPHC_Update_Log', 'snapshot_plugin_before_delete' ) );
+
+		add_action( 'deleted_plugin', array( 'WPHC_Update_Log', 'log_plugin_deletion' ), 10, 2 );
+
+		add_action( 'init', array( 'WPHC_Update_Log', 'maybe_log_core_version_change' ) );
+
+		// 4. Aggiornamenti bulk e webhook: terzo callback su init (ri-armo del tick) e i due eventi cron.
+		add_action( 'init', array( 'WPHC_Bulk', 'maybe_rearm' ) );
+
+		add_action( WPHC_Options::CRON_BULK_TICK, array( 'WPHC_Bulk', 'run_tick' ) );
+
+		add_action( WPHC_Options::CRON_WEBHOOK_RETRY, array( 'WPHC_Webhook', 'maybe_retry' ) );
+
+		// 5. Autologin (quarto e ultimo callback su init: il consumo del token fa exit, quindi deve restare in coda) e
+		// tracciamento dell'ultimo login.
+		add_action( 'init', array( 'WPHC_Autologin', 'maybe_consume' ) );
+
+		add_action( 'wp_login', array( 'WPHC_Users', 'record_last_login' ), 10, 2 );
+
+		// 6. Tab Site Health, handler AJAX e handler admin-post (sezione S del file 1.38.1), nell'ordine del file.
+		add_filter( 'site_health_navigation_tabs', array( 'WPHC_Admin', 'register_tab' ) );
+		add_action( 'site_health_tab_content', array( 'WPHC_Admin_View', 'render_tab' ) );
+		add_action( 'wp_ajax_wphc_test_endpoint', array( 'WPHC_Admin', 'ajax_test_endpoint' ) );
+		add_action( 'wp_ajax_wphc_view_log', array( 'WPHC_Admin', 'ajax_view_log' ) );
+		add_action( 'wp_ajax_wphc_reveal_secret', array( 'WPHC_Admin', 'ajax_reveal_secret' ) );
+		add_action( 'admin_post_wphc_self_update', array( 'WPHC_Admin', 'handle_self_update' ) );
+		add_action( 'admin_post_wphc_clear_caches', array( 'WPHC_Admin', 'handle_clear_caches' ) );
+		add_action( 'admin_post_wphc_delete_thumbnail', array( 'WPHC_Admin', 'handle_delete_thumbnail' ) );
+		add_action( 'admin_post_wphc_regenerate_thumbnail', array( 'WPHC_Admin', 'handle_regenerate_thumbnail' ) );
+		add_action( 'admin_post_wphc_reset_enrollment', array( 'WPHC_Admin', 'handle_reset_enrollment' ) );
+		add_action( 'admin_post_wphc_toggle_updates', array( 'WPHC_Admin', 'handle_toggle_updates' ) );
+		add_action( 'admin_post_wphc_save_webhook', array( 'WPHC_Admin', 'handle_save_webhook' ) );
+		add_action( 'admin_post_wphc_test_webhook', array( 'WPHC_Admin', 'handle_test_webhook' ) );
 	}
-	check_admin_referer( 'wphc_test_webhook' );
-
-	$payload = array(
-		'schema'        => 'wphc.test/1',
-		'event'         => 'wphc.test',
-		'site'          => WPHC_Util::normalize_site_url(),
-		'agent_version' => WP_HEALTH_CHECK_VERSION,
-		'secret_kid'    => (string) get_option( 'wp_health_check_secret_kid', '' ),
-		'generated_at'  => gmdate( 'c' ),
-	);
-	WPHC_Webhook::dispatch_payload( 'wphc.test', $payload, 'test-' . WPHC_Util::generate_correlation_id(), 1 );
-
-	wp_safe_redirect(
-		add_query_arg(
-			array(
-				'tab'                 => 'wp-health-check',
-				'wphc_webhook_tested' => '1',
-			),
-			admin_url( 'site-health.php' )
-		)
-	);
-	exit;
 }
-add_action( 'admin_post_wphc_test_webhook', 'wphc_handle_test_webhook' );
+/**
+ * Avvio del plugin: chiama WPHC_Plugin::boot(), che registra tutti gli hook (ultimo file del plugin prima del comando WP-CLI).
+ *
+ * @package WP_Health_Check
+ */
+
+WPHC_Plugin::boot();
 /**
  * Comandi WP-CLI del fleet agent: wp health-check reset | secret | status.
  *
@@ -9381,3 +9468,4 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 
 	WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );
 }
+// WPHC-BUILD: dev (non distribuibile)

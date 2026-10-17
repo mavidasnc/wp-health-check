@@ -12,7 +12,7 @@
  * Raccoglie, dalla sezione M del file 1.38.1, il nome e lo schema della tabella (dbDelta), l'inserimento e la
  * lettura con filtri, la potatura, il rilevamento di chi ha avviato l'operazione (api, wp-admin, cron, wp-cli),
  * i callback degli hook dell'upgrader e della versione del core e il callback REST GET /update/log.
- * Hook serviti (registrati per ora in legacy.php, dal lotto 4 in WPHC_Plugin::boot()): init (schema della
+ * Hook serviti (registrati in WPHC_Plugin::boot()): init (schema della
  * tabella, PRIMO dei quattro callback del plugin; versione del core, SECONDO), upgrader_pre_install,
  * upgrader_process_complete, deactivated_plugin, delete_plugin e deleted_plugin.
  *
@@ -559,7 +559,7 @@ final class WPHC_Update_Log {
 	 * Query paginata sulla tabella di log update, con filtro opzionale per tipo
 	 * e/o origine. Estratta dalla callback REST di GET /update/log perche' ha un
 	 * secondo consumatore: l'handler AJAX del pulsante "Visualizza log" della
-	 * tab Site Health (wphc_ajax_view_log()), che legge la stessa tabella senza
+	 * tab Site Health (WPHC_Admin::ajax_view_log()), che legge la stessa tabella senza
 	 * passare da una richiesta REST autenticata col bearer token (l'utente e'
 	 * gia' autenticato in wp-admin).
 	 *

@@ -10,7 +10,7 @@
  * wp_health_check_dashboard_origin) viene autorizzata solo quell'origin esatta; senza, nessun header CORS.
  * Dice anche ai plugin di page cache di non mettere in cache la risposta.
  *
- * Raccoglie la sezione D del file 1.38.1. Hook serviti (registrati per ora in legacy.php, dal lotto 4 in
+ * Raccoglie la sezione D del file 1.38.1. Hook serviti (registrati in
  * WPHC_Plugin::boot()): filtro rest_pre_serve_request con priorita' 20 e 3 argomenti
  * (reassert_headers) e filtro rest_pre_dispatch con 3 argomenti (handle_options_preflight).
  */

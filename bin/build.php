@@ -21,6 +21,11 @@
  *     "composer run build") senza --output esce con codice 2 e non scrive nulla, a meno che sia impostata la
  *     variabile d'ambiente WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 (il passaggio finale del refactoring).
  *
+ * Marcatore della build dev:
+ *     la build --no-strip aggiunge in coda al file, dopo l'ultima riga di codice e senza a capo finale, il commento
+ *     "// WPHC-BUILD: dev (non distribuibile)". Un file che lo contiene NON va mai firmato ne' pubblicato; la build strip
+ *     non lo contiene e un gate la fa fallire se lo trova (vedi la checklist di src/README.md).
+ *
  * Modo della build quando non e' indicato (--strip / --no-strip):
  *     - senza --check: strip;
  *     - con --check: variabile d'ambiente WPHC_BUILD_MODE (dev | strip), default dev.
@@ -49,6 +54,18 @@ const WPHC_BUILD_PUSH_LIMIT = 131072;
  * Budget di progetto del pacchetto di push (caratteri di gzip + base64): oltre questa soglia la build stampa un avviso.
  */
 const WPHC_BUILD_PUSH_BUDGET = 110000;
+
+/**
+ * Parola che identifica il marcatore di build dev: nel file distribuibile (strip) NON deve comparire mai.
+ */
+const WPHC_BUILD_MARKER_TAG = 'WPHC-BUILD';
+
+/**
+ * Marcatore della build dev (--no-strip): una riga di commento in CODA al file, dopo l'ultima riga di codice e SENZA
+ * a capo finale (il numero di righe del corpo e' quello della build strip). Un file che lo contiene NON e'
+ * distribuibile: non va mai firmato ne' pubblicato (vedi la checklist di src/README.md).
+ */
+const WPHC_BUILD_DEV_MARKER = '// WPHC-BUILD: dev (non distribuibile)';
 
 /**
  * Classe i cui docblock sopravvivono allo strip (WP-CLI li legge via reflection).
@@ -230,10 +247,9 @@ function wphc_build_read_sources( $src_dir ) {
 		if ( "\n" !== substr( $content, -1 ) ) {
 			throw new RuntimeException( $file . ': deve terminare con un a capo (la concatenazione non aggiunge separatori)' );
 		}
-		// Gate (i): __FILE__ e __DIR__ ammessi SOLO nel file con ruolo constants (D-1, lotto 3).
-		if ( 'constants' !== $role ) {
-			wphc_build_check_no_file_constants( $file, $content );
-		}
+		// Gate (i): __FILE__ e __DIR__ ammessi SOLO nel file con ruolo constants (D-1, lotto 3); __CLASS__,
+		// __FUNCTION__, __METHOD__ e __LINE__ non sono ammessi in nessun file (lotto 4).
+		wphc_build_check_no_file_constants( $file, $content, 'constants' === $role );
 		if ( 'class' === $role ) {
 			wphc_build_check_class_file( $file, $content );
 		}
@@ -250,23 +266,37 @@ function wphc_build_read_sources( $src_dir ) {
 }
 
 /**
- * Gate (i): le costanti magiche __FILE__ e __DIR__ sono ammesse SOLO nel file con ruolo constants.
+ * Gate (i): costanti magiche vietate nei sorgenti.
  *
  * Nel file distribuito __FILE__ e __DIR__ indicano il mu-plugin, ma in un file di src/ indicherebbero il file
- * sorgente: il codice che ha bisogno del percorso del plugin (il self-update di WPHC_Self_Updater::install_release())
- * usa la costante WP_HEALTH_CHECK_FILE, definita in src/constants.php con default __FILE__ (decisione D-1 del
- * progetto). Il controllo e' sui token del solo lessico (nessun parse): commenti e stringhe che contengono il testo
+ * sorgente: sono ammessi SOLO nel file con ruolo constants, e il codice che ha bisogno del percorso del plugin (il
+ * self-update di WPHC_Self_Updater::install_release()) usa la costante WP_HEALTH_CHECK_FILE, definita in
+ * src/constants.php con default __FILE__ (decisione D-1 del progetto).
+ *
+ * __CLASS__, __FUNCTION__, __METHOD__ e __LINE__ non compaiono mai nel codice della 1.38.1 e non sono ammessi in
+ * NESSUN file, constants compreso: il loro valore dipende da dove vive il codice (una funzione diventata metodo
+ * cambia __FUNCTION__ e __METHOD__, una riga cambia fra sorgente e file concatenato), quindi un uso renderebbe
+ * il comportamento diverso da quello della 1.38.1 senza che nessun controllo se ne accorga.
+ *
+ * Il controllo e' sui token del solo lessico (nessun parse): commenti e stringhe che contengono il testo
  * "__FILE__" non lo fanno scattare; un errore di sintassi resta segnalato dal parse del file concatenato.
  *
- * @param string $file    Nome del file (per i messaggi).
- * @param string $content Contenuto del file.
+ * @param string $file           Nome del file (per i messaggi).
+ * @param string $content        Contenuto del file.
+ * @param bool   $allow_file_dir True per il file con ruolo constants, dove __FILE__ e __DIR__ sono ammessi.
  * @return void
- * @throws RuntimeException Se il file usa __FILE__ o __DIR__.
+ * @throws RuntimeException Se il file usa una costante magica non ammessa.
  */
-function wphc_build_check_no_file_constants( $file, $content ) {
+function wphc_build_check_no_file_constants( $file, $content, $allow_file_dir = false ) {
 	foreach ( token_get_all( $content ) as $tok ) {
-		if ( is_array( $tok ) && ( T_FILE === $tok[0] || T_DIR === $tok[0] ) ) {
+		if ( ! is_array( $tok ) ) {
+			continue;
+		}
+		if ( ! $allow_file_dir && ( T_FILE === $tok[0] || T_DIR === $tok[0] ) ) {
 			throw new RuntimeException( $file . ': ' . $tok[1] . ' non ammesso fuori dal file con ruolo constants (riga ' . $tok[2] . '): usare WP_HEALTH_CHECK_FILE' );
+		}
+		if ( T_FUNC_C === $tok[0] || T_METHOD_C === $tok[0] || T_CLASS_C === $tok[0] || T_LINE === $tok[0] ) {
+			throw new RuntimeException( $file . ': ' . $tok[1] . ' non ammesso in nessun file di src/ (riga ' . $tok[2] . '): non compare nella 1.38.1 e il suo valore dipende da dove vive il codice' );
 		}
 	}
 }
@@ -857,6 +887,34 @@ function wphc_build_constant_version( array $tokens ) {
 }
 
 /**
+ * Gate (j): il marcatore della build dev c'e' solo nella build dev.
+ *
+ * - Build strip (distribuibile): la parola WPHC-BUILD non compare da nessuna parte, nemmeno in una stringa.
+ * - Build dev: compare UNA volta sola ed e' l'ultima riga del file (preceduta da un a capo e senza a capo finale).
+ *
+ * Un file con il marcatore NON va mai firmato ne' pubblicato: la checklist di src/README.md verifica con
+ * "grep -L WPHC-BUILD" che il file da firmare non lo contenga.
+ *
+ * @param string $code  File prodotto.
+ * @param bool   $strip True per la build strip.
+ * @return void
+ * @throws RuntimeException Se il marcatore manca, e' fuori posto o compare in una build strip.
+ */
+function wphc_build_gate_marker( $code, $strip ) {
+	$count = substr_count( $code, WPHC_BUILD_MARKER_TAG );
+	if ( $strip ) {
+		if ( 0 !== $count ) {
+			throw new RuntimeException( 'la build strip (distribuibile) contiene ' . WPHC_BUILD_MARKER_TAG . ': il marcatore e\' solo della build dev' );
+		}
+		return;
+	}
+	$tail = "\n" . WPHC_BUILD_DEV_MARKER;
+	if ( 1 !== $count || substr( $code, -strlen( $tail ) ) !== $tail ) {
+		throw new RuntimeException( 'la build dev deve contenere il marcatore "' . WPHC_BUILD_DEV_MARKER . '" una sola volta, come ultima riga del file senza a capo finale (trovate ' . $count . ' occorrenze di ' . WPHC_BUILD_MARKER_TAG . ')' );
+	}
+}
+
+/**
  * Controlli finali sul file prodotto: gate (a), (d), (f), (g).
  *
  * @param string  $code   File prodotto.
@@ -955,12 +1013,24 @@ function wphc_build( $src_dir, $strip ) {
 	$entries = wphc_build_read_sources( $src_dir );
 	$joined  = wphc_build_concat( $entries );
 
+	// 1b. Gate (j): i sorgenti non contengono la parola del marcatore (nemmeno in un commento): nella build dev il
+	// marcatore deve essere l'unica occorrenza, e nello strip una stringa con quella parola non sparirebbe.
+	if ( false !== strpos( $joined, WPHC_BUILD_MARKER_TAG ) ) {
+		throw new RuntimeException( 'i sorgenti contengono ' . WPHC_BUILD_MARKER_TAG . ': la parola e\' riservata al marcatore della build dev' );
+	}
+
 	// 2. Gate (a) sul concatenato: parse completo indipendente da "php -l".
 	$joined_tokens = wphc_build_tokenize( $joined, 'file concatenato' );
 
 	// 3. Strip e relative prove: stesse righe, stesso codice, docblock voluti presenti.
 	$code   = $joined;
 	$tokens = $joined_tokens;
+	if ( ! $strip ) {
+		// Build dev: il marcatore in coda, dopo l'ultima riga di codice e senza a capo finale (le righe restano
+		// quelle della build strip). E' un commento: i token non commento non cambiano.
+		$code   = $joined . WPHC_BUILD_DEV_MARKER;
+		$tokens = wphc_build_tokenize( $code, 'file dev' );
+	}
 	if ( $strip ) {
 		$code   = wphc_build_strip( $joined );
 		$tokens = wphc_build_tokenize( $code, 'file dopo lo strip' );
@@ -990,6 +1060,7 @@ function wphc_build( $src_dir, $strip ) {
 	// 4. Gate strutturali (c), (e), duplicati, namespace e gate sul file prodotto (d), (f), (g).
 	wphc_build_gate_structure( $tokens );
 	wphc_build_gate_output( $code, $tokens );
+	wphc_build_gate_marker( $code, $strip );
 
 	// 5. Gate (h): limite e budget del push. Il limite (body JSON intero) blocca solo la build strippata
 	// (quella distribuibile); il budget (gzip+base64) avvisa sempre.

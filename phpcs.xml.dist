@@ -23,12 +23,6 @@
              completo: e' una scelta esplicita del prompt di progetto, non un refuso. -->
         <exclude name="WordPress.NamingConventions.PrefixAllGlobals.ShortPrefixPassed"/>
 
-        <!-- Vincolo architetturale del progetto: file singolo autoconsistente (WordPress
-             carica solo i .php nella radice di mu-plugins). La classe WPHC_CLI_Command
-             (comando WP-CLI) convive quindi nello stesso file delle funzioni di rotta:
-             non e' una svista, e' l'unica struttura compatibile col vincolo. -->
-        <exclude name="Universal.Files.SeparateFunctionsFromOO.Mixed"/>
-
         <!-- base64_decode() qui decodifica chiavi pubbliche e firme Ed25519 (dati
              crittografici in transito), non offusca codice: uso legittimo. -->
         <exclude name="WordPress.PHP.DiscouragedPHPFunctions.obfuscation_base64_decode"/>
@@ -51,18 +45,18 @@
     </rule>
     <rule ref="WordPress.Files.FileName">
         <properties>
-            <!-- bin/generate-keys.php e' uno script CLI, non una classe -->
-            <property name="strict_class_file_names" value="false"/>
+            <!-- Dal lotto 4 ogni file di src/ con una classe si chiama class-<nome>.php (WPCS lo impone);
+                 bin/generate-keys.php e bin/build.php non dichiarano classi e non ne risentono -->
+            <property name="strict_class_file_names" value="true"/>
         </properties>
     </rule>
 
-    <!-- Checkpoint zero del refactoring (vedi src/README.md): src/constants.php e src/legacy.php sono
-         tagli a byte del file 1.38.1 e iniziano con un commento di riga (barre e trattini) invece che con un docblock di
-         file. Aggiungere il docblock sposterebbe le righe e romperebbe l'identita' byte per byte con il
-         file di HEAD (criterio di uscita del passo). E' l'unica esclusione nuova rispetto a prima e va
-         tolta quando legacy.php sparisce (lotto 4) e constants.php riceve il suo docblock. -->
+    <!-- Checkpoint zero del refactoring (vedi src/README.md): src/constants.php e' un taglio a byte del file
+         1.38.1 e inizia con un commento di riga (barre e trattini) invece che con un docblock di file.
+         Aggiungere il docblock sposterebbe le righe e romperebbe l'identita' byte per byte con il file di
+         HEAD (criterio di uscita del passo). E' l'unica esclusione nuova rispetto a prima e va tolta quando
+         constants.php riceve il suo docblock (legacy.php e' sparito nel lotto 4). -->
     <rule ref="Squiz.Commenting.FileComment.WrongStyle">
         <exclude-pattern>src/constants\.php</exclude-pattern>
-        <exclude-pattern>src/legacy\.php</exclude-pattern>
     </rule>
 </ruleset>
