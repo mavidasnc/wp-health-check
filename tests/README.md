@@ -52,6 +52,13 @@ chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
   `WPHC_PLUGIN_FILE` indica un altro file (la build del refactoring); il file del repo in `mu-plugins/`
   e' sempre rifiutato come valore di `WPHC_PLUGIN_FILE`. Un `.bak` preesistente accanto a un file esplicito
   fa fallire l'avvio.
+- **La copia NON usa `copy()`.** In Docker, con il repo montato come bind mount da Windows, la `copy()` di
+  PHP 8.1 puo' scrivere una copia con una coda di byte NUL (dopo una rebuild del file: la suite cadrebbe con
+  un ParseError che non dipende dal plugin). Il bootstrap legge il sorgente con `file_get_contents()`, lo
+  scrive con `file_put_contents()`, RILEGGE la copia e confronta lo SHA-256 con quello del sorgente; se
+  differisce riprova fino a 3 volte e poi si ferma con un messaggio chiaro. Il runner di default
+  (`C:/tmp/wphc-run-phpunit.sh 81`) e' quindi affidabile anche subito dopo `composer run build:dev`, senza
+  dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
 - **Guardia a fine run** (`register_shutdown_function` nel bootstrap): ricalcola lo SHA-256 del file sotto
   test e del file del repo e controlla che non esistano `<file sotto test>.bak` e `.wphc-new-*.tmp` in
   `WPMU_PLUGIN_DIR`; in caso contrario scrive su STDERR e termina con `exit(1)`, anche se tutti i test erano

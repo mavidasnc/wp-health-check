@@ -53,7 +53,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY' ) ) {
 
 /*
  * Indirizzo email dell'operatore della flotta, avvisato quando un enroll
- * fallisce per URL mismatch (vedi wphc_send_enroll_mismatch_alert). Non e'
+ * fallisce per URL mismatch (vedi WPHC_Enrollment::send_enroll_mismatch_alert). Non e'
  * un segreto: e' l'indirizzo a cui recapitare gli alert diagnostici.
  * Stringa vuota = nessun invio.
  */
@@ -193,7 +193,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_WEBHOOK_MAX_ITEMS' ) ) {
  * server, cronologia browser) puo' usare per accedere una sola volta a
  * wp-admin come l'amministratore che lo ha generato. Un TTL di pochi secondi
  * rende la finestra di replay trascurabile; il consumo single-use (vedi
- * wphc_maybe_consume_autologin()) la chiude comunque a zero dopo il primo uso.
+ * WPHC_Autologin::maybe_consume()) la chiude comunque a zero dopo il primo uso.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL' ) ) {
 	define( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL', 20 );
@@ -205,7 +205,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_AUTOLOGIN_TTL' ) ) {
  * firma solo le buste del centro verso il sito (enroll, rotate, revoke);
  * "k2" firma solo le release: chi custodisce la chiave delle release non puo'
  * forgiare buste verso i siti, e chi custodisce k1 non puo' firmare release.
- * La separazione e' imposta da wphc_verify_central_signature() con $purpose.
+ * La separazione e' imposta da WPHC_Crypto::verify_central_signature() con $purpose.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2' ) ) {
 	define( 'WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2', 'mGJDfcvmM2lCoaq5+lJaC94mhpvrwjqJIQfjJrC/6Ko=' );
@@ -231,7 +231,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_NONCE_TTL' ) ) {
 
 /**
  * Finestra di grazia (secondi) dopo una rotazione del segreto, durante la
- * quale wphc_require_token() accetta ancora wp_health_check_token_prev.
+ * quale WPHC_Auth::require_token() accetta ancora wp_health_check_token_prev.
  * Copre il caso in cui la conferma di /rotate all'hub vada persa pur avendo
  * il sito gia' scritto il segreto nuovo. Dalla 1.30.0.
  */
@@ -255,7 +255,7 @@ if ( ! defined( 'WP_HEALTH_CHECK_RATE_WINDOW' ) ) {
 
 /**
  * URL base del servizio di screenshot usato per generare la thumbnail del
- * sito (vedi wphc_generate_site_thumbnail()). Costante per permettere a un
+ * sito (vedi WPHC_Thumbnail::generate()). Costante per permettere a un
  * singolo sito di puntare a un renderer diverso da wp-config.php, senza
  * toccare questo file. Dalla 1.30.0 (prima era inline nella funzione).
  */

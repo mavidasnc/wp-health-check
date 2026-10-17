@@ -33,12 +33,13 @@ if ( PHP_SAPI !== 'cli' ) {
 }
 
 /**
- * Limite duro del pacchetto di push (byte di gzip + base64): la build strippata fallisce oltre.
+ * Limite duro del push (byte del body JSON di POST /update, 128 KiB): la build strippata fallisce oltre.
+ * Si misura l'intero body come lo spedisce l'hub (vedi wphc_build_sizes()), non la sola stringa gzip+base64.
  */
 const WPHC_BUILD_PUSH_LIMIT = 131072;
 
 /**
- * Budget di progetto del pacchetto di push: oltre questa soglia la build stampa un avviso.
+ * Budget di progetto del pacchetto di push (caratteri di gzip + base64): oltre questa soglia la build stampa un avviso.
  */
 const WPHC_BUILD_PUSH_BUDGET = 110000;
 
@@ -53,7 +54,7 @@ const WPHC_BUILD_KEEP_DOCS_CLASS = 'WPHC_CLI_Command';
  * @return string[]
  */
 function wphc_build_roles() {
-	return array( 'header', 'constants', 'class', 'legacy', 'boot' );
+	return array( 'header', 'constants', 'class', 'legacy', 'boot', 'cli' );
 }
 
 /**
@@ -200,6 +201,15 @@ function wphc_build_read_sources( $src_dir ) {
 		throw new RuntimeException( 'il manifest deve avere un solo file con ruolo header e deve essere il primo' );
 	}
 
+	// 3b. Al massimo un file con ruolo cli (il blocco del comando WP-CLI e' uno solo) e, se c'e', e' l'ULTIMO:
+	// come nel file 1.38.1 il comando si registra in coda, dopo tutto il resto del plugin.
+	if ( count( array_keys( $roles, 'cli', true ) ) > 1 ) {
+		throw new RuntimeException( 'il manifest puo\' avere al massimo un file con ruolo cli' );
+	}
+	if ( in_array( 'cli', $roles, true ) && 'cli' !== $roles[ count( $roles ) - 1 ] ) {
+		throw new RuntimeException( 'il file con ruolo cli deve essere l\'ultimo del manifest' );
+	}
+
 	// 4. Controlli sul contenuto di ciascun file.
 	$entries = array();
 	foreach ( $manifest as $file => $role ) {
@@ -215,6 +225,9 @@ function wphc_build_read_sources( $src_dir ) {
 		}
 		if ( 'class' === $role ) {
 			wphc_build_check_class_file( $file, $content );
+		}
+		if ( 'cli' === $role ) {
+			wphc_build_check_cli_file( $file, $content );
 		}
 		$entries[] = array(
 			'file'    => $file,
@@ -285,6 +298,129 @@ function wphc_build_check_class_file( $file, $content ) {
 	}
 	if ( 1 !== $classes ) {
 		throw new RuntimeException( $file . ': un file con ruolo class deve dichiarare esattamente una classe' );
+	}
+}
+
+/**
+ * Gate (b2): un file con ruolo cli contiene SOLO il blocco del comando WP-CLI.
+ *
+ * WPHC_CLI_Command non estende WP_CLI_Command e vive dentro un guard, perche' la classe deve
+ * esistere solo quando WP-CLI e' attivo. Il codice top-level ammesso e' quindi esattamente:
+ *
+ *     if ( defined( 'WP_CLI' ) && WP_CLI ) { <classe WPHC_CLI_Command> <chiamata di registrazione del comando> }
+ *
+ * La classe e' la sola ammessa (senza final, abstract, extends o implements) e la registrazione e' una
+ * sola chiamata WP_CLI::add_command(). Qualunque altra istruzione, funzione o classe, dentro o fuori
+ * dal guard, fa fallire la build. Il tag di chiusura finale e' ammesso, come nei file class.
+ *
+ * @param string $file    Nome del file (per i messaggi).
+ * @param string $content Contenuto del file.
+ * @return void
+ * @throws RuntimeException Se il file contiene altro oltre al blocco del comando.
+ */
+function wphc_build_check_cli_file( $file, $content ) {
+	$tokens = wphc_build_tokenize( $content, $file );
+
+	// 1. Token significativi: via spazi, commenti, tag di apertura e tag di chiusura finale.
+	$sig = array();
+	foreach ( $tokens as $tok ) {
+		if ( wphc_build_is_trivia( $tok ) || T_OPEN_TAG === $tok['id'] ) {
+			continue;
+		}
+		$sig[] = $tok;
+	}
+	if ( array() !== $sig && T_CLOSE_TAG === $sig[ count( $sig ) - 1 ]['id'] ) {
+		array_pop( $sig );
+	}
+
+	// 2. Il file comincia con il guard, parola per parola.
+	$guard = array( 'if', '(', 'defined', '(', "'WP_CLI'", ')', '&&', 'WP_CLI', ')', '{' );
+	foreach ( $guard as $k => $text ) {
+		if ( ! isset( $sig[ $k ] ) || $text !== $sig[ $k ]['text'] ) {
+			throw new RuntimeException( $file . ': un file con ruolo cli deve cominciare con "if ( defined( \'WP_CLI\' ) && WP_CLI ) {"' );
+		}
+	}
+
+	// 3. Dentro il guard: una classe WPHC_CLI_Command e una chiamata di registrazione, nient'altro.
+	$n       = count( $sig );
+	$i       = count( $guard );
+	$classes = 0;
+	$adds    = 0;
+	$closed  = false;
+	$reg     = array(); // Testi dei token della registrazione del comando (da WP_CLI al ";" incluso).
+	while ( $i < $n ) {
+		$tok = $sig[ $i ];
+
+		if ( '}' === $tok['id'] ) {
+			// Graffa di chiusura del guard: dopo non puo' esserci altro codice.
+			$closed = true;
+			if ( $i !== $n - 1 ) {
+				throw new RuntimeException( $file . ': codice top-level dopo il blocco WP-CLI (riga ' . $sig[ $i + 1 ]['line'] . ')' );
+			}
+			break;
+		}
+
+		if ( T_CLASS === $tok['id'] ) {
+			// "class WPHC_CLI_Command {": niente extends/implements. final/abstract non passano: sono token non ammessi.
+			if ( ! isset( $sig[ $i + 2 ] ) || WPHC_BUILD_KEEP_DOCS_CLASS !== $sig[ $i + 1 ]['text'] || '{' !== $sig[ $i + 2 ]['text'] ) {
+				throw new RuntimeException( $file . ': nel blocco WP-CLI e\' ammessa solo "class ' . WPHC_BUILD_KEEP_DOCS_CLASS . ' {" (riga ' . $tok['line'] . ')' );
+			}
+			++$classes;
+			$depth = 0;
+			for ( $i += 2; $i < $n; $i++ ) {
+				if ( wphc_build_opens_brace( $sig[ $i ] ) ) {
+					++$depth;
+				} elseif ( '}' === $sig[ $i ]['id'] ) {
+					--$depth;
+					if ( 0 === $depth ) {
+						break;
+					}
+				}
+			}
+			++$i;
+			continue;
+		}
+
+		if (
+			'WP_CLI' === $tok['text'] && isset( $sig[ $i + 3 ] )
+			&& T_DOUBLE_COLON === $sig[ $i + 1 ]['id'] && 'add_command' === $sig[ $i + 2 ]['text'] && '(' === $sig[ $i + 3 ]['text']
+		) {
+			// Registrazione: si salta fino al ";" che chiude l'istruzione (parentesi bilanciate) e si
+			// tengono i testi dei token, per confrontarli sotto con la sequenza esatta ammessa.
+			++$adds;
+			$paren = 0;
+			$reg   = array();
+			for ( ; $i < $n; $i++ ) {
+				$reg[] = $sig[ $i ]['text'];
+				if ( '(' === $sig[ $i ]['id'] ) {
+					++$paren;
+				} elseif ( ')' === $sig[ $i ]['id'] ) {
+					--$paren;
+				} elseif ( ';' === $sig[ $i ]['id'] && 0 === $paren ) {
+					break;
+				}
+			}
+			++$i;
+			continue;
+		}
+
+		throw new RuntimeException( $file . ': codice non ammesso in un file con ruolo cli (riga ' . $tok['line'] . ': ' . trim( $tok['text'] ) . ')' );
+	}
+
+	// 4. Il blocco e' completo: guard chiuso, una classe, una registrazione.
+	if ( ! $closed ) {
+		throw new RuntimeException( $file . ': il guard del blocco WP-CLI non e\' chiuso' );
+	}
+	if ( 1 !== $classes || 1 !== $adds ) {
+		throw new RuntimeException( $file . ': il blocco WP-CLI deve contenere esattamente una classe ' . WPHC_BUILD_KEEP_DOCS_CLASS . ' e una chiamata WP_CLI::add_command() (trovate ' . $classes . ' classi e ' . $adds . ' registrazioni)' );
+	}
+
+	// 5. La registrazione e' ESATTAMENTE "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );": stesso comando,
+	// stessa classe, nessun terzo argomento (un array di opzioni o una closure di "when" eseguirebbe codice a
+	// livello del file sfuggendo al gate). Il confronto e' sui token, non sul testo: spazi e commenti sono liberi.
+	$expected = array( 'WP_CLI', '::', 'add_command', '(', "'health-check'", ',', "'" . WPHC_BUILD_KEEP_DOCS_CLASS . "'", ')', ';' );
+	if ( $reg !== $expected ) {
+		throw new RuntimeException( $file . ': la registrazione deve essere esattamente WP_CLI::add_command( \'health-check\', \'' . WPHC_BUILD_KEEP_DOCS_CLASS . '\' ); senza altri argomenti (trovato: ' . implode( ' ', $reg ) . ')' );
 	}
 }
 
@@ -724,16 +860,36 @@ function wphc_build_gate_output( $code, array $tokens ) {
 /**
  * Misure del file prodotto.
  *
- * @param string $code File prodotto.
- * @return array Chiavi: lines, raw, gzip, b64 (gzip livello 9 + base64, come il pacchetto di push).
+ * Oltre alla stringa gzip + base64 si misura l'intero body JSON del push come lo spedisce l'hub
+ * (hub/services/fleet/agent_release.py:build_push_package, in Python json.dumps con i separatori di default
+ * ", " e ": ", chiavi nell'ordine tag, sha256, sig, contents_gz_b64, force): e' il numero che il plugin
+ * confronta con il limite di 128 KiB e che misurano i test e2e (tests/e2e/e2e_common.py:push_sizes).
+ * La firma ha lunghezza fissa (64 byte in base64 = 88 caratteri) e il flag force si conta `true`, il valore
+ * piu' lungo (un byte in piu' di `false`). Il gzip di PHP e quello di Python non producono byte identici: nella
+ * 1.38.1+lotto 2 la differenza osservata e' di 16 caratteri su 59000 (l'overhead del body coincide con quello
+ * degli e2e, 370 byte). E' una stima, non una misura: il margine esatto lo da' l'e2e (upgrade_test.py).
+ *
+ * @param string $code    File prodotto.
+ * @param string $version Versione del plugin (il tag del pacchetto e' "v" + versione).
+ * @return array Chiavi: lines, raw, gzip, b64 (gzip livello 9 + base64), body (byte del body JSON del push).
  */
-function wphc_build_sizes( $code ) {
-	$gz = gzencode( $code, 9 );
+function wphc_build_sizes( $code, $version = '0.0.0' ) {
+	$gz  = gzencode( $code, 9 );
+	$b64 = base64_encode( $gz );
+	$tag = 'v' . $version;
+	$sha = hash( 'sha256', $code );
+	$sig = str_repeat( 'A', 88 );
+
+	// Il body: stessa forma e stessi spazi del json.dumps dell'hub (le stringhe base64 non hanno caratteri da escapare).
+	$body = '{"package": {"tag": "' . $tag . '", "sha256": "' . $sha . '", "sig": {"tag": "' . $tag . '", "sha256": "' . $sha
+		. '", "kid": "k2", "signature": "' . $sig . '"}, "contents_gz_b64": "' . $b64 . '", "force": true}}';
+
 	return array(
 		'lines' => substr_count( $code, "\n" ),
 		'raw'   => strlen( $code ),
 		'gzip'  => strlen( $gz ),
-		'b64'   => strlen( base64_encode( $gz ) ),
+		'b64'   => strlen( $b64 ),
+		'body'  => strlen( $body ),
 	);
 }
 
@@ -788,10 +944,12 @@ function wphc_build( $src_dir, $strip ) {
 	wphc_build_gate_structure( $tokens );
 	wphc_build_gate_output( $code, $tokens );
 
-	// 5. Gate (h): budget del pacchetto di push. Blocca solo la build strippata (quella distribuibile).
-	$sizes = wphc_build_sizes( $code );
-	if ( $strip && $sizes['b64'] > WPHC_BUILD_PUSH_LIMIT ) {
-		throw new RuntimeException( 'gzip+base64 = ' . $sizes['b64'] . ' byte: supera il limite del push (' . WPHC_BUILD_PUSH_LIMIT . ')' );
+	// 5. Gate (h): limite e budget del push. Il limite (body JSON intero) blocca solo la build strippata
+	// (quella distribuibile); il budget (gzip+base64) avvisa sempre.
+	$header_version = wphc_build_header_version( $tokens );
+	$sizes          = wphc_build_sizes( $code, null === $header_version ? '0.0.0' : $header_version );
+	if ( $strip && $sizes['body'] > WPHC_BUILD_PUSH_LIMIT ) {
+		throw new RuntimeException( 'body JSON del push = ' . $sizes['body'] . ' byte (gzip+base64 = ' . $sizes['b64'] . '): supera il limite del push (' . WPHC_BUILD_PUSH_LIMIT . ')' );
 	}
 	if ( $sizes['b64'] > WPHC_BUILD_PUSH_BUDGET ) {
 		$warnings[] = 'gzip+base64 = ' . $sizes['b64'] . ' byte: oltre il budget di progetto (' . WPHC_BUILD_PUSH_BUDGET . ')';
@@ -878,7 +1036,8 @@ function wphc_build_main( array $argv ) {
 	fwrite( STDOUT, 'Righe:          ' . $sizes['lines'] . "\n" );
 	fwrite( STDOUT, 'Byte grezzi:    ' . $sizes['raw'] . "\n" );
 	fwrite( STDOUT, 'gzip -9:        ' . $sizes['gzip'] . "\n" );
-	fwrite( STDOUT, 'gzip + base64:  ' . $sizes['b64'] . ' (limite push ' . WPHC_BUILD_PUSH_LIMIT . ', budget ' . WPHC_BUILD_PUSH_BUDGET . ")\n" );
+	fwrite( STDOUT, 'gzip + base64:  ' . $sizes['b64'] . ' (budget ' . WPHC_BUILD_PUSH_BUDGET . ")\n" );
+	fwrite( STDOUT, 'body JSON push: ' . $sizes['body'] . ' (limite ' . WPHC_BUILD_PUSH_LIMIT . ', margine ' . ( WPHC_BUILD_PUSH_LIMIT - $sizes['body'] ) . ")\n" );
 	fwrite( STDOUT, 'SHA-256:        ' . hash( 'sha256', $code ) . "\n" );
 	foreach ( $result['warnings'] as $warning ) {
 		fwrite( STDERR, 'ATTENZIONE: ' . $warning . "\n" );

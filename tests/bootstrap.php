@@ -101,8 +101,19 @@ if ( false === $wphc_plugin_file || '' === $wphc_plugin_file ) {
 		}
 	}
 	$wphc_plugin_file = $wphc_copy_dir . '/wp-health-check.php';
-	if ( ! copy( $wphc_repo_plugin, $wphc_plugin_file ) ) {
-		fwrite( STDERR, "Impossibile copiare il plugin in {$wphc_plugin_file}.\n" );
+	// Copia con lettura e scrittura esplicite invece di copy(): in Docker, con il repo montato come bind mount
+	// da Windows, la copy() di PHP 8.1 puo' produrre un file con una coda di byte NUL (problema dell'ambiente,
+	// non del plugin) e la suite fallirebbe con un ParseError. Si legge il sorgente, lo si scrive, si rilegge
+	// la copia e se l'hash non coincide si riprova (fino a 3 volte); poi si interrompe con un errore chiaro.
+	$wphc_source_code = file_get_contents( $wphc_repo_plugin );
+	$wphc_copy_ok     = false;
+	for ( $wphc_attempt = 1; $wphc_attempt <= 3 && false !== $wphc_source_code && ! $wphc_copy_ok; $wphc_attempt++ ) {
+		clearstatcache();
+		$wphc_copy_ok = false !== file_put_contents( $wphc_plugin_file, $wphc_source_code )
+			&& hash_file( 'sha256', $wphc_plugin_file ) === hash( 'sha256', $wphc_source_code );
+	}
+	if ( ! $wphc_copy_ok ) {
+		fwrite( STDERR, "Impossibile copiare il plugin in {$wphc_plugin_file} (copia assente o diversa dall'originale dopo 3 tentativi).\n" );
 		exit( 1 );
 	}
 	@chmod( $wphc_plugin_file, 0666 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_chmod

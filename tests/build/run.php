@@ -103,6 +103,51 @@ function t_simple_src( $legacy ) {
 }
 
 /**
+ * File con ruolo cli di prova: guard, classe WPHC_CLI_Command con docblock e registrazione del comando.
+ *
+ * I parametri inseriscono codice in punti precisi per le prove negative.
+ *
+ * @param string $before Codice prima del guard (dopo il docblock di file).
+ * @param string $inside Codice dentro il guard, dopo la registrazione del comando.
+ * @param string $after  Codice dopo la graffa di chiusura del guard.
+ * @return string
+ */
+function t_cli_file( $before = '', $inside = '', $after = '' ) {
+	return "<?php\n/**\n * DOCBLOCK_FILE_CLI_RIMOSSO\n */\n\n" . $before
+		. "if ( defined( 'WP_CLI' ) && WP_CLI ) {\n"
+		. "\t/**\n\t * DOCBLOCK_CLASSE_CLI_TENUTO\n\t */\n"
+		. "\tclass WPHC_CLI_Command {\n\n"
+		. "\t\t/**\n\t\t * DOCBLOCK_METODO_CLI_TENUTO\n\t\t *\n\t\t * ## OPTIONS\n\t\t *\n\t\t * [--show]\n\t\t * : Opzione.\n\t\t *\n\t\t * @when after_wp_load\n\t\t */\n"
+		. "\t\tpublic function reset( \$args, \$assoc_args ) {\n\t\t\t// COMMENTO_INTERNO_CLI_RIMOSSO\n\t\t\treturn array( \$args, \$assoc_args );\n\t\t}\n\t}\n\n"
+		. "\tWP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );\n"
+		. $inside
+		. "}\n" . $after;
+}
+
+/**
+ * Cartella src/ temporanea con header, costanti, un legacy minimo e un file con ruolo cli (ultimo).
+ *
+ * @param string $cli_content Contenuto del file con ruolo cli.
+ * @return string Cartella src/ temporanea.
+ */
+function t_cli_src( $cli_content ) {
+	return t_make_src(
+		array(
+			'header.php'    => t_header(),
+			'constants.php' => t_constants(),
+			'legacy.php'    => "<?php\nfunction t_l() {\n\treturn 1;\n}\n",
+			'cli.php'       => $cli_content,
+		),
+		array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+			'legacy.php'    => 'legacy',
+			'cli.php'       => 'cli',
+		)
+	);
+}
+
+/**
  * Verifica che una funzione lanci RuntimeException con un certo testo.
  *
  * @param callable $fn     Funzione da eseguire.
@@ -347,6 +392,56 @@ $tests['gate (b)/(c): classi in ordine, extends di classe esterna e HTML dentro 
 	t_assert( false !== strpos( $result['code'], 'class T_Child extends T_Base' ), 'classi non concatenate' );
 };
 
+$tests['ruolo cli: il blocco WP-CLI e\' ammesso, lo strip toglie ogni commento tranne i docblock della classe'] = function () {
+	// Il file cli sta dopo il legacy, come nel manifest vero. NON si fa un require del risultato: nel processo la
+	// classe WPHC_CLI_Command e' gia' stata dichiarata dalla prova sullo strip.
+	$src   = t_cli_src( t_cli_file() );
+	$dev   = wphc_build( $src, false )['code'];
+	$strip = wphc_build( $src, true )['code'];
+	t_assert( false !== strpos( $dev, "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );" ), 'blocco cli non concatenato' );
+	t_assert( substr_count( $dev, "\n" ) === substr_count( $strip, "\n" ), 'numero di righe diverso dopo lo strip' );
+
+	// Docblock della classe e del metodo conservati, con sinossi e @when; il resto sparisce.
+	foreach ( array( 'DOCBLOCK_CLASSE_CLI_TENUTO', 'DOCBLOCK_METODO_CLI_TENUTO', '## OPTIONS', '[--show]', '@when after_wp_load' ) as $kept ) {
+		t_assert( false !== strpos( $strip, $kept ), 'lo strip ha tolto il docblock del comando: ' . $kept );
+	}
+	foreach ( array( 'DOCBLOCK_FILE_CLI_RIMOSSO', 'COMMENTO_INTERNO_CLI_RIMOSSO' ) as $gone ) {
+		t_assert( false === strpos( $strip, $gone ), 'commento non rimosso nel file cli: ' . $gone );
+	}
+	// Controllo sui token: restano solo l'header, il docblock della classe e quello del metodo.
+	$docs = 0;
+	foreach ( token_get_all( $strip ) as $tok ) {
+		if ( is_array( $tok ) && T_DOC_COMMENT === $tok[0] ) {
+			++$docs;
+		}
+	}
+	t_assert( 3 === $docs, 'docblock rimasti dopo lo strip: ' . $docs . ' (attesi 3: header, classe, metodo)' );
+};
+
+$tests['src reale: lo strip conserva i docblock del comando WP-CLI (classe, sinossi, @when) e nient\'altro'] = function () use ( $root ) {
+	$strip = wphc_build( $root . '/src', true )['code'];
+	t_assert( false !== strpos( $strip, 'Comandi WP-CLI del fleet agent wp-health-check.' ), 'docblock della classe WPHC_CLI_Command perso' );
+	t_assert( false !== strpos( $strip, '## OPTIONS' ) && false !== strpos( $strip, '[--show]' ), 'sinossi del comando secret persa' );
+	t_assert( 3 === substr_count( $strip, '@when after_wp_load' ), 'i tre metodi del comando devono conservare @when after_wp_load' );
+
+	// Docblock rimasti: header (1) + classe (1) + tre metodi (3) = 5, tutti nel blocco WP-CLI tranne l'header.
+	$docs      = array();
+	$cli_start = strpos( $strip, "if ( defined( 'WP_CLI' ) && WP_CLI ) {" );
+	foreach ( token_get_all( $strip ) as $tok ) {
+		if ( is_array( $tok ) && T_DOC_COMMENT === $tok[0] ) {
+			$docs[] = $tok[1];
+		}
+	}
+	t_assert( 5 === count( $docs ), 'docblock rimasti dopo lo strip: ' . count( $docs ) . ' (attesi 5)' );
+	t_assert( false !== $cli_start && false !== strpos( $strip, $docs[1], $cli_start ), 'il docblock della classe non sta nel blocco WP-CLI' );
+
+	// Il blocco WP-CLI e' l'ultima cosa del file, come nel file 1.38.1.
+	$tail = "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );\n}\n";
+	t_assert( $tail === substr( $strip, -strlen( $tail ) ), 'il blocco WP-CLI non e\' in coda al file' );
+	// E la registrazione compare UNA volta sola (i test di caratterizzazione la contano nel sorgente).
+	t_assert( 1 === preg_match_all( "/WP_CLI::add_command\\(\\s*'health-check'\\s*,\\s*'WPHC_CLI_Command'\\s*\\)/", $strip ), 'la registrazione del comando deve comparire una sola volta' );
+};
+
 // -----------------------------------------------------------------------------------------------
 // Gate negativi: ognuno deve far FALLIRE la build con un messaggio chiaro.
 // -----------------------------------------------------------------------------------------------
@@ -401,6 +496,94 @@ $tests['gate (b): codice top-level in un file con ruolo class'] = function () {
 			$needle
 		);
 	}
+};
+
+$tests['gate (b2): codice non ammesso in un file con ruolo cli'] = function () {
+	$cases = array(
+		// Istruzione prima del guard, guard diverso da quello atteso.
+		'istruzione prima del guard'        => array( t_cli_file( "add_action( 'init', 'x' );\n" ), 'deve cominciare con' ),
+		'guard incompleto'                  => array( str_replace( "defined( 'WP_CLI' ) && WP_CLI", "defined( 'WP_CLI' )", t_cli_file() ), 'deve cominciare con' ),
+		'file senza guard'                  => array( "<?php\n// niente\n", 'deve cominciare con' ),
+		// Codice dentro il guard oltre a classe e registrazione.
+		'funzione dentro il guard'          => array( t_cli_file( '', "\tfunction t_extra() {\n\t}\n" ), 'codice non ammesso in un file con ruolo cli' ),
+		'istruzione dentro il guard'        => array( t_cli_file( '', "\tdo_something();\n" ), 'codice non ammesso in un file con ruolo cli' ),
+		// Codice dopo il guard.
+		'istruzione dopo il guard'          => array( t_cli_file( '', '', "define( 'X', 1 );\n" ), 'codice top-level dopo il blocco WP-CLI' ),
+		'funzione dopo il guard'            => array( t_cli_file( '', '', "function t_f() {\n}\n" ), 'codice top-level dopo il blocco WP-CLI' ),
+		// Una seconda classe, con lo stesso nome o con un altro.
+		'seconda classe con lo stesso nome' => array( t_cli_file( '', "\tclass WPHC_CLI_Command {\n\t}\n" ), 'esattamente una classe' ),
+		'seconda classe con un altro nome'  => array( t_cli_file( '', "\tclass T_Altra {\n\t}\n" ), 'e\' ammessa solo' ),
+		// Classe final, con extends, o con un nome diverso da quella del comando.
+		'classe final'                      => array( str_replace( 'class WPHC_CLI_Command {', 'final class WPHC_CLI_Command {', t_cli_file() ), 'codice non ammesso in un file con ruolo cli' ),
+		'classe con extends'                => array( str_replace( 'class WPHC_CLI_Command {', 'class WPHC_CLI_Command extends WP_CLI_Command {', t_cli_file() ), 'e\' ammessa solo' ),
+		'classe con un altro nome'          => array( str_replace( 'class WPHC_CLI_Command {', 'class T_Altro {', t_cli_file() ), 'e\' ammessa solo' ),
+		// Registrazione mancante o doppia.
+		'registrazione mancante'            => array( str_replace( "\tWP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );\n", '', t_cli_file() ), 'esattamente una classe' ),
+		'registrazione doppia'              => array( t_cli_file( '', "\tWP_CLI::add_command( 'altro', 'WPHC_CLI_Command' );\n" ), 'esattamente una classe' ),
+		// Registrazione unica ma non identica a quella ammessa (I-3 della review): terzo argomento, nome diverso.
+		'terzo argomento con una funzione'  => array( str_replace( "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );", "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command', function () {\n\t\tdo_something();\n\t} );", t_cli_file() ), 'senza altri argomenti' ),
+		'terzo argomento con un array'      => array( str_replace( "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );", "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command', array( 'when' => 'x' ) );", t_cli_file() ), 'senza altri argomenti' ),
+		'nome del comando diverso'          => array( str_replace( "WP_CLI::add_command( 'health-check',", "WP_CLI::add_command( 'altro',", t_cli_file() ), 'senza altri argomenti' ),
+		// Guard non chiuso: lo intercetta gia' il parse completo del tokenizer.
+		'guard non chiuso'                  => array( substr( t_cli_file(), 0, -2 ), 'errore di sintassi' ),
+	);
+	foreach ( $cases as $label => $case ) {
+		$src = t_cli_src( $case[0] );
+		try {
+			t_expect_fail(
+				function () use ( $src ) {
+					wphc_build( $src, false );
+				},
+				$case[1]
+			);
+		} catch ( Build_Test_Failure $e ) {
+			throw new Build_Test_Failure( $label . ': ' . $e->getMessage() );
+		}
+	}
+
+	// Due file con ruolo cli nel manifest.
+	$src = t_make_src(
+		array(
+			'header.php'    => t_header(),
+			'constants.php' => t_constants(),
+			'cli-a.php'     => t_cli_file(),
+			'cli-b.php'     => t_cli_file(),
+		),
+		array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+			'cli-a.php'     => 'cli',
+			'cli-b.php'     => 'cli',
+		)
+	);
+	t_expect_fail(
+		function () use ( $src ) {
+			wphc_build( $src, false );
+		},
+		'al massimo un file con ruolo cli'
+	);
+
+	// Un solo file cli ma NON ultimo: il comando si registra in coda, dopo il resto del plugin (I-3 della review).
+	$src = t_make_src(
+		array(
+			'header.php'    => t_header(),
+			'constants.php' => t_constants(),
+			'cli.php'       => t_cli_file(),
+			'legacy.php'    => "<?php\nfunction t_l() {\n\treturn 1;\n}\n",
+		),
+		array(
+			'header.php'    => 'header',
+			'constants.php' => 'constants',
+			'cli.php'       => 'cli',
+			'legacy.php'    => 'legacy',
+		)
+	);
+	t_expect_fail(
+		function () use ( $src ) {
+			wphc_build( $src, false );
+		},
+		'deve essere l\'ultimo del manifest'
+	);
 };
 
 $tests['gate (d): versione dell\'header diversa da WP_HEALTH_CHECK_VERSION'] = function () {
@@ -604,6 +787,37 @@ $tests['gate (h): il budget del push blocca solo la build strippata, avvisa oltr
 	$result = wphc_build( $mid, true );
 	t_assert( $result['sizes']['b64'] > WPHC_BUILD_PUSH_BUDGET && $result['sizes']['b64'] <= WPHC_BUILD_PUSH_LIMIT, 'la prova non cade fra budget e limite: ' . $result['sizes']['b64'] );
 	t_assert( 1 === count( $result['warnings'] ), 'avviso di budget mancante' );
+};
+
+$tests['gate (h): il limite si misura sul body JSON intero del push, non sulla sola stringa gzip+base64 (M-3)'] = function () {
+	// Dati quasi incomprimibili: si cerca una dimensione con gzip+base64 SOTTO il limite ma body JSON SOPRA.
+	mt_srand( 777 );
+	$make = function ( $bytes ) {
+		$data = '';
+		for ( $i = 0; $i < $bytes; $i++ ) {
+			$data .= chr( mt_rand( 0, 255 ) );
+		}
+		return "\$t_blob = '" . base64_encode( $data ) . "';\n";
+	};
+	$found = null;
+	for ( $bytes = 96500; $bytes <= 99500 && null === $found; $bytes += 40 ) {
+		$src   = t_simple_src( $make( $bytes ) );
+		$sizes = wphc_build( $src, false )['sizes']; // La dev non e' mai bloccata: serve solo per le misure.
+		if ( $sizes['b64'] <= WPHC_BUILD_PUSH_LIMIT && $sizes['body'] > WPHC_BUILD_PUSH_LIMIT ) {
+			$found = $src;
+			t_assert( $sizes['body'] - $sizes['b64'] > 300, 'l\'overhead del body JSON e\' troppo piccolo: ' . ( $sizes['body'] - $sizes['b64'] ) );
+		}
+	}
+	t_assert( null !== $found, 'la prova non ha trovato una dimensione con b64 <= limite < body' );
+	t_expect_fail(
+		function () use ( $found ) {
+			wphc_build( $found, true );
+		},
+		'body JSON del push'
+	);
+	// In dev la stessa sorgente passa (con l'avviso di budget).
+	$dev = wphc_build( $found, false );
+	t_assert( array() !== $dev['warnings'], 'avviso di budget mancante in dev' );
 };
 
 // -----------------------------------------------------------------------------------------------

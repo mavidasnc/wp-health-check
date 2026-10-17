@@ -82,14 +82,17 @@ class WPHC_Test_Refactor_Map extends WPHC_Test_Case {
 	}
 
 	/**
-	 * La mappa coincide con quello che il plugin caricato dichiara davvero: con il plugin a funzioni, l'insieme
-	 * delle funzioni `wphc_*` dichiarate nel file sotto test e' ESATTAMENTE l'insieme delle chiavi (ne' una in piu'
-	 * ne' una in meno); con il plugin a classi, ogni metodo di destinazione esiste (nessuna funzione e' stata
-	 * accorpata o rinominata senza aggiornare la mappa).
+	 * La mappa coincide con quello che il plugin caricato dichiara davvero, in ogni fase del refactoring
+	 * (1.38.1 a funzioni, lotti intermedi misti, plugin tutto a classi): ogni funzione `wphc_*` dichiarata nel
+	 * file sotto test e' una chiave della mappa, e per OGNI voce vale esattamente una forma: la funzione
+	 * dichiarata nel file sotto test oppure il metodo statico di destinazione, dichiarato nello stesso file.
+	 * Una funzione spostata ma rimasta anche in legacy (o un wrapper) fa fallire il test, cosi' come una
+	 * funzione accorpata o rinominata senza aggiornare la mappa.
 	 */
 	public function test_map_matches_what_the_loaded_plugin_declares() {
 		$map = self::refactor_map();
 
+		// 1. Funzioni wphc_* dichiarate nel file sotto test (quelle dei test stanno sotto tests/).
 		$declared = array();
 		foreach ( get_defined_functions()['user'] as $function_name ) {
 			if ( 0 !== strpos( $function_name, 'wphc_' ) || 0 === strpos( $function_name, 'wphc_test_' ) || 'wphc_read_test_passthrough' === $function_name ) {
@@ -100,16 +103,19 @@ class WPHC_Test_Refactor_Map extends WPHC_Test_Case {
 			}
 		}
 
-		if ( array() !== $declared ) {
-			// Plugin a funzioni (1.38.1): stesso insieme, nello stesso ordine della tabella 2.2 non e' richiesto.
-			$this->assertEqualsCanonicalizing( array_keys( $map ), $declared );
+		// 2. Nessuna funzione del plugin fuori dalla mappa.
+		$this->assertSame( array(), array_values( array_diff( $declared, array_keys( $map ) ) ), 'funzioni wphc_* del plugin assenti da tests/refactor-map.php' );
 
-			return;
-		}
-		// Plugin a classi: ogni destinazione esiste, ed e' statica.
+		// 3. Per ogni voce esattamente una forma: funzione nel file sotto test XOR metodo statico nello stesso file.
 		foreach ( $map as $function_name => $target ) {
-			$this->assertTrue( method_exists( $target[0], $target[1] ), "{$function_name}: manca il metodo {$target[0]}::{$target[1]}" );
-			$this->assertTrue( ( new ReflectionMethod( $target[0], $target[1] ) )->isStatic(), "{$function_name}: il metodo non e' statico" );
+			$is_function = in_array( $function_name, $declared, true );
+			$is_method   = class_exists( $target[0], false ) && method_exists( $target[0], $target[1] );
+			$this->assertTrue( $is_function xor $is_method, "{$function_name}: deve esistere come funzione OPPURE come {$target[0]}::{$target[1]}, non entrambe ne' nessuna" );
+			if ( $is_method ) {
+				$method = new ReflectionMethod( $target[0], $target[1] );
+				$this->assertTrue( $method->isStatic(), "{$function_name}: {$target[0]}::{$target[1]} non e' statico" );
+				$this->assertSame( WPHC_PLUGIN_FILE, realpath( (string) $method->getFileName() ), "{$function_name}: {$target[0]}::{$target[1]} non e' dichiarato nel file sotto test" );
+			}
 		}
 	}
 

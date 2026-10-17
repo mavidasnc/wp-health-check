@@ -490,6 +490,19 @@ namespace {
 				if ( 1 === preg_match( '/\b(self|static|parent)::|\$this\b/', $source ) ) {
 					throw new RuntimeException( 'Il corpo della funzione CORS usa self::/static::/parent:: o $this: non e\' eseguibile nel namespace spia (WPHC_Cors_Spy). Qualificare i riferimenti con il backslash iniziale o adattare capture_cors().' );
 				}
+				// Stesso discorso per le classi del plugin: `WPHC_Options::...` senza il backslash iniziale risolverebbe in
+				// WPHC_Cors_Spy\WPHC_Options (classe inesistente: fatal dentro eval). Il lookbehind accetta solo `\WPHC_X::`.
+				// Si controlla il solo CODICE (commenti esclusi): un commento puo' citare `WPHC_Guard::metodo()`.
+				$code_only = '';
+				foreach ( token_get_all( '<?php ' . $source ) as $token ) {
+					if ( is_array( $token ) && in_array( $token[0], array( T_COMMENT, T_DOC_COMMENT ), true ) ) {
+						continue;
+					}
+					$code_only .= is_array( $token ) ? $token[1] : $token;
+				}
+				if ( 1 === preg_match( '/(?<!\\\\)\bWPHC_\w+::/', $code_only ) ) {
+					throw new RuntimeException( 'Il corpo della funzione CORS riferisce una classe WPHC_* senza il backslash iniziale: non risolverebbe nel namespace spia (WPHC_Cors_Spy). Scrivere \\WPHC_Options::... o adattare capture_cors().' );
+				}
 				// Plausibilita': l'estrazione dalle righe del file deve aver preso TUTTO il corpo (almeno cinque
 				// header_remove( e quattro header( ), altrimenti i test passerebbero su una funzione tagliata.
 				if ( substr_count( $source, 'header_remove(' ) < 5 || preg_match_all( '/(?<![\w])header\(/', $source ) < 4 ) {
