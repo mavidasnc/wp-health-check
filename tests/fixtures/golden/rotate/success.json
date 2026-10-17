@@ -1,0 +1,23 @@
+{
+    "body": {
+        "grace_seconds": 900,
+        "protocol": 2,
+        "rotated": true,
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_protocol": "off",
+        "wp_health_check_token": "off",
+        "wp_health_check_token_prev": "off",
+        "wp_health_check_token_rotated_at": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_protocol": "2",
+        "wp_health_check_token": "tok-golden-rotated",
+        "wp_health_check_token_prev": "tok-old",
+        "wp_health_check_token_rotated_at": "<TS_STR>"
+    },
+    "status": 200
+}

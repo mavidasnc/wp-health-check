@@ -1,0 +1,15 @@
+{
+    "body": {
+        "job": null,
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

@@ -1,0 +1,30 @@
+{
+    "body": {
+        "detail": "Plugin aggiornato correttamente ma la riattivazione automatica e' fallita: The plugin generated unexpected output.",
+        "from": "1.0.0",
+        "log_id": "<LOG_ID>",
+        "name": "WPHC Fixture",
+        "result": "reactivation_failed",
+        "target": "wphc-fixture-b/wphc-fixture-b.php",
+        "to": "2.0.0",
+        "type": "plugin",
+        "updated": true
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off",
+        "wp_health_check_last_update": "auto"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10",
+        "wp_health_check_last_update": {
+            "at": "<ISO8601>",
+            "phase": "completed",
+            "source": "api",
+            "target": "wphc-fixture-b/wphc-fixture-b.php",
+            "type": "plugin"
+        }
+    },
+    "status": 200
+}

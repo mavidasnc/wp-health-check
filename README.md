@@ -4,7 +4,8 @@ Must-use plugin WordPress a file singolo per il monitoraggio e il self-update di
 flotta di siti clienti, controllati da un sistema centrale esterno e da una dashboard.
 
 - **Runtime distribuito:** `mu-plugins/wp-health-check.php` — un unico file PHP
-  autoconsistente, senza dipendenze, compatibile **PHP 7.4+** e **WordPress 6.4+**.
+  autoconsistente (generato da `src/`, vedi [Sorgente, build e file
+  distribuito](#sorgente-build-e-file-distribuito-dalla-1390)), senza dipendenze, compatibile **PHP 7.4+** e **WordPress 6.4+**.
 - **Repository:** <https://github.com/mavidasnc/wp-health-check> (pubblico: contiene
   solo codice e chiavi *pubbliche*, mai segreti).
 
@@ -71,8 +72,116 @@ Perché mu-plugins e non un plugin normale? Perché deve essere sempre attivo, n
 disattivabile per errore da un amministratore del sito, e caricato il prima
 possibile. WordPress carica automaticamente **solo** i file `.php` che si trovano
 nella *radice* di `wp-content/mu-plugins/` (non nelle sue sottocartelle): è per
-questo che il plugin deve restare un file singolo autoconsistente, senza
-autoload PSR-4 a runtime.
+questo che il plugin distribuito deve restare un file singolo autoconsistente, senza
+autoload PSR-4 a runtime (dalla 1.39.0 il sorgente sta in `src/` e il file è generato).
+
+### Sorgente, build e file distribuito (dalla 1.39.0)
+
+Il file che arriva sui siti è sempre UNO, ma dalla 1.39.0 non si scrive più a mano: è
+**generato** da `bin/build.php` a partire dai file di `src/`, e quello committato in
+`mu-plugins/` è la build con strip, cioè il file che si firma e si pubblica. Il comportamento esterno è
+identico a quello della 1.38.1 (stesse rotte, stessi corpi di risposta, stesse option,
+stessi hook nello stesso ordine): è stata una riorganizzazione interna, con i bug noti
+preservati di proposito e da correggere in passi separati (elenco nella sezione 9 di
+[`refactoring-classi.md`](../__docs/wp-health-check/refactoring-classi.md)). La
+documentazione di dettaglio della build è in [`src/README.md`](src/README.md), quella dei
+test in [`tests/README.md`](tests/README.md) e in [`tests/e2e/README.md`](tests/e2e/README.md).
+
+```
+src/
+  manifest.php                  elenco ORDINATO file => ruolo (non entra nel file distribuito)
+  header.php                    header del plugin (Plugin Name, Version, ...) e guardia ABSPATH
+  constants.php                 costanti WP_HEALTH_CHECK_* (ognuna in `if ( ! defined() )`) e WP_HEALTH_CHECK_FILE
+  class-wphc-*.php              21 classi `final` con metodi statici, una per file
+  boot.php                      WPHC_Plugin::boot(): l'unica istruzione al livello del file
+  class-wphc-cli-command.php    WPHC_CLI_Command (solo con WP-CLI attivo), sempre l'ultimo del manifest
+```
+
+Le classi, in ordine di dipendenza: `WPHC_Options` (nomi di option, transient e cron
+come costanti), `WPHC_Util`, `WPHC_Crypto`, `WPHC_Guard` (HTTPS, throttle, nonce, firma
+delle richieste), `WPHC_Auth`, `WPHC_Cors`, `WPHC_Rest` (registrazione delle rotte),
+`WPHC_Enrollment` (`/enroll`, `/rotate`, `/revoke`, reset), `WPHC_Health` (`/health`,
+`/ping`, `/detail/*`), `WPHC_Debug`, `WPHC_Users`, `WPHC_Thumbnail`, `WPHC_Autologin`,
+`WPHC_Update_Log`, `WPHC_Self_Updater`, `WPHC_Item_Updater`, `WPHC_Bulk`, `WPHC_Webhook`,
+`WPHC_Admin` e `WPHC_Admin_View` (tab Site Health) e `WPHC_Plugin` (registra tutti gli
+hook in `boot()`). Ogni vecchia funzione `wphc_*()` ha un metodo corrispondente: la
+mappa completa, usata anche dai test, è `tests/refactor-map.php`. Il plugin non dichiara
+più alcuna funzione globale `wphc_*` (nessun wrapper di compatibilità): il codice di
+terzi che chiamava una di quelle funzioni, o che faceva `remove_action()` indicando il
+nome della funzione come stringa, non funziona più. Restano invariati i nomi che sono
+stringhe persistite o pubbliche: option e transient, hook cron (`wphc_bulk_update_tick`,
+`wphc_webhook_retry`), azioni `admin_post_wphc_*` e `wp_ajax_wphc_*`, query var
+`wphc_autologin`, tabella `wphc_update_log`, user meta `wphc_last_login*`.
+
+**Perché il distribuito resta un file solo.** WordPress carica solo i `.php` nella radice
+di `mu-plugins/` (vedi sopra): le classi di `src/` non si caricano con un autoloader ma si
+concatenano, senza `namespace`. `composer.json` non ha alcuna sezione `autoload`:
+Composer serve soltanto agli strumenti di sviluppo.
+
+**Cosa fa la build.** Concatena i file nell'ordine del manifest (toglie il `<?php`
+iniziale dai file successivi al primo, senza separatori) e si rifiuta di scrivere se un
+controllo fallisce: parse completo del risultato, una sola classe per file (e nessun altro
+codice al livello del file, salvo `header`, `constants`, `boot` e il blocco WP-CLI), nessuna
+classe che estenda una classe dichiarata più avanti, versione dell'header uguale a
+`WP_HEALTH_CHECK_VERSION`, `__FILE__` e `__DIR__` ammessi solo in `constants.php`
+(`__CLASS__`, `__FUNCTION__`, `__METHOD__` e `__LINE__` vietati ovunque), assenza di
+`?>` o HTML inline fuori dai metodi, solo LF. La build è deterministica: stesso sorgente,
+stesso SHA-256.
+
+**Strip dei commenti.** Il file da pubblicare si costruisce con lo strip: ogni commento
+diventa i soli a capo che contiene, quindi la riga N del file distribuito è la riga N
+della concatenazione e gli stack trace di produzione puntano al posto giusto (i numeri
+sono però diversi da quelli della 1.38.1, perché le classi aggiungono righe). Si
+conservano l'header e i docblock di `WPHC_CLI_Command`, che WP-CLI legge via reflection.
+La build verifica che i token non commento siano identici prima e dopo. Lo strip serve al
+**push dell'hub**: l'intero file viaggia nel body di `POST /update` (gzip e base64 dentro
+un JSON) e il body della 1.38.1, circa 130.900 byte, stava a ridosso del limite di 128 KiB di
+mod_security; lo strip lo porta a circa 60.700 byte. Il gate fallisce se il body del push
+raggiunge 131072 byte e avvisa oltre i 110000 caratteri di gzip più base64. Non vanno
+aggiunti codice o commenti a `src/` senza guardare i numeri che stampa la build.
+
+**Marcatore della build di sviluppo.** La build senza strip (`composer run build:dev`)
+aggiunge in coda il commento `// WPHC-BUILD: dev (non distribuibile)` e si scrive in
+`build/dev/wp-health-check.php`, mai su `mu-plugins/`; la build strip non lo contiene e fallisce se lo trova, e i sorgenti non possono contenere la parola
+`WPHC-BUILD`. Un file con il marcatore NON si firma e NON si pubblica mai (vedi la
+procedura di release in [Requisiti lato GitHub](#requisiti-lato-github)).
+
+**`WP_HEALTH_CHECK_FILE`.** Il self-update riscrive il file indicato da questa costante
+(`WPHC_Self_Updater::install_release()`), definita in `constants.php` come le altre
+(solo se non esiste già) con default `__FILE__`, cioè il mu-plugin stesso: in produzione
+il comportamento è quello della 1.38.1. Si può ridefinire in `wp-config.php` (lo fanno i
+test per non riscrivere il file del repository), ma sposta il bersaglio dell'update: il
+file deve stare sullo stesso filesystem di `WPMU_PLUGIN_DIR` (il temporaneo si crea lì e
+poi si fa `rename()`), il preflight di scrittura controlla sempre `WPMU_PLUGIN_DIR` e la
+copia non deve mai essere un `.php` nella radice di `mu-plugins/`, perché WordPress la
+caricherebbe al giro successivo (fatal `Cannot declare class`).
+
+**Comandi.**
+
+| Comando | Cosa fa |
+|---|---|
+| `composer run build` | build con strip: rigenera `mu-plugins/wp-health-check.php`, il file committato, quello che si firma e si pubblica |
+| `composer run build:dev` | build senza strip (con il marcatore di sviluppo) in `build/dev/wp-health-check.php`, per sviluppo e debug; non scrive mai su `mu-plugins/` |
+| `composer run build:check` | confronta una build strip nuova con il file committato in `mu-plugins/` (exit 1 se diversi) |
+| `composer run test:build` | test della build stessa (PHP puro, senza WordPress) |
+| `composer run test` | suite PHPUnit di caratterizzazione dentro wp-env (PHP 8.1 di default) |
+| `composer run lint` / `composer run analyse` | phpcs e phpstan su `src/` e `bin/` (il file generato è escluso: lo strip toglie le annotazioni `phpcs:ignore`) |
+
+**Test.** La suite PHPUnit gira in WordPress reale (container `tests-cli` di wp-env) e
+fissa il comportamento esterno: test delle rotte, snapshot golden delle risposte e delle
+option scritte (`tests/fixtures/golden/`), registro di tutti gli hook con priorità e
+ordine, vettori di contratto con l'hub generati dal codice dell'hub. Il plugin sotto
+test è una COPIA del file costruito, e il bootstrap rifiuta di partire se
+`mu-plugins/` non coincide con una build strip fresca di `src/`: dopo ogni modifica a
+`src/` va lanciato `composer run build` e il file rigenerato si committa insieme al sorgente. La matrice copre PHP 7.4, 8.1 e 8.3 (procedura,
+runner e container usa-e-getta in [`tests/README.md`](tests/README.md)). Due insiemi
+di prove sono aggiuntivi e obbligatori prima di una release: gli e2e, con un sito
+WordPress vero e il codice Python vendorizzato dell'hub (`python -I tests/e2e/run_all.py`:
+contratto con l'hub, comandi WP-CLI veri), e il **test di upgrade** da un sito enrollato
+con la 1.38.1 al file candidato (`tests/e2e/upgrade_test.py`, con `WPHC_CANDIDATE_FILE`
+per indicare il candidato). Un golden che cambia è un cambiamento di comportamento da
+decidere, non da rigenerare. Il database di wp-env è uno solo: due run di PHPUnit in
+parallelo si calpestano, e vanno serializzati (lock descritto in `tests/README.md`).
 
 ## Tre scelte di interpretazione del brief
 
@@ -87,9 +196,11 @@ risolte così, per trasparenza:
    comunque la compatibilità 7.4+ del runtime con `PHPCompatibilityWP`.
 2. **Autoload PSR-4 vs "file singolo autoconsistente".** Il vincolo architetturale è
    ripetuto due volte nel brief ed è motivato tecnicamente (mu-plugins carica solo i
-   `.php` in radice): resta prioritario. L'autoload PSR-4 dichiarato in
-   `composer.json` copre solo gli script di tooling del repository (es.
-   `bin/generate-keys.php`), mai il plugin runtime, che non ha classi autoloaded.
+   `.php` in radice): resta prioritario. `composer.json` non dichiara alcun
+   autoload: Composer serve solo agli strumenti di sviluppo e `bin/generate-keys.php`
+   è uno script autonomo. Il plugin runtime non ha classi autoloaded: dalla 1.39.0 il
+   sorgente è in `src/`, ma si concatena in un file solo (vedi [Sorgente, build e file
+   distribuito](#sorgente-build-e-file-distribuito-dalla-1390)).
 3. **SCSS/BEM.** Il plugin è headless: espone endpoint REST, senza asset frontend
    richiesti nella specifica funzionale originale. Non ho introdotto SCSS/CSS
    speculativi senza nulla da stilare. Da `1.4.0` è stata aggiunta una tab in
@@ -146,7 +257,7 @@ sezione [Considerazioni di sicurezza](#considerazioni-e-limiti-di-sicurezza).
 ### `url_normalizzato`, esattamente
 
 Il centro deve ricalcolare **byte per byte** lo stesso valore che calcola il sito
-(funzione `wphc_normalize_site_url()`), quindi la normalizzazione di `home_url()` è
+(metodo `WPHC_Util::normalize_site_url()`), quindi la normalizzazione di `home_url()` è
 minima e rigida:
 
 1. schema (`http`/`https`) in minuscolo;
@@ -205,16 +316,22 @@ Chiave PRIVATA (SEGRETA — solo lato centro)
 [...]
 ```
 
-Con il placeholder vuoto di default (`WP_HEALTH_CHECK_CENTRAL_PUBKEY = ''`), ogni
-tentativo di `/enroll` fallisce la verifica della firma: è un comportamento
-volutamente *fail closed* (nessun enroll possibile finché la chiave reale non è
-incorporata), non *fail open*.
+Lo script stampa ancora il percorso `mu-plugins/wp-health-check.php`, ma dalla 1.39.0
+quel file è generato: per cambiare la chiave si modifica `src/constants.php` e si
+rigenera il file con la build (oppure si ridefinisce la costante in `wp-config.php`).
+
+Nel codice la costante `WP_HEALTH_CHECK_CENTRAL_PUBKEY` (kid `k1`) contiene già la
+chiave pubblica reale del centro (`src/constants.php`), quindi un sito appena installato
+accetta le buste firmate dal centro. Se la costante fosse vuota, per esempio ridefinita
+così in `wp-config.php` per un ambiente di prova, ogni tentativo di `/enroll` fallirebbe
+la verifica della firma: il comportamento è volutamente *fail closed* (nessun enroll
+possibile senza una chiave), non *fail open*.
 
 La costante è il kid **"k1"** e verifica solo le buste del centro verso il sito
 (`/enroll`, `/rotate`, `/revoke`); senza `kid` si assume `"k1"` (retrocompatibile con
 ogni busta `/enroll` esistente). Dalla 1.35.0 (M-8 della review 2026-10-11)
 `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2` è la chiave **"k2" dedicata alle release** del
-plugin: `wphc_verify_central_signature()` accetta `k1` solo per le buste e `k2` solo
+plugin: `WPHC_Crypto::verify_central_signature()` accetta `k1` solo per le buste e `k2` solo
 per le release (parametro `$purpose`), quindi un `"kid": "k2"` nel body di una rotta
 non fa accettare una firma prodotta con la chiave delle release, e chi custodisce
 quella chiave non può forgiare buste verso i siti. La coppia delle release è custodita
@@ -232,13 +349,18 @@ centro verificata nel callback, non un token):
   `MASTER_SECRET`). Il sito sposta l'attuale in `wp_health_check_token_prev` e
   adotta il nuovo come `wp_health_check_token`, aprendo una finestra di grazia di
   `WP_HEALTH_CHECK_ROTATION_GRACE` secondi (900 di default) durante la quale
-  `wphc_require_token()` accetta **entrambi** i segreti: una rotazione non causa
+  `WPHC_Auth::require_token()` accetta **entrambi** i segreti: una rotazione non causa
   downtime per la flotta, perché il centro e il sito non devono allinearsi allo
   stesso istante esatto.
-- **`POST /revoke`** cancella sia il segreto corrente sia l'eventuale precedente e
-  scrive `wp_health_check_revoked_at`: da quel momento ogni rotta dati risponde
-  `403 wphc_revoked`, indipendentemente dal token fornito. Invalida anche i token
-  di autologin già emessi e non ancora consumati.
+- **`POST /revoke`** cancella l'eventuale segreto precedente
+  (`wp_health_check_token_prev`) e la data di rotazione, e scrive
+  `wp_health_check_revoked_at`: da quel momento ogni rotta dati risponde
+  `403 wphc_revoked`, indipendentemente dal token fornito. Il segreto corrente
+  (`wp_health_check_token`) NON viene cancellato, come invece dicevano questa pagina e
+  il docblock di `WPHC_Enrollment::route_revoke()` fino alla 1.38.1; lo stato di
+  revoca si toglie solo con il reset dell'enrollment (vedi [Reset via
+  WP-CLI](#reset-via-wp-cli)). Invalida anche i token di autologin già emessi e non
+  ancora consumati.
 - Messaggio canonico firmato, con un **prefisso di dominio** che impedisce di
   riusare una busta valida per un'operazione diversa da quella per cui è stata
   emessa (senza di esso i payload di `/rotate` e `/revoke` sarebbero
@@ -348,7 +470,9 @@ cui il centro ha legato il token e che riuserà identica.
 
 **Protocol 1 (formato storico, sopra).** Un replay dello stesso enroll (stesso URL)
 produce sempre lo stesso `token` (derivazione deterministica): riscrive lo stesso
-valore, quindi è innocuo e non serve alcun controllo anti-replay.
+valore, quindi è innocuo e non serve un controllo anti-replay sul nonce (dalla 1.34.0
+anche la busta v1 deve però rientrare nella finestra di freschezza di `issued_at`, vedi
+sotto).
 
 **Protocol 2 (dalla 1.30.0).** Con `"protocol": 2` nel body, il payload aggiunge
 `"nonce"` e la firma copre anche un prefisso di dominio (`"enroll"`) e `protocol`:
@@ -436,9 +560,10 @@ Sposta il segreto attuale in `wp_health_check_token_prev` (finestra di grazia
 }
 ```
 
-Cancella `wp_health_check_token` e l'eventuale `_token_prev`, scrive
-`wp_health_check_revoked_at`, invalida i token di autologin pendenti. Da quel
-momento ogni rotta dati risponde `403 wphc_revoked`. Risposta:
+Cancella l'eventuale `_token_prev` e `_token_rotated_at`, scrive
+`wp_health_check_revoked_at` e invalida i token di autologin pendenti. **Non cancella
+`wp_health_check_token`**. Da quel momento ogni rotta dati risponde `403 wphc_revoked`,
+e lo stato si toglie solo con il reset dell'enrollment. Risposta:
 `{ "revoked": true, "site": "..." }`.
 
 ### `GET|POST /thumbnail` — stato e rigenerazione della thumbnail (dalla 1.30.0)
@@ -841,7 +966,7 @@ Nessuna cache transient: a differenza di `/detail/plugins` e `/detail/theme`,
 è `user_registered` (già presente in `wp_users`, nessun costo aggiuntivo).
 `last_login`/`last_login_ip` vengono scritti in due user meta
 (`wphc_last_login`, `wphc_last_login_ip`) sull'azione `wp_login`; l'IP usa
-la stessa fonte di `wphc_get_client_ip()` già usata per la colonna `ip`
+la stessa fonte di `WPHC_Util::get_client_ip()` già usata per la colonna `ip`
 della [tabella di log](#tracciamento-accessi), quindi rispetta
 `wp_health_check_trust_proxy`. `last_login` resta `null` finché un
 amministratore non effettua un accesso **dopo** l'aggiornamento a questa
@@ -1041,7 +1166,7 @@ plugin, l'utente che finirà autenticato in `wp-admin` è esattamente quello
 i cui credenziali (Application Password) hanno superato l'autenticazione
 REST nativa.
 
-Il callback (`wphc_route_autologin_token()`):
+Il callback (`WPHC_Autologin::route_token()`):
 
 1. legge `wp_get_current_user()`, già popolato dal core;
 2. genera un token casuale a 256 bit (`random_bytes( 32 )`, CSPRNG — mai
@@ -1053,7 +1178,7 @@ Il callback (`wphc_route_autologin_token()`):
    quella scritta al passo 2, quando il token viene consumato;
 4. registra un audit minimo in `wp_health_check_last_autologin` (user, IP,
    timestamp) — nessuna tabella dedicata, solo l'ultima richiesta, stesso
-   spirito di `wphc_record_access()`;
+   spirito di `WPHC_Auth::record_access()`;
 5. **dall'agent 1.25.0**, scrive anche una riga `type: "token"` nella tabella
    di log (`wphc_update_log`, la stessa di `GET /update/log`): `target` è lo
    `user_login`, `name` il `display_name` (fallback `user_login`) — questa
@@ -1063,7 +1188,7 @@ Il callback (`wphc_route_autologin_token()`):
 ### Passo 2 — consumo del token, fuori dalla REST API
 
 `autologin_url` punta all'home del sito con `?wphc_autologin=<token>`, **non**
-a un'altra rotta REST: viene intercettato da `wphc_maybe_consume_autologin()`,
+a un'altra rotta REST: viene intercettato da `WPHC_Autologin::maybe_consume()`,
 agganciata su `init`, prima che qualunque output sia inviato. Questa scelta
 (anziché una rotta REST che risponda con un redirect) evita ogni rischio
 "headers already sent" nel chiamare `wp_set_auth_cookie()`, e separa con
@@ -1072,7 +1197,7 @@ con header di autenticazione, navigazione diretta del browser per tutto ciò
 che deve impostare un cookie di sessione.
 
 Il flusso, fail-closed su qualunque anomalia (stesso principio di
-`wphc_require_token()`, nessun dettaglio sul motivo nella risposta):
+`WPHC_Auth::require_token()`, nessun dettaglio sul motivo nella risposta):
 
 1. token assente nella query string → nessuna azione (richiesta normale);
 2. token presente: lookup del transient per hash, poi **cancellazione
@@ -1123,7 +1248,7 @@ Il flusso, fail-closed su qualunque anomalia (stesso principio di
   configurabile dal chiamante, per non introdurre una superficie di open
   redirect.
 - **Throttle e HTTPS (dalla 1.34.0, A-10 della review 2026-10-03)**: il
-  consumo passa da `wphc_throttle_check()` come le rotte autenticate, e ogni
+  consumo passa da `WPHC_Guard::throttle_check()` come le rotte autenticate, e ogni
   token sconosciuto conta come tentativo fallito, quindi una raffica di GET
   anonime non gonfia più la tabella di log; oltre la soglia o in HTTP si va
   al login senza leggere il token. `POST /autologin/token` richiede HTTPS.
@@ -1154,7 +1279,7 @@ esposta da nessuna rotta di questo plugin): in quel caso l'IP viene letto
 dall'**ultimo** valore valido in `X-Forwarded-For` (dalla 1.34.0: un proxy accoda
 l'indirizzo del proprio client in fondo, mentre i valori a sinistra li sceglie il
 client; con il primo valore il throttle era aggirabile cambiando l'header). Con
-la stessa opzione, `wphc_require_https()` accetta una richiesta che PHP vede in
+la stessa opzione, `WPHC_Guard::require_https()` accetta una richiesta che PHP vede in
 HTTP solo se il proxy dichiara `X-Forwarded-Proto: https` (fino alla 1.33.0
 l'opzione saltava del tutto il controllo). **`X-Forwarded-For` è un header fornito dal
 client e quindi falsificabile a piacere**: è attendibile solo se un proxy fidato lo
@@ -1164,13 +1289,13 @@ consapevolmente, mai per default.
 ## Self-update: flusso passo per passo
 
 Innescato da `POST /update` o dal pulsante "Aggiorna il plugin" nella [tab Site
-Health](#tab-site-health) (entrambi usano la funzione condivisa
-`wphc_perform_self_update()`), mai da un cron lato sito. Ordine rigoroso, ogni
+Health](#tab-site-health) (entrambi usano il metodo condiviso
+`WPHC_Self_Updater::perform_self_update()`), mai da un cron lato sito. Ordine rigoroso, ogni
 passo che fallisce interrompe il flusso **prima** di toccare il file di produzione:
 
 1. **Autenticazione** via token (già garantita dal `permission_callback`) e
    registrazione dell'accesso.
-2. **Interrogazione della release** (`wphc_fetch_latest_release()`). Dalla 1.38.0 la
+2. **Interrogazione della release** (`WPHC_Self_Updater::fetch_latest_release()`). Dalla 1.38.0 la
    prima fonte è l'**hub** (`WP_HEALTH_CHECK_RELEASE_URL`, default
    `https://hub.mavida.com/api/v1/fleet/agent-release/latest`): l'hub interroga GitHub
    una sola volta e serve la release alla flotta, così i siti sugli hosting condivisi non
@@ -1197,7 +1322,7 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 3. **Normalizzazione e confronto versione**: il `tag_name` della release perde un
    eventuale prefisso `v`, poi si confronta con `WP_HEALTH_CHECK_VERSION` via
    `version_compare()`. Se non è più recente: `200 { "updated": false, "reason": "up_to_date", ... }`.
-4. **Preflight di scrittura** (`wphc_probe_mu_dir_writable()`, eseguito prima di
+4. **Preflight di scrittura** (`WPHC_Self_Updater::probe_mu_dir_writable()`, eseguito prima di
    scaricare qualunque cosa): si scrive e si rimuove un file temporaneo a nome casuale in
    `WPMU_PLUGIN_DIR` (es. `.wphc-writetest-<rand>`). Se fallisce:
    `200 { "updated": false, "reason": "not_writable" }`, senza aver toccato altro.
@@ -1216,7 +1341,7 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
      2026-10-03 e A-1 della review 2026-10-11)**: la release deve avere l'asset
      `wp-health-check.php.sig` (JSON `{tag, sha256, kid, signature}` prodotto da
      `hub/scripts/sign_release.py`) e la firma Ed25519 su `"release\n<tag>\n<sha256>"`
-     viene verificata con `wphc_verify_central_signature( ..., 'release' )` e la chiave
+     viene verificata con `WPHC_Crypto::verify_central_signature( ..., 'release' )` e la chiave
      pubblica **`k2`** incorporata, dedicata alle release. Lo SHA-256 da solo
      garantiva l'integrità ma non l'autenticità: sta nella stessa release, quindi chi
      controlla il repository controlla anche l'hash. Una release senza `.sig`, con una
@@ -1228,12 +1353,13 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
    ripristino immediato dei punti 8 e 9; dalla 1.36.0 viene rimosso a update riuscito.
 8. **Scrittura atomica**: il nuovo contenuto viene scritto in un file temporaneo
    nella *stessa directory* (con estensione neutra, non `.php` — vedi nota sotto),
-   poi si esegue `rename()` su `__FILE__`. `rename()` sullo stesso filesystem è
+   poi si esegue `rename()` su `WP_HEALTH_CHECK_FILE` (di default `__FILE__`, cioè il
+   mu-plugin stesso). `rename()` sullo stesso filesystem è
    atomico: non lascia mai il file di produzione "a metà scritto".
 9. **Sanity check post-scrittura**: si rilegge il file, si verifica che non sia
    vuoto e che inizi con `<?php`. Se qualcosa non torna, si ripristina
    immediatamente dal `.bak` del punto 7.
-10. **Invalidazione opcache**: `opcache_invalidate( __FILE__, true )` se
+10. **Invalidazione opcache**: `opcache_invalidate( WP_HEALTH_CHECK_FILE, true )` se
     disponibile; altrimenti la vecchia versione compilata resta in memoria fino al
     riavvio del pool PHP (es. php-fpm).
 11. Risposta `200 { "updated": true, "from": "...", "to": "..." }`.
@@ -1241,17 +1367,18 @@ passo che fallisce interrompe il flusso **prima** di toccare il file di produzio
 **Push dell'hub (dalla 1.38.0).** `POST /update` con un body JSON
 `{"package": {"tag", "sha256", "sig", "contents_gz_b64", "force"}}` salta i punti 2 e 5:
 il file arriva compresso (gzip + base64) nel body e il sito non scarica nulla
-(`wphc_perform_pushed_update()`). Il pacchetto è una sorgente come un'altra: la stessa
-pipeline (`wphc_install_release()`) ripete confronto di versione, preflight di scrittura,
+(`WPHC_Self_Updater::perform_pushed_update()`). Il pacchetto è una sorgente come un'altra: la stessa
+pipeline (`WPHC_Self_Updater::install_release()`) ripete confronto di versione, preflight di scrittura,
 integrità (SHA-256, `<?php`, `Version:` uguale al tag) e firma `k2` sul messaggio
 `"release\n<tag>\n<sha256>"`. L'hub non possiede il seed `k2` e non può fabbricare una
 release valida. Utile ai siti che non raggiungono GitHub o l'hub e per la reinstallazione
 di riparazione: con `force: true` il sito accetta anche la stessa versione, mentre un
 downgrade è sempre rifiutato (`200 { "updated": false, "reason": "up_to_date" }`). Un
 pacchetto malformato o oltre i limiti (2 MB di base64, 4 MB decompressi) risponde
-`400 wphc_update_push_invalid`. La risposta riporta `"mode": "push"`. Il body pesa circa
-130 KB: su un sito dietro un limite di body di 128 KiB (mod_security) il push viene
-rifiutato dal server prima di arrivare al plugin.
+`400 wphc_update_push_invalid`. La risposta riporta `"mode": "push"`. Fino alla 1.38.1
+il body pesava circa 130.900 byte, a ridosso del limite di 128 KiB di mod_security: su un sito
+con quel limite il push veniva rifiutato dal server prima di arrivare al plugin. Dalla
+1.39.0 il file distribuito non contiene commenti e il body pesa circa 60.700 byte.
 
 Ogni ramo d'errore restituisce un `WP_Error` con status HTTP coerente e un codice
 macchina stabile (`wphc_update_network_error`, `wphc_update_github_error`,
@@ -1266,7 +1393,7 @@ ma solo se `WP_DEBUG` è attivo.
 deliberatamente estensione `.php`. Se il `rename()` fallisse lasciando un file
 orfano nella cartella, un file con estensione `.php` in `mu-plugins/` verrebbe
 caricato automaticamente da WordPress al giro successivo, ridichiarando tutte le
-funzioni del plugin e mandando in fatal error l'intero sito; un'estensione neutra
+classi del plugin (`Cannot declare class`) e mandando in fatal error l'intero sito; un'estensione neutra
 rende questo scenario innocuo.
 
 **Nota tecnica su `WP_Filesystem`:** il plugin usa funzioni filesystem PHP native
@@ -1309,7 +1436,7 @@ incrementale è paragonabile a quello di un amministratore che clicca
 
 Due controlli aggiuntivi, entrambi indipendenti dal payload:
 
-- **Allowlist dell'host del pacchetto** (`wphc_is_package_host_allowed()`):
+- **Allowlist dell'host del pacchetto** (`WPHC_Item_Updater::is_package_host_allowed()`):
   **opzionale e spenta di default dalla `1.24.0`** (vedi
   ["Restrizione ai soli pacchetti ufficiali"](#restrizione-ai-soli-pacchetti-ufficiali-opzionale)
   sotto); se accesa per singolo sito, ammette solo `downloads.wordpress.org`
@@ -1340,7 +1467,7 @@ restituisce sempre `result: "not_updatable"`.
 Rendere questa restrizione opzionale (anziché hardcoded, come fino alla
 `1.23.0`) non indebolisce il [vincolo di sicurezza non
 negoziabile](#il-vincolo-di-sicurezza-non-negoziabile) sopra: l'host
-controllato da `wphc_is_package_host_allowed()` non è mai un valore fornito
+controllato da `WPHC_Item_Updater::is_package_host_allowed()` non è mai un valore fornito
 dalla richiesta REST — è sempre quello che il sistema di aggiornamento del
 sito **stesso** ha già determinato (il transient del core, o quello di un
 update-checker premium già attivo su quel sito). Un token compromesso non
@@ -1360,9 +1487,9 @@ un'opzione per sito anziché un vincolo fisso.
    `register_shutdown_function`), preflight filesystem (`get_filesystem_method()
    === 'direct'`, altrimenti `fs_method_unavailable` — mai raccolte
    credenziali FTP/SSH) e pulizia difensiva di un eventuale `.maintenance`
-   orfano (`wphc_update_preflight()`).
+   orfano (`WPHC_Item_Updater::update_preflight()`).
 2. Rilettura affidabile del transient di update (stesso
-   `wphc_mute_update_shortcircuit()`/`wphc_restore_update_shortcircuit()` già
+   `WPHC_Util::mute_update_shortcircuit()`/`WPHC_Util::restore_update_shortcircuit()` già
    usati da `/health`), verifica che l'elemento abbia davvero un update
    disponibile (altrimenti `up_to_date`) e allowlist dell'host del pacchetto
    (altrimenti `not_updatable`).
@@ -1470,7 +1597,7 @@ sopra.
 elementi drenati da [`POST /update/bulk`](#aggiornamenti-bulk-coreplugintemi-via-api--wp-cron)
 — ma a differenza dell'auto-update nativo di WordPress, questi seguono il
 pattern a **due righe** (`requested` + terminale) descritto sopra, perché
-passano dallo stesso `wphc_perform_item_update()` delle rotte sincrone. Per
+passano dallo stesso `WPHC_Item_Updater::perform_item_update()` delle rotte sincrone. Per
 distinguerli: le righe del drain bulk hanno sempre una riga `requested`
 gemella con lo stesso `correlation_id`; le righe dell'auto-update nativo no.
 
@@ -1692,7 +1819,7 @@ Fino a 3 tentativi totali, con backoff 5 minuti poi 30 minuti, ri-firmando
 ogni volta con timestamp e nonce freschi sullo **stesso** corpo (la finestra
 di freschezza ±300s del protocollo scadrebbe altrimenti prima di un retry).
 Un sito non ancora registrato o revocato non invia nulla — un sito revocato
-tace del tutto, stessa scelta di `wphc_require_token()` in ingresso.
+tace del tutto, stessa scelta di `WPHC_Auth::require_token()` in ingresso.
 
 **Sicurezza.** L'URL deve essere `https` (verificato sia al salvataggio sia
 all'invio) e supera `wp_http_validate_url()` (lo stesso validatore che l'HTTP
@@ -1732,6 +1859,32 @@ Ogni release del repository deve fornire:
   (fail-closed). La release 1.35.0 è l'eccezione: va firmata con la chiave storica
   `k1` (`--key-env`, `--kid k1`) perché la 1.34.0, che deve accettarla, non conosce
   `k2`.
+
+### Procedura di release dal sorgente (dalla 1.39.0)
+
+Il file da firmare non è quello che si modifica: si parte da `src/`.
+
+1. **Versione.** Si alza in DUE punti, `Version:` in `src/header.php` e
+   `WP_HEALTH_CHECK_VERSION` in `src/constants.php` (la build fallisce se non
+   coincidono), e si aggiorna `CHANGELOG.md`.
+2. **Verifiche.** `composer run lint`, `composer run analyse`, `composer run test:build`,
+   la suite PHPUnit sulla matrice PHP, il diff dei golden vuoto, gli e2e e il test di
+   upgrade dalla 1.38.1 (vedi [Sorgente, build e file distribuito](#sorgente-build-e-file-distribuito-dalla-1390)).
+3. **Build strip.** Si costruisce il file con `composer run build`, che scrive
+   direttamente `mu-plugins/wp-health-check.php` (lo strip è l'unico distribuibile) e si
+   leggono i numeri che stampa: righe, byte, gzip più base64, body del push (limite 131072 byte) e SHA-256.
+4. **Controllo del marcatore, PRIMA di firmare:** `grep -L WPHC-BUILD
+   mu-plugins/wp-health-check.php`. Attenzione al verso: `grep -L` elenca i file che NON
+   contengono la parola, quindi se il comando STAMPA il nome del file il marcatore è
+   assente e il file è la build strip, firmabile; se l'output è VUOTO il marcatore c'è,
+   il file è la build di sviluppo e NON va firmato né pubblicato. `sign_release.py`
+   (nel repository dell'hub) non fa questo controllo. Si verifica anche che
+   `composer run build:check` dia `CHECK OK`.
+5. **Asset e firma.** Si producono `wp-health-check.php.sha256` e `wp-health-check.php.sig`
+   come descritto sopra (chiave `k2`, `--tag` identico al tag GitHub con la `v`) e si
+   pubblica la release con i tre asset.
+6. **Rollout graduale** (consigliato): prima uno o pochi siti di prova, con la verifica
+   della versione su `GET /ping` (senza cache), poi la flotta.
 
 ## Caching per-rotta
 
@@ -1777,7 +1930,7 @@ per temi/core), spesso per "performance". Quel filtro fa restituire `null` a
 mentre l'amministratore ne vede correttamente (in admin quei filtri non sono
 attivi). Le rotte dati neutralizzano quindi **temporaneamente** solo gli
 short-circuit `pre_site_transient_update_*` prima di leggere i transient e li
-ripristinano subito dopo (vedi `wphc_mute_update_shortcircuit()`), lasciando
+ripristinano subito dopo (vedi `WPHC_Util::mute_update_shortcircuit()`), lasciando
 attive le iniezioni legittime dei plugin premium sui filtri di lettura. La rotta
 diagnostica `GET /health-check/v1/debug` (gated `manage_options`) aiuta a
 individuare questo e altri casi, confrontando il transient filtrato con quello
@@ -1803,7 +1956,7 @@ che ignori questi due fattori servirebbe la risposta di un chiamante
 (incluso l'header CORS con il SUO `Origin`) a chiunque altro. Per questo ogni
 rotta invia esplicitamente `nocache_headers()` e definisce la costante
 `DONOTCACHEPAGE` (riconosciuta dai principali plugin di page-cache), prima di
-qualunque header CORS: vedi `wphc_maybe_send_cors_headers()`. Se un sito
+qualunque header CORS: vedi `WPHC_Cors::maybe_send_headers()`. Se un sito
 sembra restituire lo stesso `Access-Control-Allow-Origin` a prescindere
 dall'`Origin` inviato, o CORS funziona in modo incoerente, il primo sospetto
 è una cache condivisa che ha già memorizzato una risposta prima di questo fix
@@ -1849,7 +2002,7 @@ namespace.** WordPress registra di serie `rest_send_cors_headers()` su
 molto più permissivo di quello di questo plugin, e che girerebbe *dopo* la
 nostra logica (vanificandola, perché `header()` sostituisce di default un
 header già impostato con lo stesso nome). Per questo
-`wphc_maybe_send_cors_headers()` viene richiamata una seconda volta su
+`WPHC_Cors::maybe_send_headers()` viene richiamata una seconda volta su
 `rest_pre_serve_request` stesso (priorità 20, dopo il 10 di default del
 core, solo per le rotte di `health-check/v1`), rimuovendo prima qualunque
 header CORS già impostato: è questa seconda chiamata ad avere sempre
@@ -1919,7 +2072,12 @@ rotazione elimina questo fatto, lo mitiga.
 single-use): una richiesta intercettata smette di essere una credenziale valida
 per sempre e diventa un artefatto monouso valido pochi minuti. Un rate limit sui
 tentativi falliti (10 in 300s, per IP) risponde `429` prima che un attacco a forza
-bruta sul bearer diventi pratico. `/enroll`, `/rotate`, `/revoke` e, dalla 1.34.0,
+bruta sul bearer diventi pratico. Limite noto: su richieste HTTP reali la
+`permission_callback` delle rotte viene valutata più volte per richiesta e la
+rivalutazione di una richiesta firmata valida conta come fallimento, quindi una
+richiesta v2 valida incrementa il contatore di 1 (di 2 sulle rotte con due handler). È
+un difetto preservato dalla 1.39.0 e da correggere in una release separata (analisi in
+[finding-throttle-doppia-valutazione.md](../__docs/wp-health-check/finding-throttle-doppia-valutazione.md)). `/enroll`, `/rotate`, `/revoke` e, dalla 1.34.0,
 tutte le rotte dati e `/autologin/token` richiedono inoltre HTTPS (dietro un
 reverse proxy fidato vale `X-Forwarded-Proto: https`, vedi [Tracciamento
 accessi](#tracciamento-accessi)).
@@ -1928,9 +2086,12 @@ accessi](#tracciamento-accessi)).
 
 ### Installazione manuale iniziale
 
-1. Prima del deploy, generare (o riusare) la coppia di chiavi del centro con
-   `php bin/generate-keys.php` e incollare la chiave pubblica in
-   `WP_HEALTH_CHECK_CENTRAL_PUBKEY` dentro `mu-plugins/wp-health-check.php`.
+1. Le chiavi pubbliche del centro (`WP_HEALTH_CHECK_CENTRAL_PUBKEY`, kid `k1`, e
+   `WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2` per le release) sono già incorporate nella release
+   (`src/constants.php`): per la flotta di produzione non c'è nulla da incollare. Solo
+   per un ambiente di prova con un'altra coppia, generata con
+   `php bin/generate-keys.php`, si cambia la costante in `src/constants.php` e si
+   rigenera il file con la build (oppure la si ridefinisce in `wp-config.php`).
 2. Copiare `wp-health-check.php` via SFTP/SSH in
    `wp-content/mu-plugins/wp-health-check.php` sul sito target. Nessuna
    configurazione aggiuntiva è richiesta: non si tocca `wp-config.php`.
@@ -1972,8 +2133,14 @@ mu-plugin con la chiave già incorporata).
 Dal sistema centrale, calcolare `url_normalizzato` e `token` per il sito (vedi
 [Il modello del token](#il-modello-del-token)), firmare la busta con la chiave
 privata Ed25519 del centro, e chiamare `POST /enroll` (vedi
-[esempio curl completo](#post-enroll--bootstrap-firmato) sopra). Ripetere lo stesso
-enroll in futuro è innocuo: sovrascrive con lo stesso token.
+[esempio curl completo](#post-enroll--bootstrap-firmato) sopra). Ripetere l'enroll
+non è sempre innocuo. Sul protocollo 1 una busta ancora fresca (±300 secondi) riscrive lo
+stesso token derivato. Sul protocollo 2 la busta è monouso: lo stesso payload ripetuto è
+rifiutato con `401 wphc_enroll_replay`, mentre una busta nuova con un token diverso
+sovrascrive il segreto del sito. Su un sito già al protocollo 2 una busta v1 è rifiutata
+con `409 wphc_enroll_downgrade`. Dopo una revoca un nuovo enroll riesce ma non toglie
+`wp_health_check_revoked_at`: le rotte dati restano in `403 wphc_revoked` fino al reset
+dell'enrollment (vedi sotto).
 
 ### Reset via WP-CLI
 
@@ -2037,7 +2204,7 @@ utenti con capability `manage_options`. Mostra:
   rete, non dal singolo sito). Se revocato, mostra "Revocato" e la data;
 - l'**URL firmato registrato** (`wp_health_check_site_url`): la chiave a cui è
   legato il token;
-- gli **URL validi per l'enroll** (`wphc_candidate_site_urls()`, con quello
+- gli **URL validi per l'enroll** (`WPHC_Util::candidate_site_urls()`, con quello
   "principale" evidenziato): l'elenco esatto degli URL con cui il sistema
   centrale può firmare il `site_url` (confronto tollerante www/non-www, vedi
   [`POST /enroll`](#post-enroll--bootstrap-firmato));
@@ -2053,8 +2220,8 @@ utenti con capability `manage_options`. Mostra:
 Tre pulsanti eseguono azioni:
 
 - **Aggiorna il plugin**: innesca il self-update dall'ultima release GitHub —
-  esattamente lo stesso flusso di `POST /update` (funzione condivisa
-  `wphc_perform_self_update()`: verifica integrità SHA-256, backup, scrittura
+  esattamente lo stesso flusso di `POST /update` (metodo condiviso
+  `WPHC_Self_Updater::perform_self_update()`: verifica integrità SHA-256, backup, scrittura
   atomica, ripristino automatico in caso di errore). Non richiede enrollment
   (è un'azione amministrativa). L'esito è mostrato come avviso (aggiornato alla
   versione X / già aggiornato / errore con il motivo macchina).
@@ -2065,11 +2232,11 @@ Tre pulsanti eseguono azioni:
   ricostruisce transient di update completi — cosa che `?fresh=1` via REST non
   può fare (vedi [Caching](#caching-per-rotta)). È lo strumento da usare quando
   i conteggi o le versioni degli aggiornamenti sembrano sbagliati.
-- **Reset enrollment**: equivalente a `wp health-check reset` (stessa funzione
-  condivisa `wphc_reset_enrollment()`), con conferma prima dell'esecuzione.
+- **Reset enrollment**: equivalente a `wp health-check reset` (stesso metodo
+  condiviso `WPHC_Enrollment::reset()`), con conferma prima dell'esecuzione.
 
 Nella riga "Anteprima sito", un pulsante aggiuntivo **"Rigenera anteprima ora"**
-(dalla `1.30.0`) chiama sincronamente `wphc_maybe_generate_thumbnail( true )`
+(dalla `1.30.0`) chiama sincronamente `WPHC_Thumbnail::maybe_generate( true )`
 nella stessa richiesta admin, mostrando subito l'esito o l'errore diagnostico —
 a differenza di "Elimina e rigenera" (che demanda la rigenerazione alla
 prossima `/health`). **Nessun pulsante di rotazione/revoca del segreto**: il
@@ -2152,12 +2319,25 @@ Health (`view_site_health_checks`).
 ## Sviluppo locale
 
 ```bash
-composer install        # PHPCS/WPCS, PHPCompatibilityWP, PHPStan + stub WordPress
-composer run lint       # phpcs su mu-plugins/ e bin/
-composer run analyse    # phpstan su mu-plugins/ e bin/
+composer install           # PHPCS/WPCS, PHPCompatibilityWP, PHPStan, stub WordPress, PHPUnit
+composer run build         # rigenera mu-plugins/wp-health-check.php da src/ (con strip)
+composer run build:dev     # build senza strip in build/dev/ (debug), non tocca mu-plugins/
+composer run build:check   # il file committato coincide con una build strip fresca di src/?
+composer run test:build    # test della build stessa
+composer run lint          # phpcs su src/ e bin/
+composer run analyse       # phpstan su src/ e bin/
 
-npx @wordpress/env start   # wp-env: monta mu-plugins/wp-health-check.php nel sito locale
+npx @wordpress/env start   # wp-env: container di sviluppo e container tests-cli
+composer run test          # suite PHPUnit (PHP 8.1) dentro wp-env
+python -I tests/e2e/run_all.py   # e2e con un sito WordPress vero (ambiente .wp-env.e2e.json)
 ```
+
+Si modifica sempre `src/`, mai `mu-plugins/wp-health-check.php` (generato). Dopo ogni
+modifica si rilancia `composer run build` e si committa il file rigenerato: il bootstrap di
+PHPUnit rifiuta di partire se il file committato non coincide con una build strip fresca. Per la suite di un singolo
+file, la matrice PHP, i golden e i vettori di contratto vedi
+[`tests/README.md`](tests/README.md); per gli e2e e il test di upgrade
+[`tests/e2e/README.md`](tests/e2e/README.md).
 
 Changelog: [CHANGELOG.md](CHANGELOG.md) (formato
 [Keep a Changelog](https://keepachangelog.com/it/1.0.0/)).

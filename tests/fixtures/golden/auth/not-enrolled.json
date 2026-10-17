@@ -1,0 +1,13 @@
+{
+    "body": {
+        "code": "wphc_not_enrolled",
+        "data": {
+            "status": 503
+        },
+        "message": "Sito non ancora registrato presso il sistema centrale (enroll mancante)."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 503
+}

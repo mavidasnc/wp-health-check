@@ -1,0 +1,28 @@
+{
+    "body": {
+        "code": 500,
+        "error": "wphc_webhook_http_error",
+        "ok": false,
+        "retryable": true
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_webhook_last": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_webhook_last": {
+            "at": "<ISO8601>",
+            "attempt": 1,
+            "code": 500,
+            "duration_ms": "<MS>",
+            "error": "wphc_webhook_http_error",
+            "job_id": "job1",
+            "message": "boom",
+            "ok": false,
+            "retry_at": "<ISO8601>",
+            "url_host": "8.8.8.8"
+        }
+    },
+    "status": 200
+}

@@ -1,0 +1,16 @@
+{
+    "name": "mavidasnc/wp-health-check-tests-php74",
+    "description": "Dipendenze di test risolte per PHP 7.4 (il composer.json principale richiede PHP 8.1+ per gli strumenti di sviluppo). Solo per la matrice PHP 7.4 della suite: vedi tests/README.md.",
+    "type": "project",
+    "license": "GPL-2.0-or-later",
+    "require-dev": {
+        "phpunit/phpunit": "^9.6",
+        "yoast/phpunit-polyfills": "^2",
+        "wp-phpunit/wp-phpunit": "7.1.1"
+    },
+    "config": {
+        "platform": {
+            "php": "7.4.33"
+        }
+    }
+}

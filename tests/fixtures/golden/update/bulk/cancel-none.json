@@ -1,0 +1,13 @@
+{
+    "body": {
+        "code": "wphc_bulk_no_active_job",
+        "data": {
+            "status": 404
+        },
+        "message": "Nessun job di aggiornamento bulk in corso."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 404
+}

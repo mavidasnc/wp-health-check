@@ -1,0 +1,552 @@
+{
+    "hooks": {
+        "add_option_auto_update_core_dev": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_option_auto_update_core_major": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_option_auto_update_core_minor": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_option_auto_update_plugins": [
+            [
+                10,
+                "wphc_flush_plugins_detail_cache",
+                1
+            ]
+        ],
+        "add_option_auto_update_themes": [
+            [
+                10,
+                "wphc_flush_theme_detail_cache",
+                1
+            ]
+        ],
+        "add_site_option_auto_update_core_dev": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_site_option_auto_update_core_major": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_site_option_auto_update_core_minor": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "add_site_option_auto_update_plugins": [
+            [
+                10,
+                "wphc_flush_plugins_detail_cache",
+                1
+            ]
+        ],
+        "add_site_option_auto_update_themes": [
+            [
+                10,
+                "wphc_flush_theme_detail_cache",
+                1
+            ]
+        ],
+        "admin_post_wphc_clear_caches": [
+            [
+                10,
+                "wphc_handle_clear_caches",
+                1
+            ]
+        ],
+        "admin_post_wphc_delete_thumbnail": [
+            [
+                10,
+                "wphc_handle_delete_thumbnail",
+                1
+            ]
+        ],
+        "admin_post_wphc_regenerate_thumbnail": [
+            [
+                10,
+                "wphc_handle_regenerate_thumbnail",
+                1
+            ]
+        ],
+        "admin_post_wphc_reset_enrollment": [
+            [
+                10,
+                "wphc_handle_reset_enrollment",
+                1
+            ]
+        ],
+        "admin_post_wphc_save_webhook": [
+            [
+                10,
+                "wphc_handle_save_webhook",
+                1
+            ]
+        ],
+        "admin_post_wphc_self_update": [
+            [
+                10,
+                "wphc_handle_self_update",
+                1
+            ]
+        ],
+        "admin_post_wphc_test_webhook": [
+            [
+                10,
+                "wphc_handle_test_webhook",
+                1
+            ]
+        ],
+        "admin_post_wphc_toggle_updates": [
+            [
+                10,
+                "wphc_handle_toggle_updates",
+                1
+            ]
+        ],
+        "deactivated_plugin": [
+            [
+                10,
+                "wphc_log_plugin_deactivation",
+                2
+            ]
+        ],
+        "delete_plugin": [
+            [
+                10,
+                "wphc_snapshot_plugin_before_delete",
+                1
+            ]
+        ],
+        "deleted_plugin": [
+            [
+                10,
+                "wphc_log_plugin_deletion",
+                2
+            ]
+        ],
+        "init": [
+            [
+                10,
+                "wphc_maybe_install_update_log_schema",
+                1
+            ],
+            [
+                10,
+                "wphc_maybe_log_core_version_change",
+                1
+            ],
+            [
+                10,
+                "wphc_bulk_maybe_rearm",
+                1
+            ],
+            [
+                10,
+                "wphc_maybe_consume_autologin",
+                1
+            ]
+        ],
+        "rest_api_init": [
+            [
+                10,
+                "wphc_register_routes",
+                1
+            ]
+        ],
+        "rest_pre_dispatch": [
+            [
+                10,
+                "wphc_handle_options_preflight",
+                3
+            ]
+        ],
+        "rest_pre_serve_request": [
+            [
+                20,
+                "wphc_reassert_cors_headers",
+                3
+            ]
+        ],
+        "site_health_navigation_tabs": [
+            [
+                10,
+                "wphc_register_site_health_tab",
+                1
+            ]
+        ],
+        "site_health_tab_content": [
+            [
+                10,
+                "wphc_render_site_health_tab",
+                1
+            ]
+        ],
+        "update_option_auto_update_core_dev": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_option_auto_update_core_major": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_option_auto_update_core_minor": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_option_auto_update_plugins": [
+            [
+                10,
+                "wphc_flush_plugins_detail_cache",
+                1
+            ]
+        ],
+        "update_option_auto_update_themes": [
+            [
+                10,
+                "wphc_flush_theme_detail_cache",
+                1
+            ]
+        ],
+        "update_site_option_auto_update_core_dev": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_site_option_auto_update_core_major": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_site_option_auto_update_core_minor": [
+            [
+                10,
+                "wphc_flush_health_cache_only",
+                1
+            ]
+        ],
+        "update_site_option_auto_update_plugins": [
+            [
+                10,
+                "wphc_flush_plugins_detail_cache",
+                1
+            ]
+        ],
+        "update_site_option_auto_update_themes": [
+            [
+                10,
+                "wphc_flush_theme_detail_cache",
+                1
+            ]
+        ],
+        "upgrader_pre_install": [
+            [
+                10,
+                "wphc_snapshot_version_before_upgrade",
+                2
+            ]
+        ],
+        "upgrader_process_complete": [
+            [
+                10,
+                "wphc_log_wp_initiated_update",
+                2
+            ]
+        ],
+        "wp_ajax_wphc_reveal_secret": [
+            [
+                10,
+                "wphc_ajax_reveal_secret",
+                1
+            ]
+        ],
+        "wp_ajax_wphc_test_endpoint": [
+            [
+                10,
+                "wphc_ajax_test_endpoint",
+                1
+            ]
+        ],
+        "wp_ajax_wphc_view_log": [
+            [
+                10,
+                "wphc_ajax_view_log",
+                1
+            ]
+        ],
+        "wp_login": [
+            [
+                10,
+                "wphc_record_last_login",
+                2
+            ]
+        ],
+        "wphc_bulk_update_tick": [
+            [
+                10,
+                "wphc_bulk_run_tick",
+                1
+            ]
+        ],
+        "wphc_webhook_retry": [
+            [
+                10,
+                "wphc_maybe_retry_webhook",
+                1
+            ]
+        ]
+    },
+    "routes": {
+        "/health-check/v1/autologin/token": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_autologin_token",
+                "permission_callback": "wphc_debug_permission",
+                "args": []
+            }
+        ],
+        "/health-check/v1/debug": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_debug",
+                "permission_callback": "wphc_debug_permission",
+                "args": []
+            }
+        ],
+        "/health-check/v1/detail/plugins": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_detail_plugins",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/detail/server": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_detail_server",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/detail/theme": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_detail_theme",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/detail/users": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_detail_users",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/enroll": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_enroll",
+                "permission_callback": "__return_true",
+                "args": []
+            }
+        ],
+        "/health-check/v1/health": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_health",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/ping": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_ping",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/revoke": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_revoke",
+                "permission_callback": "__return_true",
+                "args": []
+            }
+        ],
+        "/health-check/v1/rotate": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_rotate",
+                "permission_callback": "__return_true",
+                "args": []
+            }
+        ],
+        "/health-check/v1/thumbnail": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_thumbnail_status",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            },
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_thumbnail_regenerate",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/bulk": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update_bulk_enqueue",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            },
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_update_bulk_status",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/bulk/cancel": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update_bulk_cancel",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/core": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update_core",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/log": [
+            {
+                "methods": [
+                    "GET"
+                ],
+                "callback": "wphc_route_update_log",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/plugin": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update_plugin",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/reactivate": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_reactivate",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ],
+        "/health-check/v1/update/theme": [
+            {
+                "methods": [
+                    "POST"
+                ],
+                "callback": "wphc_route_update_theme",
+                "permission_callback": "wphc_require_token",
+                "args": []
+            }
+        ]
+    }
+}

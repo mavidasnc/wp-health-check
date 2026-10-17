@@ -1,0 +1,30 @@
+{
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_webhook_last": {
+            "at": "<ISO8601>",
+            "attempt": 1,
+            "code": 0,
+            "duration_ms": "<MS>",
+            "error": "wphc_webhook_transport_error",
+            "job_id": "test-<HEX>",
+            "message": "HTTP bloccato dai test: https://93.184.216.34/wphc/in",
+            "ok": false,
+            "retry_at": "<ISO8601>",
+            "url_host": "93.184.216.34"
+        }
+    },
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_webhook_tested": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [],
+    "transients_written": []
+}

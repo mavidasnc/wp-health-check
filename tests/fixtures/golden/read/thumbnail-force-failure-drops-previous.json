@@ -1,0 +1,32 @@
+{
+    "body": {
+        "error": {
+            "at": "<ISO8601>",
+            "code": "wphc_thumb_download_failed",
+            "message": "Internal Server Error",
+            "provider": "https://image.thum.io/get/noanimate/png/width/400/"
+        },
+        "thumbnail": null
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off",
+        "wp_health_check_thumb_error": "off"
+    },
+    "options_deleted": [
+        "wp_health_check_thumb",
+        "wp_health_check_thumb_id"
+    ],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10",
+        "wp_health_check_thumb_error": {
+            "at": "<ISO8601>",
+            "code": "wphc_thumb_download_failed",
+            "message": "Internal Server Error",
+            "provider": "https://image.thum.io/get/noanimate/png/width/400/"
+        }
+    },
+    "status": 200
+}

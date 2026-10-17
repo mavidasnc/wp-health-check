@@ -1,0 +1,61 @@
+{
+    "body": {
+        "generated_at": "<ISO8601>",
+        "job": {
+            "abort_reason": null,
+            "counters": {
+                "done": 1,
+                "failed": 1,
+                "pending": 0,
+                "skipped": 0,
+                "total": 1,
+                "updated": 0,
+                "warnings": 0
+            },
+            "created_at": "<ISO8601>",
+            "finished_at": "<ISO8601>",
+            "items": [
+                {
+                    "attempts": 4,
+                    "claimed_ts": "<TS_INT>",
+                    "correlations": [
+                        "<LOG_ID>",
+                        "<LOG_ID>",
+                        "<LOG_ID>",
+                        "<LOG_ID>"
+                    ],
+                    "deferrals": 0,
+                    "finished_ts": "<TS_INT>",
+                    "from": null,
+                    "last_error": "Verifica post-aggiornamento fallita.",
+                    "log_id": "<LOG_ID>",
+                    "name": null,
+                    "next_after": 0,
+                    "result": "rolled_back",
+                    "state": "error",
+                    "target": "hello.php",
+                    "to": null,
+                    "type": "plugin"
+                }
+            ],
+            "job_id": "<HEX>",
+            "next_run_at": "<ISO8601>",
+            "stalled": false,
+            "started_at": "<ISO8601>",
+            "status": "completed_with_errors",
+            "webhook": {
+                "attempts": 1,
+                "code": 0,
+                "last_error": null,
+                "sending_ts": "<TS_INT>",
+                "sent": false,
+                "sent_ts": null
+            }
+        },
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

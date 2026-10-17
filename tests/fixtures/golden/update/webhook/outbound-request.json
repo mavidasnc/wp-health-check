@@ -1,0 +1,54 @@
+{
+    "body": {
+        "Accept": "application/json",
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "wp-health-check-agent/<AGENT_VERSION>",
+        "X-WPHC-Attempt": "1",
+        "X-WPHC-Delivery": "job-delivery-1",
+        "X-WPHC-Event": "wphc.bulk_update.completed",
+        "X-WPHC-Nonce": "<NONCE>",
+        "X-WPHC-Secret-Kid": "k-test-1",
+        "X-WPHC-Signature": "<SIG>",
+        "X-WPHC-Site": "<SITE_URL>",
+        "X-WPHC-Timestamp": "<TS>",
+        "_transport": {
+            "method": "POST",
+            "redirection": 0,
+            "reject_unsafe_urls": true,
+            "sslverify": true,
+            "timeout": 10
+        }
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_protocol": "off",
+        "wp_health_check_secret_kid": "off",
+        "wp_health_check_site_url": "off",
+        "wp_health_check_token": "off",
+        "wp_health_check_webhook_disabled": "auto",
+        "wp_health_check_webhook_last": "off",
+        "wp_health_check_webhook_url": "auto"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_protocol": "1",
+        "wp_health_check_secret_kid": "k-test-1",
+        "wp_health_check_site_url": "<SITE_URL>",
+        "wp_health_check_token": "tok-upd-test",
+        "wp_health_check_webhook_disabled": "1",
+        "wp_health_check_webhook_last": {
+            "at": "<ISO8601>",
+            "attempt": 1,
+            "code": 200,
+            "duration_ms": "<MS>",
+            "error": null,
+            "job_id": "job-delivery-1",
+            "message": "",
+            "ok": true,
+            "retry_at": null,
+            "url_host": "8.8.8.8"
+        },
+        "wp_health_check_webhook_url": "https://8.8.8.8/hook"
+    },
+    "status": 200
+}

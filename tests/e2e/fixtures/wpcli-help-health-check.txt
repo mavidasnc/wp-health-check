@@ -1,0 +1,21 @@
+NAME
+
+  wp health-check
+
+DESCRIPTION
+
+  Comandi WP-CLI del fleet agent wp-health-check.
+
+SYNOPSIS
+
+  wp health-check <command>
+
+SUBCOMMANDS
+
+  reset       Cancella le opzioni di enrollment di questo sito.
+  secret      Mostra fingerprint, protocollo, data di rotazione e stato di
+              revoca
+  status      Riepilogo diagnostico dello stato del sito: enrollment, versione,
+
+  Definita solo dentro il branch WP_CLI per non caricare la classe
+  su ogni richiesta HTTP normale, dove non serve mai.

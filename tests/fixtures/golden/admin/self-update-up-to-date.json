@@ -1,0 +1,17 @@
+{
+    "options_deleted": [],
+    "options_written": [],
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_uptodate": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [],
+    "transients_written": []
+}

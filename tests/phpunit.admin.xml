@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<!--
+    Esecuzione isolata dei soli test di admin e WP-CLI (test-admin.php, test-cli.php):
+    utile mentre altri file della suite sono in lavorazione. Gli stessi file girano comunque
+    con la suite completa (phpunit.xml.dist). Percorsi relativi a questo file.
+
+    Uso: vendor/bin/phpunit -c tests/phpunit.admin.xml
+-->
+<phpunit
+    bootstrap="bootstrap.php"
+    backupGlobals="false"
+    colors="true"
+    stderr="true"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="true"
+    convertWarningsToExceptions="true"
+    convertDeprecationsToExceptions="true"
+    beStrictAboutTestsThatDoNotTestAnything="true"
+    failOnRisky="true"
+    failOnWarning="true"
+    failOnSkipped="true"
+>
+    <testsuites>
+        <testsuite name="wp-health-check-admin">
+            <file>test-admin.php</file>
+            <file>test-cli.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>

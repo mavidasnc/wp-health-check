@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!--
+    Suite di caratterizzazione del mu-plugin wp-health-check (comportamento della 1.38.1).
+    Si lancia nel container tests-cli di wp-env: vedi tests/README.md.
+
+    stderr="true": il plugin chiama header() direttamente (Retry-After, CORS). Se PHPUnit
+    scrivesse su stdout, dopo il primo output PHP risponderebbe "headers already sent".
+-->
+<phpunit
+    bootstrap="tests/bootstrap.php"
+    defaultTestSuite="wp-health-check"
+    backupGlobals="false"
+    colors="true"
+    stderr="true"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="true"
+    convertWarningsToExceptions="true"
+    convertDeprecationsToExceptions="true"
+    beStrictAboutTestsThatDoNotTestAnything="true"
+    failOnRisky="true"
+    failOnWarning="true"
+    failOnSkipped="true"
+>
+    <testsuites>
+        <testsuite name="wp-health-check">
+            <!-- Solo i file test-*.php: le classi di supporto (class-*.php) le carica il bootstrap -->
+            <directory prefix="test-" suffix=".php">./tests</directory>
+        </testsuite>
+        <!-- Un testsuite per file, per lanciarne uno solo con l'opzione testsuite di phpunit (es. testsuite enroll).
+             Il comando `phpunit tests/test-enroll.php` non funziona: il nome del file non coincide con quello
+             della classe (WPHC_Test_Enroll). Senza l'opzione gira solo la suite completa (defaultTestSuite). -->
+        <testsuite name="admin">
+            <file>./tests/test-admin.php</file>
+        </testsuite>
+        <testsuite name="auth">
+            <file>./tests/test-auth.php</file>
+        </testsuite>
+        <testsuite name="bulk">
+            <file>./tests/test-bulk.php</file>
+        </testsuite>
+        <testsuite name="cli">
+            <file>./tests/test-cli.php</file>
+        </testsuite>
+        <testsuite name="contract-vectors">
+            <file>./tests/test-contract-vectors.php</file>
+        </testsuite>
+        <testsuite name="core-auto-update">
+            <file>./tests/test-core-auto-update-state.php</file>
+        </testsuite>
+        <testsuite name="cors">
+            <file>./tests/test-cors.php</file>
+        </testsuite>
+        <testsuite name="enroll">
+            <file>./tests/test-enroll.php</file>
+        </testsuite>
+        <testsuite name="hook-registry">
+            <file>./tests/test-hook-registry.php</file>
+        </testsuite>
+        <testsuite name="item-update">
+            <file>./tests/test-item-update.php</file>
+        </testsuite>
+        <testsuite name="misc-read">
+            <file>./tests/test-misc-read.php</file>
+        </testsuite>
+        <testsuite name="plugin-file-constant">
+            <file>./tests/test-plugin-file-constant.php</file>
+        </testsuite>
+        <testsuite name="read-routes">
+            <file>./tests/test-read-routes.php</file>
+        </testsuite>
+        <testsuite name="refactor-map">
+            <file>./tests/test-refactor-map.php</file>
+        </testsuite>
+        <testsuite name="self-update">
+            <file>./tests/test-self-update.php</file>
+        </testsuite>
+        <testsuite name="thumbnail">
+            <file>./tests/test-thumbnail.php</file>
+        </testsuite>
+        <testsuite name="throttle">
+            <file>./tests/test-throttle-double-dispatch.php</file>
+        </testsuite>
+        <testsuite name="update-log">
+            <file>./tests/test-update-log.php</file>
+        </testsuite>
+        <testsuite name="webhook">
+            <file>./tests/test-webhook.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>

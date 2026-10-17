@@ -7,6 +7,37 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-10-17 (non ancora rilasciata)
+
+Release di SOLA organizzazione interna del codice: nessun cambio di protocollo e nessun cambio di comportamento osservabile. Rotte, corpi di risposta, codici d'errore, option, transient, cron, user meta, tabella `wphc_update_log`, ordine degli hook e HTML della tab Site Health sono quelli della 1.38.1; i bug noti sono stati preservati di proposito e si correggono in release separate (vedi "Problemi noti preservati"). Il motivo è poter intervenire in sicurezza su un file di quasi 9.000 righe a funzioni globali: il codice sta ora in classi, con una suite di test che ne fissa il comportamento. Sarà firmata con la chiave `k2`, come le release dalla 1.36.0. Le misure di dimensione qui sotto sono quelle della build con strip della 1.39.0 (`composer run build`) e vanno rimisurate se il sorgente cambia prima del rilascio.
+
+### Changed
+
+- **Sorgente in `src/`, file distribuito generato.** Il codice vive in `src/`: 21 classi `final` con metodi statici (prefisso `WPHC_`), la classe `WPHC_CLI_Command` per WP-CLI, `header.php`, `constants.php` e `boot.php`. `bin/build.php` li concatena nell'ordine di `src/manifest.php` e produce `mu-plugins/wp-health-check.php`, che non si modifica più a mano. Il file distribuito resta UNO solo (WordPress carica soltanto i `.php` nella radice di `mu-plugins/`, quindi niente autoload a runtime): stesso nome dell'asset `wp-health-check.php`, stessa firma `k2` sul messaggio `"release\n<tag>\n<sha256>"`, stessi tre asset della release (`.php`, `.sha256`, `.sig`). La build è deterministica e non scrive nulla se un controllo fallisce: lint dell'intero file, una sola classe per file, nessuna classe che estende una classe dichiarata più avanti, versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`, `__FILE__` e `__DIR__` ammessi solo in `constants.php`, nessun marcatore di build di sviluppo nel file da pubblicare, body del push sotto il limite.
+- **Commenti tolti dal file distribuito.** Ogni commento diventa i soli a capo che contiene, e restano l'header e i docblock di `WPHC_CLI_Command` (WP-CLI li legge per la sinossi dei comandi). La riga N del file distribuito è la riga N della concatenazione, quindi gli stack trace di produzione puntano al posto giusto; i numeri di riga sono però diversi da quelli della 1.38.1, perché il file ha 9.470 righe contro 8.889 (l'involucro delle classi). Il corpo del push dell'hub passa da circa 130.900 byte (130.508 caratteri di gzip più base64 per la 1.38.1, misurati con lo stesso algoritmo dell'hub, più l'involucro JSON: a ridosso del limite) a 60.742 byte, con un limite di 131.072 byte e un budget di progetto di 110.000 caratteri di gzip più base64: questo risolve il rifiuto del push sui siti dietro un limite di body di 128 KiB (mod_security). Il file passa da 367.887 a 226.009 byte. La build verifica che i token non commento siano identici prima e dopo lo strip.
+- **Le 157 funzioni `wphc_*` sono metodi di classe.** Per esempio `wphc_install_release()` è ora `WPHC_Self_Updater::install_release()`, `wphc_require_token()` è `WPHC_Auth::require_token()` e `wphc_verify_central_signature()` è `WPHC_Crypto::verify_central_signature()`. La mappa completa dal vecchio nome al nuovo metodo è in `tests/refactor-map.php` e nella sezione 2.2 di `__docs/wp-health-check/refactoring-classi.md`.
+- **Nomi persistiti come costanti di `WPHC_Options`** (decisione D-3): option, transient e hook cron non sono più letterali sparsi nel codice. I valori sono identici ai letterali precedenti (55 costanti, verificate contro la tabella del progetto).
+- **Nuova costante `WP_HEALTH_CHECK_FILE`** (decisione D-1): è il file che il self-update riscrive, con default `__FILE__`, quindi nel file distribuito il mu-plugin stesso. Come le altre costanti è definita solo se non esiste già e si può ridefinire in `wp-config.php`. Chi la ridefinisce sposta il bersaglio del self-update: il file deve stare sullo stesso filesystem di `WPMU_PLUGIN_DIR` (il temporaneo si crea lì e poi si fa `rename()`), il preflight di scrittura controlla sempre `WPMU_PLUGIN_DIR`, e la copia non deve mai essere un `.php` nella radice di `mu-plugins/` (WordPress la caricherebbe al giro successivo, con un fatal "Cannot declare class"). In produzione, senza ridefinizione, non cambia nulla.
+- **Test e strumenti di sviluppo.** Suite PHPUnit di caratterizzazione su wp-env (PHP 7.4, 8.1 e 8.3), con snapshot golden delle risposte e del registro degli hook, vettori di contratto con l'hub generati dal codice dell'hub, tre script e2e con un sito WordPress vero (contratto con le funzioni vendorizzate dell'hub, comandi WP-CLI, test di upgrade dalla 1.38.1 e self-update del file candidato) e test della build stessa. Comandi: `composer run build`, `build:dev`, `build:check`, `test:build`, `test`, `lint`, `analyse`. I dettagli sono in `src/README.md` e `tests/README.md`. Lint e analisi statica girano su `src/` e `bin/`.
+
+### Removed
+
+- **Nessuna funzione globale `wphc_*`** (decisione D-2, senza wrapper di compatibilità). I nomi delle funzioni non sono un'API pubblica, ma chi ha codice di terzi che li usa deve saperlo: una chiamata diretta a una funzione `wphc_*` (per esempio `wphc_reset_enrollment()`) diventa un fatal error `Call to undefined function`, `function_exists( 'wphc_...' )` risponde `false`, e `remove_action()`, `remove_filter()` e `has_action()` con il NOME della funzione come stringa non trovano più nulla, perché i callback sono ora metodi (`array( 'WPHC_Auth', 'require_token' )`). I nomi che sono dati persistiti o pubblici NON cambiano, perché sono stringhe e non funzioni: option e transient, hook cron (`wphc_bulk_update_tick`, `wphc_webhook_retry`), azioni `admin_post_wphc_*` e `wp_ajax_wphc_*`, query var `wphc_autologin`, tabella `wphc_update_log`, user meta `wphc_last_login*`.
+
+### Note per l'aggiornamento
+
+- I siti alla 1.35.0 o successiva si aggiornano con il meccanismo di sempre, pull da hub o GitHub oppure push dell'hub: il formato della release, la chiave `k2` e la procedura non cambiano. I siti con un agent precedente alla 1.35.0 non conoscono `k2` e si riallineano con il plugin installer, come già descritto nella 1.38.1.
+- I siti già enrollati continuano a funzionare con gli stessi segreti: token, protocollo, finestra di grazia, stato di revoca e tabella di log non vengono toccati. È provato dal test di upgrade (`tests/e2e/upgrade_test.py`), che parte da un sito enrollato con la 1.38.1 e confronta i risultati con e senza aggiornamento.
+- Subito dopo l'update `GET /health` può riportare per al massimo 60 secondi la vecchia `fleet_agent_version`, perché il transient `wphc_health_cache` dura 60 secondi (comportamento già presente, non introdotto da questa release). Per vedere subito la versione nuova si usa `GET /ping`, che non ha cache, oppure `GET /health?fresh=1`.
+- Gli stack trace di produzione hanno numeri di riga diversi da quelli della 1.38.1 (vedi sopra).
+
+### Problemi noti preservati
+
+Per non mescolare la riorganizzazione con cambi di comportamento, questa release non corregge nessuno dei difetti e delle incongruenze elencati nella sezione 9 di `__docs/wp-health-check/refactoring-classi.md` (fra cui `/revoke` che non cancella `wp_health_check_token`, anche se la documentazione lo diceva, e il nuovo enroll che dopo una revoca riesce ma lascia le rotte dati in `403 wphc_revoked` fino al reset). Due meritano di essere citati qui:
+
+- **Throttle: doppia valutazione della `permission_callback`.** Su richieste HTTP reali il `permission_callback` `WPHC_Auth::require_token()` gira più volte per richiesta, e la rivalutazione di una richiesta firmata valida (protocollo 2) conta come fallimento: ogni richiesta valida incrementa il contatore di 1, di 2 sulle rotte con due handler, e con 10 conteggi in 5 minuti il sito risponde `429`. L'analisi è in `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`. Sarà il primo cambiamento funzionale, da rilasciare dopo che la 1.39.0 è stabile in flotta.
+- **`/detail/server` non carica `wp-admin/includes/update.php`** (difetto 22 della stessa sezione, trovato dalla review del refactoring). `WP_Debug_Data::debug_data()` chiama `get_core_updates()`, che a quel punto non è definita: l'eccezione è catturata e i campi del server restano quelli di ripiego. La correzione prevista è un `require_once ABSPATH . 'wp-admin/includes/update.php';` prima della chiamata, in una release separata.
+
 ## [1.38.1] - 2026-10-12
 
 Release di sola distribuzione: il mu-plugin non cambia nel codice (solo il numero di versione), serve a pubblicare il nuovo ZIP dell'installer. **Firmata con la chiave `k2`.**
@@ -982,7 +1013,13 @@ Finding A-1, A-3 e A-10 della review di sicurezza del 2026-10-03, da rilasciare 
 - Tooling di sviluppo: PHPCS/WPCS + PHPCompatibilityWP, PHPStan con stub
   WordPress, configurazione wp-env.
 
-[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.34.0...HEAD
+[Unreleased]: https://github.com/mavidasnc/wp-health-check/compare/v1.38.1...HEAD
+[1.39.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.38.1...v1.39.0
+[1.38.1]: https://github.com/mavidasnc/wp-health-check/compare/v1.38.0...v1.38.1
+[1.38.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.37.0...v1.38.0
+[1.37.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.36.0...v1.37.0
+[1.36.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.35.0...v1.36.0
+[1.35.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.34.0...v1.35.0
 [1.34.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.33.0...v1.34.0
 [1.30.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.29.0...v1.30.0
 [1.29.0]: https://github.com/mavidasnc/wp-health-check/compare/v1.28.0...v1.29.0

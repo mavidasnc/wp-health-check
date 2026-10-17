@@ -1,0 +1,20 @@
+{
+    "options_deleted": [],
+    "options_written": [],
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "reason": "not_https",
+                "tab": "wp-health-check",
+                "wphc_webhook_invalid": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [],
+    "transients_written": {
+        "wphc_webhook_bad_url_<UID>": "http://93.184.216.34/x"
+    }
+}

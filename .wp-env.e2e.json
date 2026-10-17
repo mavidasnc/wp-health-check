@@ -1,0 +1,19 @@
+{
+    "core": "WordPress/WordPress#7.1.1",
+    "phpVersion": "8.1",
+    "port": 8890,
+    "testsEnvironment": false,
+    "config": {
+        "WP_DEBUG": true,
+        "WP_DEBUG_LOG": true,
+        "DISABLE_WP_CRON": true,
+        "WP_HEALTH_CHECK_CENTRAL_PUBKEY": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+        "WP_HEALTH_CHECK_CENTRAL_PUBKEY_K2": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+        "WP_HEALTH_CHECK_RELEASE_URL": "",
+        "WP_HEALTH_CHECK_ALERT_EMAIL": "alert@e2e.invalid",
+        "WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL": "https://93.184.216.34/wphc-e2e"
+    },
+    "mappings": {
+        "wp-content/mu-plugins": "./tests/e2e/.work/mu-plugins"
+    }
+}

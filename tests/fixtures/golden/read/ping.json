@@ -1,0 +1,12 @@
+{
+    "body": {
+        "agent_version": "<AGENT_VERSION>",
+        "generated_at": "<ISO8601>",
+        "site": "<SITE_URL>",
+        "status": "ok"
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

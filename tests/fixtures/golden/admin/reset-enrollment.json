@@ -1,0 +1,36 @@
+{
+    "options_deleted": [
+        "wp_health_check_autologin_pending",
+        "wp_health_check_dashboard_origin",
+        "wp_health_check_enroll_issued_at",
+        "wp_health_check_enrolled_at",
+        "wp_health_check_enrolled_ip",
+        "wp_health_check_last_autologin",
+        "wp_health_check_last_enroll_error",
+        "wp_health_check_last_request_at",
+        "wp_health_check_last_request_ip",
+        "wp_health_check_protocol",
+        "wp_health_check_revoked_at",
+        "wp_health_check_secret_kid",
+        "wp_health_check_site_url",
+        "wp_health_check_token",
+        "wp_health_check_token_prev",
+        "wp_health_check_token_rotated_at"
+    ],
+    "options_written": [],
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_reset": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [
+        "wp_health_check_update_lock"
+    ],
+    "transients_written": []
+}

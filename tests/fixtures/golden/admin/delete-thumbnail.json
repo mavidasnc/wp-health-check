@@ -1,0 +1,24 @@
+{
+    "options_deleted": [
+        "wp_health_check_thumb",
+        "wp_health_check_thumb_at",
+        "wp_health_check_thumb_error",
+        "wp_health_check_thumb_id"
+    ],
+    "options_written": [],
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_thumb_deleted": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [
+        "wphc_thumb_retry_lock"
+    ],
+    "transients_written": []
+}

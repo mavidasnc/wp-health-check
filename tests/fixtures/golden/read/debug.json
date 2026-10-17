@@ -1,0 +1,41 @@
+{
+    "body": {
+        "context": {
+            "can_update_plugins": true,
+            "doing_cron": "<ENV:boolean>",
+            "home_url": "<SITE_URL>",
+            "is_admin": "<ENV:boolean>",
+            "is_multisite": false,
+            "rest_request": "<ENV:boolean>",
+            "site_url": "<SITE_URL>",
+            "user_id": "<ENV:integer>"
+        },
+        "filters": "<ENV:array>",
+        "get_plugin_updates": {
+            "count": 1,
+            "slugs": [
+                "a/a.php"
+            ]
+        },
+        "health_plugins_updates": 1,
+        "update_plugins_filtered": {
+            "exists": true,
+            "last_checked": "2023-11-14T22:13:20+00:00",
+            "response_count": 1,
+            "response_slugs": [
+                "pre/pre.php"
+            ]
+        },
+        "update_plugins_raw_stored": {
+            "response_count": 2,
+            "response_slugs": [
+                "a/a.php",
+                "b/b.php"
+            ]
+        }
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

@@ -3,7 +3,13 @@
 /vendor/
 
 # wp-env (Docker/wp-cli scaffolding locale)
-.wp-env-override.json
+.wp-env.override.json
+# Override locale dell'ambiente e2e (porte, versione di PHP): non va committato
+.wp-env.e2e.override.json
+
+# Cache di PHPUnit e vendor dedicato alla matrice PHP 7.4 (vedi tests/README.md)
+.phpunit.result.cache
+/tests/php74/vendor/
 
 # Node (se in futuro si aggiungono tool JS di sviluppo)
 /node_modules/
@@ -26,3 +32,13 @@ Thumbs.db
 # Output di lavoro di graphify (cache estrazione, grafo grezzo, wiki temporaneo)
 # docs/wiki/ e' la copia versionata destinata al repo.
 /graphify-out/
+# Ambiente e2e: copia di lavoro del plugin e file generati (vedi tests/e2e/README.md)
+/tests/e2e/.work/
+/tests/e2e/__pycache__/
+
+# Cache di Python generata dagli script di test
+__pycache__/
+*.pyc
+
+# Build di sviluppo (composer run build:dev): NON distribuibile, ha il marcatore WPHC-BUILD
+/build/

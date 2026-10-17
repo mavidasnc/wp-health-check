@@ -1,0 +1,16 @@
+{
+    "active": null,
+    "actor": "tester",
+    "correlation_id": "<CORRELATION>",
+    "created_at": "<ISO8601>",
+    "id": "<ID>",
+    "ip": "203.0.113.10",
+    "message": null,
+    "name": "wphc-admin-test-a",
+    "phase": "completed",
+    "source": "wp-admin",
+    "target": "wphc-admin-test-a",
+    "type": "token",
+    "version_from": "1.0",
+    "version_to": "2.0"
+}

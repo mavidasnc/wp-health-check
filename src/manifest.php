@@ -1,0 +1,62 @@
+<?php
+/**
+ * Manifest della build: elenco ORDINATO dei file di src/ che bin/build.php concatena
+ * nell'unico mu-plugin distribuito (mu-plugins/wp-health-check.php).
+ *
+ * Questo file NON entra nel file distribuito: lo legge solo la build.
+ *
+ * Formato: array( 'nome-file.php' => 'ruolo' ), nell'ordine di concatenazione.
+ * Ogni file di src/ (manifest.php escluso) deve comparire qui e viceversa: la build
+ * fallisce se le due liste divergono.
+ *
+ * Ruoli:
+ * - header:    primo file, docblock del plugin (Plugin Name, Version, ...) e guardia ABSPATH.
+ *              Ne esiste uno solo e deve essere il primo.
+ * - constants: costanti WP_HEALTH_CHECK_* condizionate (sovrascrivibili da wp-config.php).
+ *              La versione dell'agent (WP_HEALTH_CHECK_VERSION) sta SOLO qui.
+ * - class:     una sola dichiarazione di classe e nessun altro codice top-level (la build lo controlla).
+ * - legacy:    (non piu' usato dal lotto 4: src/legacy.php e' stato rimosso) corpo del plugin non ancora spostato in
+ *              classi. bin/build.php accetta ancora il ruolo solo perche' le sorgenti sintetiche di tests/build/run.php
+ *              lo usano.
+ * - boot:      avvio del plugin (src/boot.php: WPHC_Plugin::boot(), che registra tutti gli hook), in coda alle classi. Il file
+ *              contiene SOLO l'istruzione WPHC_Plugin::boot(); (la build lo controlla): il boot gira all'inclusione del file.
+ * - cli:        il blocco del comando WP-CLI: un guard "if ( defined( 'WP_CLI' ) && WP_CLI )" con dentro la classe
+ *              WPHC_CLI_Command e la chiamata di registrazione, e nient'altro (la build lo controlla). Al massimo
+ *              un file, ultimo del manifest come nel file 1.38.1; i suoi docblock sopravvivono allo strip.
+ *
+ * Regole di ordinamento: le classi si dichiarano prima di essere usate e il boot sta in fondo;
+ * la build rifiuta una classe che estende una classe dichiarata piu' avanti.
+ *
+ * Ordine attuale (vedi __docs/wp-health-check/refactoring-classi.md, sezione 3.3): header, constants, le classi,
+ * boot e, ultimo, cli.
+ *
+ * @package WP_Health_Check
+ */
+
+return array(
+	'header.php'                  => 'header',
+	'constants.php'               => 'constants',
+	'class-wphc-options.php'      => 'class',
+	'class-wphc-util.php'         => 'class',
+	'class-wphc-crypto.php'       => 'class',
+	'class-wphc-guard.php'        => 'class',
+	'class-wphc-cors.php'         => 'class',
+	'class-wphc-auth.php'         => 'class',
+	'class-wphc-rest.php'         => 'class',
+	'class-wphc-update-log.php'   => 'class',
+	'class-wphc-enrollment.php'   => 'class',
+	'class-wphc-thumbnail.php'    => 'class',
+	'class-wphc-health.php'       => 'class',
+	'class-wphc-users.php'        => 'class',
+	'class-wphc-debug.php'        => 'class',
+	'class-wphc-autologin.php'    => 'class',
+	'class-wphc-self-updater.php' => 'class',
+	'class-wphc-item-updater.php' => 'class',
+	'class-wphc-webhook.php'      => 'class',
+	'class-wphc-bulk.php'         => 'class',
+	'class-wphc-admin.php'        => 'class',
+	'class-wphc-admin-view.php'   => 'class',
+	'class-wphc-plugin.php'       => 'class',
+	'boot.php'                    => 'boot',
+	'class-wphc-cli-command.php'  => 'cli',
+);

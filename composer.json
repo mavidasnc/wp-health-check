@@ -14,9 +14,15 @@
         "phpstan/phpstan": "^1.11",
         "php-stubs/wordpress-stubs": "^6.4",
         "phpstan/extension-installer": "^1.4",
-        "php-stubs/wp-cli-stubs": "^2.12"
+        "php-stubs/wp-cli-stubs": "^2.12",
+        "phpunit/phpunit": "^9.6",
+        "yoast/phpunit-polyfills": "^2",
+        "wp-phpunit/wp-phpunit": "7.1.1"
     },
     "config": {
+        "platform": {
+            "php": "8.1.0"
+        },
         "allow-plugins": {
             "dealerdirect/phpcodesniffer-composer-installer": true,
             "phpstan/extension-installer": true
@@ -25,6 +31,12 @@
     "scripts": {
         "lint": "phpcs",
         "lint:fix": "phpcbf",
-        "analyse": "phpstan analyse"
+        "analyse": "phpstan analyse --memory-limit=4G",
+        "build": "@php bin/build.php --strip",
+        "build:dev": "@php bin/build.php --no-strip --output build/dev/wp-health-check.php",
+        "build:check": "@php bin/build.php --check",
+        "test:build": "@php tests/build/run.php",
+        "test": "npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit",
+        "test:check-locks": "php tests/tools/check-locks.php"
     }
 }

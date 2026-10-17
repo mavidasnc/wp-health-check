@@ -1,0 +1,106 @@
+{
+    "body": {
+        "accepted": true,
+        "cron_disabled": "<ENV:boolean>",
+        "job_id": "<HEX>",
+        "poll": "<POLL>",
+        "rejected": [],
+        "scheduled_at": "<ISO8601>",
+        "status": "queued",
+        "total": 2
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_bulk_job": "off",
+        "wp_health_check_bulk_status": "on",
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_bulk_job": {
+            "abort_reason": null,
+            "agent_version": "<AGENT_VERSION>",
+            "counters": {
+                "done": 0,
+                "failed": 0,
+                "pending": 2,
+                "skipped": 0,
+                "total": 2,
+                "updated": 0,
+                "warnings": 0
+            },
+            "created_ts": "<TS_INT>",
+            "dry_run": false,
+            "finished_ts": null,
+            "items": [
+                {
+                    "attempts": 0,
+                    "claimed_ts": null,
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": null,
+                    "from": null,
+                    "last_error": null,
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": null,
+                    "state": "pending",
+                    "target": "hello.php",
+                    "to": null,
+                    "type": "plugin"
+                },
+                {
+                    "attempts": 0,
+                    "claimed_ts": null,
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": null,
+                    "from": null,
+                    "last_error": null,
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": null,
+                    "state": "pending",
+                    "target": "twentytwentyfive",
+                    "to": null,
+                    "type": "theme"
+                }
+            ],
+            "job_id": "<HEX>",
+            "next_run_ts": "<TS_INT>",
+            "requested_ip": "203.0.113.10",
+            "source": "wp-admin",
+            "stall_after_ts": "<TS_INT>",
+            "started_ts": null,
+            "status": "queued",
+            "ticks": 0,
+            "webhook": {
+                "attempts": 0,
+                "code": null,
+                "last_error": null,
+                "sending_ts": null,
+                "sent": false,
+                "sent_ts": null
+            }
+        },
+        "wp_health_check_bulk_status": {
+            "abort_reason": null,
+            "created_at": "<ISO8601>",
+            "done": 0,
+            "failed": 0,
+            "finished_at": null,
+            "job_id": "<HEX>",
+            "next_run_ts": "<TS_INT>",
+            "skipped": 0,
+            "stall_after_ts": "<TS_INT>",
+            "status": "queued",
+            "total": 2,
+            "updated": 0,
+            "warnings": 0
+        },
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 202
+}
