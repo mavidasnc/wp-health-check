@@ -47,19 +47,35 @@ alert non sono su dominio `.invalid`.
 Il self-update del plugin (`wphc_install_release`) riscrive `__FILE__` (nel plugin a classi `WP_HEALTH_CHECK_FILE`, che nel file distribuito vale lo stesso `__FILE__`) e crea un `.bak` accanto: con le
 chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
 
-- **Il plugin sotto test e' una COPIA.** Per default il bootstrap copia `mu-plugins/wp-health-check.php`
-  in `sys_get_temp_dir()/wphc-under-test/wp-health-check.php` (nel container: `/tmp/wphc-under-test/`) a
-  ogni avvio, ripulendo prima eventuali `.bak` e `.wphc-new-*.tmp` di run interrotti, e carica quella.
-  `WPHC_PLUGIN_FILE` indica un altro file (la build del refactoring); il file del repo in `mu-plugins/`
-  e' sempre rifiutato come valore di `WPHC_PLUGIN_FILE`. Un `.bak` preesistente accanto a un file esplicito
-  fa fallire l'avvio.
+- **Il plugin sotto test e' una COPIA.** Per default il bootstrap carica una copia in
+  `sys_get_temp_dir()/wphc-under-test-<id>/wp-health-check.php` (nel container: `/tmp/wphc-under-test-<id>/`):
+  una cartella per run, con un id univoco (`uniqid`), quindi due run non si pestano i piedi e non servono pulizie
+  di residui (`.bak`, `.wphc-new-*.tmp`); la cartella e' rimossa a fine run dalla guardia (dopo i suoi controlli) o,
+  se il bootstrap esce prima di registrarla, da una funzione di chiusura dedicata. I runner
+  (`C:/tmp/wphc-run-phpunit.sh`, `C:/tmp/wphc-run-phpunit74.sh`) non dipendono dal percorso. Una cartella
+  `wphc-under-test` senza suffisso, se c'e', e' un residuo delle versioni precedenti del bootstrap e si puo'
+  cancellare. `WPHC_PLUGIN_FILE` indica invece un altro file (per esempio la build strip in una cartella scratch):
+  il file del repo in `mu-plugins/` e' sempre rifiutato come valore di `WPHC_PLUGIN_FILE`, e un `.bak`
+  preesistente accanto a un file esplicito fa fallire l'avvio.
+- **`mu-plugins/` deve coincidere con `src/` (solo in modalita' di default).** Prima di copiare, il bootstrap lancia
+  `bin/build.php --no-strip --output <file temporaneo>` in un processo figlio (non un `require` di `bin/build.php`:
+  le sue funzioni globali `wphc_build_*` potrebbero collidere con quelle del plugin 1.38.1 e andrebbero escluse dal
+  controllo di provenienza dei simboli) e richiede che `mu-plugins/wp-health-check.php`, con gli a capo CRLF
+  normalizzati a LF, sia IDENTICO a quella build. Un `composer run build:dev` dimenticato dopo una modifica a `src/`
+  fa quindi fallire l'avvio (exit 1, con gli SHA-256 dei due testi) invece di dare un falso verde su un
+  `mu-plugins/` vecchio. Il modo e' quello di `build:check`: `WPHC_BUILD_MODE` (`dev` di default, `strip` dopo il
+  passaggio finale). Con `WPHC_PLUGIN_FILE` questo controllo NON si applica: il file indicato (una build strip, per
+  esempio) puo' differire da `src/` dev.
 - **La copia NON usa `copy()`.** In Docker, con il repo montato come bind mount da Windows, la `copy()` di
   PHP 8.1 puo' scrivere una copia con una coda di byte NUL (dopo una rebuild del file: la suite cadrebbe con
-  un ParseError che non dipende dal plugin). Il bootstrap legge il sorgente con `file_get_contents()`, lo
-  scrive con `file_put_contents()`, RILEGGE la copia e confronta lo SHA-256 con quello del sorgente; se
-  differisce riprova fino a 3 volte e poi si ferma con un messaggio chiaro. Il runner di default
-  (`C:/tmp/wphc-run-phpunit.sh 81`) e' quindi affidabile anche subito dopo `composer run build:dev`, senza
-  dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
+  un ParseError che non dipende dal plugin). Il bootstrap scrive la build di riferimento (quella del processo
+  figlio, non una rilettura del file del repo) con `file_put_contents()`, RILEGGE la copia da disco e confronta
+  lo SHA-256 con quello della build; la copia con byte NUL o diversa si riprova fino a 3 volte, poi il bootstrap si
+  ferma con un messaggio chiaro. Il runner di default (`C:/tmp/wphc-run-phpunit.sh 81`) e' quindi affidabile anche
+  subito dopo `composer run build:dev`, senza dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
+- **Lo SHA-256 del file sotto test e' su STDERR** (riga `Plugin sotto test: <file> sha256 <hash> (...)`, una
+  volta per run: i figli dei test `@runInSeparateProcess` non la ripetono, perche' PHPUnit tratterebbe un loro
+  output su STDERR come un errore del test). Serve a sapere nei log quale build e' stata provata.
 - **Guardia a fine run** (`register_shutdown_function` nel bootstrap): ricalcola lo SHA-256 del file sotto
   test e del file del repo e controlla che non esistano `<file sotto test>.bak` e `.wphc-new-*.tmp` in
   `WPMU_PLUGIN_DIR`; in caso contrario scrive su STDERR e termina con `exit(1)`, anche se tutti i test erano
@@ -155,7 +171,7 @@ provare nulla). Le tre condizioni di ambiente che prima facevano `markTestSkippe
 ### Lock di phpunit (ambiente condiviso)
 
 L'ambiente wp-env e il suo database sono UNO: due `phpunit` in parallelo si calpestano (stesso
-database, stessa cartella `/tmp/wphc-under-test`). Chi esegue la suite da piu' agenti o terminali
+database; la cartella della copia del plugin e' invece una per run). Chi esegue la suite da piu' agenti o terminali
 serializza i run con un lock a directory (atomico anche su Windows) attorno a ogni run:
 
 ```bash
@@ -194,7 +210,7 @@ composer run test:check-locks    # phpunit, polyfills e test library devono aver
 
 Un container `wordpress:cli-php7.4` collegato alla rete di wp-env, con lo stesso WordPress di test, lo
 stesso database e la radice del progetto montata; il vendor di test e' quello di `tests/php74/vendor`.
-Il container sparisce a fine run (`--rm`), quindi `/tmp/wphc-under-test` riparte pulito. Script completo
+Il container sparisce a fine run (`--rm`), quindi `/tmp` riparte pulito. Script completo
 (`C:/tmp/wphc-run-phpunit74.sh`, fuori dal repo; i due percorsi e il nome della rete dipendono dalla
 macchina: `<hash>` e' quello della cartella `~/.wp-env/wp-env-wp-health-check-<hash>`):
 

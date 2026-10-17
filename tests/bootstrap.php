@@ -7,8 +7,12 @@
  *     utile per la matrice PHP 7.4 con un vendor dedicato);
  *  2. individua la test library di WordPress (wp-phpunit) e il file di config;
  *  3. sceglie il file di plugin SOTTO TEST: per default una COPIA in una cartella temporanea
- *     (mai il file del repo, che il self-update del plugin potrebbe riscrivere), oppure il file
- *     indicato esplicitamente con WPHC_PLUGIN_FILE (build del refactoring); registra una guardia
+ *     (una per run, rimossa a fine run; mai il file del repo, che il self-update del plugin potrebbe
+ *     riscrivere), dopo aver verificato che mu-plugins/wp-health-check.php coincida con la build di
+ *     src/ (bin/build.php in un processo figlio; modo da WPHC_BUILD_MODE come "build:check": dev di default,
+ *     strip con WPHC_BUILD_MODE=strip) e che la copia coincida con quella build;
+ *     oppure il file indicato esplicitamente con WPHC_PLUGIN_FILE (es. la build strip: nessun controllo
+ *     di coincidenza con src/). Stampa su STDERR lo SHA-256 del file sotto test. Registra una guardia
  *     che a fine run segnala qualunque scrittura sul plugin o sul file del repo;
  *  4. definisce, se mancano, le costanti di TEST del plugin (chiavi derivate da seed
  *     deterministici, mai quelle di produzione), verifica che siano coerenti e che nessuna
@@ -78,8 +82,9 @@ if ( ! is_readable( $wphc_tests_dir . '/includes/functions.php' ) ) {
 // Il plugin, quando riceve una release valida, riscrive __FILE__ e crea un .bak accanto
 // (wphc_install_release). Se __FILE__ fosse il file del repo, un ramo positivo del self-update
 // (le chiavi k2 di test firmano release valide) lo sovrascriverebbe. Per questo per default si
-// carica una COPIA in sys_get_temp_dir()/wphc-under-test/, ricreata a ogni avvio.
-// Con WPHC_PLUGIN_FILE si indica invece un file esplicito (es. la build del refactoring in dist/):
+// carica una COPIA in sys_get_temp_dir()/wphc-under-test-<id>/: una cartella per run (id univoco, quindi
+// piu' run in parallelo non si pestano i piedi e non servono pulizie di residui), rimossa a fine run.
+// Con WPHC_PLUGIN_FILE si indica invece un file esplicito (es. la build strip del refactoring):
 // e' una copia di lavoro anch'essa, ma il file del repo in mu-plugins/ e' sempre rifiutato.
 $wphc_repo_plugin = realpath( $wphc_project_dir . '/mu-plugins/wp-health-check.php' );
 if ( false === $wphc_repo_plugin ) {
@@ -87,33 +92,114 @@ if ( false === $wphc_repo_plugin ) {
 	exit( 1 );
 }
 
+/**
+ * Build di src/ (dev o strip, vedi $strip), ottenuta con bin/build.php in un processo figlio.
+ *
+ * Un processo figlio e non un require_once di bin/build.php: la build definisce funzioni globali `wphc_build_*`
+ * che potrebbero collidere con quelle del plugin (nella 1.38.1 esistono wphc_build_signed_payload e simili) e
+ * andrebbero escluse dal controllo di provenienza dei simboli. Cosi' il file prodotto e' anche indipendente da
+ * ogni lettura del file del repo.
+ *
+ * @param string $project_dir Radice del progetto.
+ * @param bool   $strip       True per la build strip, false per la dev (--no-strip).
+ * @return string Contenuto del file prodotto (solo LF).
+ */
+function wphc_test_build_from_src( $project_dir, $strip ) {
+	$out = sys_get_temp_dir() . '/wphc-ref-build-' . uniqid( '', true ) . '.php';
+	$cmd = escapeshellarg( PHP_BINARY ) . ' -d memory_limit=512M ' . escapeshellarg( $project_dir . '/bin/build.php' ) . ( $strip ? ' --strip --output ' : ' --no-strip --output ' ) . escapeshellarg( $out ) . ' 2>&1';
+	exec( $cmd, $lines, $status ); // phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.system_calls_exec
+	$code = 0 === $status && is_file( $out ) ? file_get_contents( $out ) : false;
+	if ( is_file( $out ) ) {
+		@unlink( $out ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+	}
+	if ( false === $code || '' === $code ) {
+		fwrite( STDERR, "Build di riferimento di src/ non riuscita (exit {$status}):\n  " . implode( "\n  ", $lines ) . "\n" );
+		exit( 1 );
+	}
+	return $code;
+}
+
+$wphc_cleanup_copy     = null; // Pulizia della cartella della copia (solo in modalita' di default).
+$wphc_guard_registered = false; // True quando la guardia di fine run e' registrata (e' lei a chiamare la pulizia).
+
 $wphc_plugin_file = getenv( 'WPHC_PLUGIN_FILE' );
 if ( false === $wphc_plugin_file || '' === $wphc_plugin_file ) {
-	// Copia di lavoro: la cartella viene ripulita da residui di run interrotti (.bak, .tmp).
-	$wphc_copy_dir = sys_get_temp_dir() . '/wphc-under-test';
-	if ( ! is_dir( $wphc_copy_dir ) && ! mkdir( $wphc_copy_dir, 0777, true ) && ! is_dir( $wphc_copy_dir ) ) {
+	// 3a. Il file del repo deve essere la build di src/: un "composer run build:dev" dimenticato darebbe un falso
+	// verde (si testerebbe un mu-plugins/ vecchio mentre src/ e' cambiato). Il modo e' quello di "build:check":
+	// WPHC_BUILD_MODE (dev | strip), dev di default (al passaggio finale allo strip si inverte il default, vedi la
+	// checklist di src/README.md). Il confronto e' sul testo con gli a capo normalizzati a LF (la copia di lavoro su
+	// Windows puo' essere CRLF con core.autocrlf; nell'indice e' LF).
+	$wphc_mode = getenv( 'WPHC_BUILD_MODE' );
+	$wphc_mode = false === $wphc_mode || '' === $wphc_mode ? 'dev' : $wphc_mode;
+	if ( ! in_array( $wphc_mode, array( 'dev', 'strip' ), true ) ) {
+		fwrite( STDERR, "WPHC_BUILD_MODE non valido: {$wphc_mode} (ammessi: dev, strip).\n" );
+		exit( 1 );
+	}
+	$wphc_built     = wphc_test_build_from_src( $wphc_project_dir, 'strip' === $wphc_mode );
+	$wphc_repo_lf   = str_replace( "\r\n", "\n", (string) file_get_contents( $wphc_repo_plugin ) );
+	$wphc_built_sha = hash( 'sha256', $wphc_built );
+	if ( $wphc_repo_lf !== $wphc_built ) {
+		fwrite( STDERR, 'mu-plugins/wp-health-check.php (sha256 ' . hash( 'sha256', $wphc_repo_lf ) . ") non coincide con la build {$wphc_mode} di src/ (sha256 {$wphc_built_sha}): eseguire `composer run " . ( 'strip' === $wphc_mode ? 'build' : 'build:dev' ) . "` e rilanciare la suite.\n" );
+		exit( 1 );
+	}
+	if ( false !== strpos( $wphc_built, "\0" ) ) {
+		fwrite( STDERR, "La build {$wphc_mode} di src/ contiene byte NUL.\n" );
+		exit( 1 );
+	}
+
+	// 3b. Copia di lavoro in una cartella propria del run.
+	$wphc_copy_dir = sys_get_temp_dir() . '/wphc-under-test-' . uniqid( '', true );
+	if ( ! mkdir( $wphc_copy_dir, 0777, true ) && ! is_dir( $wphc_copy_dir ) ) {
 		fwrite( STDERR, "Impossibile creare {$wphc_copy_dir}.\n" );
 		exit( 1 );
 	}
-	foreach ( array( '*.bak', '.wphc-new-*.tmp' ) as $wphc_stale_pattern ) {
-		foreach ( (array) glob( $wphc_copy_dir . '/' . $wphc_stale_pattern ) as $wphc_stale_file ) {
-			is_dir( $wphc_stale_file ) ? @rmdir( $wphc_stale_file ) : @unlink( $wphc_stale_file ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged
+	$wphc_plugin_file = $wphc_copy_dir . '/wp-health-check.php';
+
+	// Pulizia a fine run: toglie tutto cio' che e' nella cartella (anche .bak e .wphc-new-*.tmp lasciati da un
+	// install_release) e la cartella. La guardia di fine run la chiama DOPO i propri controlli (che devono ancora
+	// vedere il file); la funzione registrata qui sotto copre i soli casi in cui la guardia non e' ancora registrata
+	// (uscita anticipata del bootstrap).
+	$wphc_cleanup_copy = static function () use ( $wphc_copy_dir ) {
+		if ( ! is_dir( $wphc_copy_dir ) ) {
+			return;
+		}
+		foreach ( (array) scandir( $wphc_copy_dir ) as $entry ) {
+			if ( '.' === $entry || '..' === $entry ) {
+				continue;
+			}
+			$entry_path = $wphc_copy_dir . '/' . $entry;
+			is_dir( $entry_path ) ? @rmdir( $entry_path ) : @unlink( $entry_path ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.unlink_unlink
+		}
+		@rmdir( $wphc_copy_dir ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.rmdir_rmdir
+	};
+	register_shutdown_function(
+		static function () use ( &$wphc_guard_registered, $wphc_cleanup_copy ) {
+			if ( ! $wphc_guard_registered ) {
+				$wphc_cleanup_copy();
+			}
+		}
+	);
+
+	// Scrittura con file_put_contents invece di copy(): in Docker, con il repo montato come bind mount da Windows,
+	// la copy() di PHP 8.1 puo' produrre un file con una coda di byte NUL (problema dell'ambiente, non del plugin) e la
+	// suite fallirebbe con un ParseError. Dopo ogni scrittura si RILEGGE la copia da disco (clearstatcache) e la si
+	// confronta con la build di riferimento, calcolata dal processo figlio e non dalla stessa stringa appena scritta;
+	// se differisce, o contiene un byte NUL, si riprova (fino a 3 volte), poi si interrompe con un errore chiaro.
+	$wphc_copy_ok = false;
+	for ( $wphc_attempt = 1; $wphc_attempt <= 3 && ! $wphc_copy_ok; $wphc_attempt++ ) {
+		clearstatcache();
+		$wphc_copy_ok = false !== file_put_contents( $wphc_plugin_file, $wphc_built );
+		if ( $wphc_copy_ok ) {
+			clearstatcache();
+			$wphc_copy_read = file_get_contents( $wphc_plugin_file );
+			$wphc_copy_ok   = false !== $wphc_copy_read
+				&& false === strpos( $wphc_copy_read, "\0" )
+				&& hash( 'sha256', $wphc_copy_read ) === $wphc_built_sha
+				&& hash_file( 'sha256', $wphc_plugin_file ) === $wphc_built_sha;
 		}
 	}
-	$wphc_plugin_file = $wphc_copy_dir . '/wp-health-check.php';
-	// Copia con lettura e scrittura esplicite invece di copy(): in Docker, con il repo montato come bind mount
-	// da Windows, la copy() di PHP 8.1 puo' produrre un file con una coda di byte NUL (problema dell'ambiente,
-	// non del plugin) e la suite fallirebbe con un ParseError. Si legge il sorgente, lo si scrive, si rilegge
-	// la copia e se l'hash non coincide si riprova (fino a 3 volte); poi si interrompe con un errore chiaro.
-	$wphc_source_code = file_get_contents( $wphc_repo_plugin );
-	$wphc_copy_ok     = false;
-	for ( $wphc_attempt = 1; $wphc_attempt <= 3 && false !== $wphc_source_code && ! $wphc_copy_ok; $wphc_attempt++ ) {
-		clearstatcache();
-		$wphc_copy_ok = false !== file_put_contents( $wphc_plugin_file, $wphc_source_code )
-			&& hash_file( 'sha256', $wphc_plugin_file ) === hash( 'sha256', $wphc_source_code );
-	}
 	if ( ! $wphc_copy_ok ) {
-		fwrite( STDERR, "Impossibile copiare il plugin in {$wphc_plugin_file} (copia assente o diversa dall'originale dopo 3 tentativi).\n" );
+		fwrite( STDERR, "Impossibile copiare il plugin in {$wphc_plugin_file} (copia assente, con byte NUL o diversa dalla build di src/ dopo 3 tentativi).\n" );
 		exit( 1 );
 	}
 	@chmod( $wphc_plugin_file, 0666 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged, WordPress.WP.AlternativeFunctions.file_system_operations_chmod
@@ -126,7 +212,7 @@ if ( false === $wphc_plugin_real ) {
 }
 // Un file esplicito non puo' essere quello del repo (nemmeno via symlink o percorso relativo).
 if ( $wphc_plugin_real === $wphc_repo_plugin ) {
-	fwrite( STDERR, "WPHC_PLUGIN_FILE punta a mu-plugins/wp-health-check.php del repo: indicare una copia (o non impostare la variabile: la suite ne crea una in " . sys_get_temp_dir() . "/wphc-under-test).\n" );
+	fwrite( STDERR, "WPHC_PLUGIN_FILE punta a mu-plugins/wp-health-check.php del repo: indicare una copia (o non impostare la variabile: la suite ne crea una in " . sys_get_temp_dir() . "/wphc-under-test-<id>).\n" );
 	exit( 1 );
 }
 // Un .bak gia' presente accanto a un file esplicito indica un run precedente andato storto.
@@ -135,6 +221,15 @@ if ( file_exists( $wphc_plugin_real . '.bak' ) ) {
 	exit( 1 );
 }
 define( 'WPHC_PLUGIN_FILE', $wphc_plugin_real );
+
+// SHA-256 del file sotto test su STDERR (in entrambe le modalita'): permette di riconoscere nei log quale build e'
+// stata provata. Con WPHC_PLUGIN_FILE e' solo un'informazione: il file indicato non deve coincidere con src/.
+// Si stampa UNA volta per run: i test @runInSeparateProcess rilanciano questo bootstrap in un figlio che eredita
+// l'ambiente, e PHPUnit tratterebbe qualunque cosa scritta dal figlio su STDERR come un errore del test.
+if ( false === getenv( 'WPHC_SHA_PRINTED' ) ) {
+	putenv( 'WPHC_SHA_PRINTED=1' );
+	fwrite( STDERR, 'Plugin sotto test: ' . WPHC_PLUGIN_FILE . ' sha256 ' . hash_file( 'sha256', WPHC_PLUGIN_FILE ) . ( null === $wphc_cleanup_copy ? ' (file indicato da WPHC_PLUGIN_FILE)' : ' (copia della build di src/, uguale a mu-plugins/)' ) . PHP_EOL );
+}
 
 // Guardia di integrita' a fine run: ne' il file sotto test ne' quello del repo devono cambiare,
 // e accanto al file sotto test non deve comparire un .bak (il segno di una install_release scritta).
@@ -321,9 +416,12 @@ if ( array() !== $wphc_strays ) {
 
 // Guardia di integrita' (B1): a fine run nessun file del plugin deve essere cambiato e non deve
 // esistere un .bak accanto al plugin sotto test ne' un .wphc-new-*.tmp in mu-plugins. Si ferma con
-// exit(1) cosi' il run risulta rosso anche se tutti i test erano verdi.
+// exit(1) cosi' il run risulta rosso anche se tutti i test erano verdi. Dopo i controlli (che devono ancora vedere
+// il file) rimuove la cartella della copia di lavoro, prima dell'eventuale exit(1): un exit dentro una funzione di
+// chiusura interrompe le funzioni successive.
+$wphc_guard_registered = true;
 register_shutdown_function(
-	static function () use ( $wphc_guard_files ) {
+	static function () use ( $wphc_guard_files, $wphc_cleanup_copy ) {
 		clearstatcache();
 		$problems = array();
 
@@ -338,6 +436,9 @@ register_shutdown_function(
 		}
 		foreach ( (array) glob( rtrim( WPMU_PLUGIN_DIR, '/\\' ) . '/.wphc-new-*.tmp' ) as $tmp ) {
 			$problems[] = "temporaneo orfano: {$tmp}";
+		}
+		if ( null !== $wphc_cleanup_copy ) {
+			$wphc_cleanup_copy();
 		}
 
 		if ( array() !== $problems ) {

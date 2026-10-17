@@ -490,8 +490,9 @@ namespace {
 				if ( 1 === preg_match( '/\b(self|static|parent)::|\$this\b/', $source ) ) {
 					throw new RuntimeException( 'Il corpo della funzione CORS usa self::/static::/parent:: o $this: non e\' eseguibile nel namespace spia (WPHC_Cors_Spy). Qualificare i riferimenti con il backslash iniziale o adattare capture_cors().' );
 				}
-				// Stesso discorso per le classi del plugin: `WPHC_Options::...` senza il backslash iniziale risolverebbe in
-				// WPHC_Cors_Spy\WPHC_Options (classe inesistente: fatal dentro eval). Il lookbehind accetta solo `\WPHC_X::`.
+				// Stesso discorso per QUALUNQUE classe non qualificata (del plugin, di WordPress o di PHP): `WPHC_Options::...`
+				// o `new WP_Error(...)` senza il backslash iniziale risolverebbero in WPHC_Cors_Spy\<Classe> (classe
+				// inesistente: fatal dentro eval). Il lookbehind accetta solo `\Classe::` e `new \Classe`.
 				// Si controlla il solo CODICE (commenti esclusi): un commento puo' citare `WPHC_Guard::metodo()`.
 				$code_only = '';
 				foreach ( token_get_all( '<?php ' . $source ) as $token ) {
@@ -500,8 +501,8 @@ namespace {
 					}
 					$code_only .= is_array( $token ) ? $token[1] : $token;
 				}
-				if ( 1 === preg_match( '/(?<!\\\\)\bWPHC_\w+::/', $code_only ) ) {
-					throw new RuntimeException( 'Il corpo della funzione CORS riferisce una classe WPHC_* senza il backslash iniziale: non risolverebbe nel namespace spia (WPHC_Cors_Spy). Scrivere \\WPHC_Options::... o adattare capture_cors().' );
+				if ( 1 === preg_match( '/(?<!\\\\)\b[A-Z]\w*::|\bnew\s+[A-Z]/', $code_only ) ) {
+					throw new RuntimeException( 'Il corpo della funzione CORS riferisce una classe senza il backslash iniziale (Classe:: oppure new Classe): non risolverebbe nel namespace spia (WPHC_Cors_Spy). Scrivere \\WPHC_Options::... o adattare capture_cors().' );
 				}
 				// Plausibilita': l'estrazione dalle righe del file deve aver preso TUTTO il corpo (almeno cinque
 				// header_remove( e quattro header( ), altrimenti i test passerebbero su una funzione tagliata.

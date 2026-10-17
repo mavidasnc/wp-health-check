@@ -8,11 +8,18 @@
  * distribuito (asset delle release, firmato k2).
  *
  * Uso:
- *     php bin/build.php                     build con strip dei commenti, scrive mu-plugins/
- *     php bin/build.php --no-strip          build di sviluppo/debug: nessuno strip
- *     php bin/build.php --output <path>     scrive in <path> invece che in mu-plugins/
+ *     php bin/build.php --no-strip          build di sviluppo/debug (nessuno strip), scrive mu-plugins/ ("composer run build:dev")
+ *     php bin/build.php --output <path>     build con strip dei commenti, scritta in <path>
+ *     php bin/build.php                     come sopra (strip) ma SENZA --output: rifiutato, vedi sotto
  *     php bin/build.php --check             confronta il risultato col file committato, exit 1 se differisce
  *     php bin/build.php --src <dir>         usa un altro albero sorgente (prove della build stessa)
+ *
+ * Scrittura dello strip in mu-plugins/ (finche' dura il refactoring):
+ *     il file committato in mu-plugins/ e' la build DEV (e' quella che confrontano "build:check", "tests/build/run.php"
+ *     e il bootstrap di PHPUnit) e il suo push supera il limite di 128 KiB: la build strip, che lo rispetta, non deve
+ *     finirci per sbaglio. Per questo "php bin/build.php" (strip, anche con --strip esplicito, quindi anche
+ *     "composer run build") senza --output esce con codice 2 e non scrive nulla, a meno che sia impostata la
+ *     variabile d'ambiente WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 (il passaggio finale del refactoring).
  *
  * Modo della build quando non e' indicato (--strip / --no-strip):
  *     - senza --check: strip;
@@ -374,6 +381,7 @@ function wphc_build_check_cli_file( $file, $content ) {
 	$adds    = 0;
 	$closed  = false;
 	$reg     = array(); // Testi dei token della registrazione del comando (da WP_CLI al ";" incluso).
+	$reg_end = null; // Indice del token significativo che segue la registrazione.
 	while ( $i < $n ) {
 		$tok = $sig[ $i ];
 
@@ -411,6 +419,12 @@ function wphc_build_check_cli_file( $file, $content ) {
 			'WP_CLI' === $tok['text'] && isset( $sig[ $i + 3 ] )
 			&& T_DOUBLE_COLON === $sig[ $i + 1 ]['id'] && 'add_command' === $sig[ $i + 2 ]['text'] && '(' === $sig[ $i + 3 ]['text']
 		) {
+			// La classe deve essere gia' stata dichiarata: dentro un "if" la classe esiste solo quando l'esecuzione
+			// raggiunge la sua dichiarazione e WP-CLI valida il callable alla registrazione, quindi una registrazione
+			// scritta PRIMA della classe farebbe sparire "wp health-check" pur con un file sintatticamente valido.
+			if ( 1 !== $classes ) {
+				throw new RuntimeException( $file . ': la registrazione del comando deve seguire la dichiarazione della classe ' . WPHC_BUILD_KEEP_DOCS_CLASS . ' (riga ' . $tok['line'] . ')' );
+			}
 			// Registrazione: si salta fino al ";" che chiude l'istruzione (parentesi bilanciate) e si
 			// tengono i testi dei token, per confrontarli sotto con la sequenza esatta ammessa.
 			++$adds;
@@ -427,6 +441,7 @@ function wphc_build_check_cli_file( $file, $content ) {
 				}
 			}
 			++$i;
+			$reg_end = $i; // Indice del token significativo che segue la registrazione.
 			continue;
 		}
 
@@ -439,6 +454,12 @@ function wphc_build_check_cli_file( $file, $content ) {
 	}
 	if ( 1 !== $classes || 1 !== $adds ) {
 		throw new RuntimeException( $file . ': il blocco WP-CLI deve contenere esattamente una classe ' . WPHC_BUILD_KEEP_DOCS_CLASS . ' e una chiamata WP_CLI::add_command() (trovate ' . $classes . ' classi e ' . $adds . ' registrazioni)' );
+	}
+
+	// Dopo il ";" della registrazione il token successivo e' la graffa che chiude il guard: la registrazione e' l'ultima
+	// istruzione del blocco (il ciclo sopra scarta gia' qualunque altro codice, qui si ribadisce l'invariante).
+	if ( null === $reg_end || ! isset( $sig[ $reg_end ] ) || '}' !== $sig[ $reg_end ]['id'] ) {
+		throw new RuntimeException( $file . ': dopo la registrazione del comando deve esserci solo la graffa che chiude il guard WP-CLI' );
 	}
 
 	// 5. La registrazione e' ESATTAMENTE "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );": stesso comando,
@@ -992,7 +1013,7 @@ function wphc_build( $src_dir, $strip ) {
  * Entry point CLI.
  *
  * @param string[] $argv Argomenti da riga di comando (il primo e' lo script).
- * @return int Codice di uscita: 0 ok, 1 build fallita o differenza in --check, 2 uso errato.
+ * @return int Codice di uscita: 0 ok, 1 build fallita o differenza in --check, 2 uso errato o scrittura dello strip su mu-plugins/ rifiutata.
  */
 function wphc_build_main( array $argv ) {
 	$root   = dirname( __DIR__ );
@@ -1047,6 +1068,15 @@ function wphc_build_main( array $argv ) {
 		}
 	}
 	$target = null === $output ? $root . '/mu-plugins/wp-health-check.php' : $output;
+
+	// 2b. Lo strip non si scrive di default su mu-plugins/ (vedi l'intestazione del file): serve --output oppure
+	// il consenso esplicito WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1. Il controllo precede la build: nessun lavoro inutile.
+	if ( $strip && ! $check && null === $output && '1' !== getenv( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' ) ) {
+		fwrite( STDERR, "RIFIUTATO: la build strip non si scrive direttamente su mu-plugins/wp-health-check.php (il file committato e' la build dev).\n" );
+		fwrite( STDERR, "Usare \"composer run build:dev\" per aggiornare mu-plugins/, oppure --output <path> per la build strip, oppure\n" );
+		fwrite( STDERR, "WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 per la pubblicazione finale del refactoring.\n" );
+		return 2;
+	}
 
 	// 3. Build con tutti i gate.
 	try {

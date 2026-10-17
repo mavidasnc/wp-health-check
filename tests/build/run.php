@@ -524,6 +524,18 @@ $tests['gate (b2): codice non ammesso in un file con ruolo cli'] = function () {
 		'terzo argomento con una funzione'  => array( str_replace( "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );", "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command', function () {\n\t\tdo_something();\n\t} );", t_cli_file() ), 'senza altri argomenti' ),
 		'terzo argomento con un array'      => array( str_replace( "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );", "WP_CLI::add_command( 'health-check', 'WPHC_CLI_Command', array( 'when' => 'x' ) );", t_cli_file() ), 'senza altri argomenti' ),
 		'nome del comando diverso'          => array( str_replace( "WP_CLI::add_command( 'health-check',", "WP_CLI::add_command( 'altro',", t_cli_file() ), 'senza altri argomenti' ),
+		// Ordine classe -> registrazione (I-1 del lotto 2): con la registrazione PRIMA della classe la build dev
+		// passerebbe, ma con WP-CLI vero il comando sparirebbe (la classe in un "if" esiste solo dopo la sua dichiarazione).
+		'registrazione prima della classe'  => array(
+			str_replace(
+				"\t/**\n\t * DOCBLOCK_CLASSE_CLI_TENUTO",
+				"\tWP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );\n\t/**\n\t * DOCBLOCK_CLASSE_CLI_TENUTO",
+				str_replace( "\tWP_CLI::add_command( 'health-check', 'WPHC_CLI_Command' );\n", '', t_cli_file() )
+			),
+			'deve seguire la dichiarazione della classe',
+		),
+		// Token extra dopo la registrazione: la registrazione e' l'ultima istruzione prima della graffa del guard.
+		'token extra dopo la registrazione' => array( t_cli_file( '', "\t;\n" ), 'codice non ammesso in un file con ruolo cli' ),
 		// Guard non chiuso: lo intercetta gia' il parse completo del tokenizer.
 		'guard non chiuso'                  => array( substr( t_cli_file(), 0, -2 ), 'errore di sintassi' ),
 	);
@@ -982,6 +994,50 @@ $tests['CLI: --output scrive solo dove richiesto, --check confronta, WPHC_BUILD_
 	// Uso errato: exit 2.
 	$r = t_run_cli( $root, array( '--boh' ) );
 	t_assert( 2 === $r[0], 'argomento sconosciuto doveva dare exit 2' );
+};
+
+$tests['CLI: lo strip non si scrive su mu-plugins/ senza --output, salvo WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 (I-3 del lotto 2)'] = function () use ( $root ) {
+	// Albero finto (bin/, src/, mu-plugins/) in una cartella temporanea: build.php risolve mu-plugins/ da dirname(__DIR__),
+	// quindi la prova scrive li' e mai nel mu-plugins/ vero. Le sottocartelle si registrano PRIMA della radice: la
+	// pulizia finale le svuota nell'ordine di registrazione e rmdir() della radice trova la radice vuota.
+	$fake = sys_get_temp_dir() . '/wphc-build-inplace-' . uniqid( '', true );
+	foreach ( array( '/bin', '/src', '/mu-plugins' ) as $sub ) {
+		mkdir( $fake . $sub, 0777, true );
+		$GLOBALS['build_test_dirs'][] = $fake . $sub;
+	}
+	$GLOBALS['build_test_dirs'][] = $fake;
+	copy( $root . '/bin/build.php', $fake . '/bin/build.php' );
+	foreach ( (array) glob( $root . '/src/*.php' ) as $file ) {
+		copy( $file, $fake . '/src/' . basename( $file ) );
+	}
+	$target = $fake . '/mu-plugins/wp-health-check.php';
+	$none   = array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => '' );
+	$dev    = wphc_build( $fake . '/src', false )['code'];
+	$strip  = wphc_build( $fake . '/src', true )['code'];
+
+	// Strip senza --output e senza consenso: default, --strip esplicito (come "composer run build") e consenso diverso da "1".
+	foreach ( array( array(), array( '--strip' ) ) as $args ) {
+		$r = t_run_cli( $fake, $args, $none );
+		t_assert( 2 === $r[0], 'strip su mu-plugins senza consenso doveva dare exit 2, dato ' . $r[0] . ' (args: ' . implode( ' ', $args ) . ')' );
+		t_assert( false !== strpos( $r[2], 'RIFIUTATO' ) && false !== strpos( $r[2], 'build:dev' ) && false !== strpos( $r[2], '--output' ), 'messaggio di rifiuto poco chiaro: ' . $r[2] );
+		t_assert( ! file_exists( $target ), 'il rifiuto ha scritto comunque mu-plugins/wp-health-check.php' );
+	}
+	$r = t_run_cli( $fake, array( '--strip' ), array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => 'yes' ) );
+	t_assert( 2 === $r[0] && ! file_exists( $target ), 'solo il valore "1" deve valere come consenso' );
+
+	// La build dev su mu-plugins/ resta permessa e un successivo rifiuto dello strip non tocca il file.
+	$r = t_run_cli( $fake, array( '--no-strip' ), $none );
+	t_assert( 0 === $r[0] && $dev === file_get_contents( $target ), 'build dev su mu-plugins: exit ' . $r[0] . ' ' . $r[2] );
+	$r = t_run_cli( $fake, array( '--strip' ), $none );
+	t_assert( 2 === $r[0] && $dev === file_get_contents( $target ), 'il rifiuto dello strip ha modificato il file dev' );
+
+	// --check non scrive: ammesso anche in modo strip senza consenso (confronto: la dev committata differisce dallo strip).
+	$r = t_run_cli( $fake, array( '--check', '--strip' ), $none );
+	t_assert( 1 === $r[0] && false !== strpos( $r[2], 'CHECK FALLITO' ), '--check --strip non doveva essere rifiutato: exit ' . $r[0] );
+
+	// Con il consenso esplicito lo strip viene scritto su mu-plugins/.
+	$r = t_run_cli( $fake, array( '--strip' ), array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => '1' ) );
+	t_assert( 0 === $r[0] && $strip === file_get_contents( $target ), 'strip con WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1: exit ' . $r[0] . ' ' . $r[2] );
 };
 
 // -----------------------------------------------------------------------------------------------
