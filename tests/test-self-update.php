@@ -390,7 +390,7 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 				),
 			)
 		);
-		$release = wphc_fetch_latest_release_without_api( 15 );
+		$release = self::call( 'wphc_fetch_latest_release_without_api', 15 );
 
 		$this->assertSame( 'v1.40.0-rc.1', $release['tag_name'] );
 		$this->assertSame(
@@ -406,15 +406,15 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 	 */
 	public function test_hub_source_disabled_in_test_environment() {
 		$this->assertSame( '', WP_HEALTH_CHECK_RELEASE_URL );
-		$this->assertNull( wphc_fetch_latest_release_from_hub( 15 ) );
+		$this->assertNull( self::call( 'wphc_fetch_latest_release_from_hub', 15 ) );
 		$this->assertSame( array(), $this->blocked_http_calls );
 
 		$this->mock_http( array( self::github_api_url() => $this->http_response( 200, '{"tag_name":"v3.0.0"}' ) ) );
-		$release = wphc_fetch_latest_release( 15 );
+		$release = self::call( 'wphc_fetch_latest_release', 15 );
 		$this->assertSame( 'v3.0.0', $release['tag_name'] );
 		$this->assertArrayNotHasKey( 'wphc_source', $release );
 		// Con $skip_hub il risultato non cambia (l'hub e' gia' spento).
-		$this->assertSame( 'v3.0.0', wphc_fetch_latest_release( 15, true )['tag_name'] );
+		$this->assertSame( 'v3.0.0', self::call( 'wphc_fetch_latest_release', 15, true )['tag_name'] );
 	}
 
 	/**
@@ -464,7 +464,7 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 	 * @param bool  $expected Atteso.
 	 */
 	public function test_is_release_tag( $tag, $expected ) {
-		$this->assertSame( $expected, wphc_is_release_tag( $tag ) );
+		$this->assertSame( $expected, self::call( 'wphc_is_release_tag', $tag ) );
 	}
 
 	// -----------------------------------------------------------------------
@@ -783,7 +783,7 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 	public function test_latest_version_is_cached_for_one_hour() {
 		$this->mock_http( array( self::github_api_url() => $this->http_response( 200, '{"tag_name":"v2.5.0"}' ) ) );
 
-		$this->assertSame( '2.5.0', wphc_get_latest_version() );
+		$this->assertSame( '2.5.0', self::call( 'wphc_get_latest_version' ) );
 		$this->assertCount( 1, $this->http_calls );
 		$this->assertSame( 10, $this->http_calls[0]['args']['timeout'], 'La Site Health usa un timeout di 10 s (il self-update 15 s).' );
 		$this->assertSame( '2.5.0', get_transient( 'wphc_latest_version_cache' ) );
@@ -792,12 +792,12 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 		$this->assertEqualsWithDelta( time() + HOUR_IN_SECONDS, $timeout, 5 );
 
 		// Cache calda: nessuna nuova richiesta.
-		$this->assertSame( '2.5.0', wphc_get_latest_version() );
+		$this->assertSame( '2.5.0', self::call( 'wphc_get_latest_version' ) );
 		$this->assertCount( 1, $this->http_calls );
 
 		// $force ignora la cache e reinterroga.
 		$this->http_routes[ self::github_api_url() ] = $this->http_response( 200, '{"tag_name":"v2.6.0"}' );
-		$this->assertSame( '2.6.0', wphc_get_latest_version( true ) );
+		$this->assertSame( '2.6.0', self::call( 'wphc_get_latest_version', true ) );
 		$this->assertCount( 2, $this->http_calls );
 		$this->assertSame( '2.6.0', get_transient( 'wphc_latest_version_cache' ) );
 	}
@@ -809,16 +809,16 @@ class WPHC_Test_Upd_SelfUpdate extends WPHC_Update_Test_Case {
 	public function test_latest_version_failure_is_cached_as_empty_string() {
 		$this->mock_http( array( self::github_api_url() => $this->http_response( 500, '' ) ) );
 
-		$this->assertNull( wphc_get_latest_version() );
+		$this->assertNull( self::call( 'wphc_get_latest_version' ) );
 		$this->assertSame( '', get_transient( 'wphc_latest_version_cache' ) );
 		$calls = count( $this->http_calls );
 		$this->assertSame( 2, $calls, 'API e ripiego senza API.' );
 
-		$this->assertNull( wphc_get_latest_version() );
+		$this->assertNull( self::call( 'wphc_get_latest_version' ) );
 		$this->assertCount( $calls, $this->http_calls, 'Il fallimento in cache non ripete le richieste.' );
 
 		// Una release valida dopo $force sostituisce il fallimento in cache.
 		$this->http_routes[ self::github_api_url() ] = $this->http_response( 200, '{"tag_name":"v7.0.0"}' );
-		$this->assertSame( '7.0.0', wphc_get_latest_version( true ) );
+		$this->assertSame( '7.0.0', self::call( 'wphc_get_latest_version', true ) );
 	}
 }

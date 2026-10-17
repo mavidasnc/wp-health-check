@@ -718,8 +718,9 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 		$this->assertSame( 200, $response->get_status() );
 		$this->assertSame( array( 'site', 'generated_at', 'count', 'auto_update_enabled_globally', 'plugins' ), array_keys( $data ) );
 		$this->assertSame( 3, $data['count'] );
-		// Segue l'helper del core (nel container di test l'auto-update e' spento da un filtro della test library).
-		$this->assertSame( wp_is_auto_update_enabled_for_type( 'plugin' ), $data['auto_update_enabled_globally'] );
+		// Valore LETTERALE (non confrontato con l'helper del core, che sarebbe una tautologia): nel container di
+		// test l'auto-update dei plugin e' spento da un filtro della test library, quindi il campo vale false.
+		$this->assertFalse( $data['auto_update_enabled_globally'] );
 		$this->assertSame(
 			array( 'name', 'slug', 'file', 'version', 'active', 'update_available', 'new_version', 'auto_update', 'auto_update_forced' ),
 			array_keys( $data['plugins'][0] )
@@ -766,8 +767,9 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 		$data = $this->get_route( '/detail/plugins', array( 'fresh' => '1' ) )->get_data();
 		$this->assertArrayHasKey( 'plugins', $data );
 		$this->assertSame( $data, $this->transient_raw( 'wphc_detail_plugins_cache' ) );
-		// Rilettura reale: coincide con get_plugins() (e non e' piu' l'elenco finto).
-		$this->assertSame( count( get_plugins() ), $data['count'] );
+		// Rilettura reale (non piu' l'elenco finto): nel container di test e' installato il solo hello.php.
+		$this->assertSame( 1, $data['count'] );
+		$this->assertSame( array( 'hello.php' ), array_column( $data['plugins'], 'file' ) );
 		$this->assertArrayNotHasKey( 'fake-one/fake-one.php', get_plugins() );
 	}
 
@@ -1206,5 +1208,88 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 			$response->get_status()
 		);
 		$this->assert_read_golden( 'read/detail-users', $restricted, $before );
+	}
+
+	// -----------------------------------------------------------------------
+	// Rami di /health e /detail/theme non fissati altrove
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Segnali del sito (`wphc_detect_site_signals`): ogni slug riconosciuto accende il suo segnale e gli slug
+	 * "quasi giusti" NO. Lo slug e' la CARTELLA del plugin (primo segmento di "cartella/file.php"): un plugin a
+	 * file singolo nella radice o un nome piu' lungo non corrisponde. Il tema Divi accende `has_builder` (lo slug e'
+	 * confrontato in minuscolo con lo stylesheet e con il template del tema attivo; il ramo "template di un child" non
+	 * e' raggiungibile senza un tema divi vero installato: per un tema inesistente template e stylesheet coincidono). Elenchi riconosciuti dalla 1.38.1: GDPR iubenda-cookie-law-solution,
+	 * cookiebot, cookiebot-manager; builder elementor e tema divi; e-commerce woocommerce, easy-digital-downloads.
+	 */
+	public function test_health_site_signals_cover_every_recognized_slug_and_ignore_the_rest() {
+		$this->enrolled();
+
+		$cases = array(
+			'nessun plugin attivo'                  => array( array(), null, array( false, false, false ) ),
+			'iubenda'                               => array( array( 'iubenda-cookie-law-solution/iubenda_cookie_law_solution.php' ), null, array( true, false, false ) ),
+			'cookiebot-manager'                     => array( array( 'cookiebot-manager/cookiebot-manager.php' ), null, array( true, false, false ) ),
+			'easy-digital-downloads'                => array( array( 'easy-digital-downloads/easy-digital-downloads.php' ), null, array( false, false, true ) ),
+			'plugin a file singolo nella radice'    => array( array( 'cookiebot.php', 'elementor.php', 'woocommerce.php' ), null, array( false, false, false ) ),
+			'slug piu lunghi (nessuna sottostringa)' => array( array( 'cookiebot-extra/a.php', 'elementor-pro/b.php', 'woocommerce-extra/c.php' ), null, array( false, false, false ) ),
+			'tema divi'                             => array( array(), array( 'divi', 'divi' ), array( false, true, false ) ),
+			'tema qualunque'                        => array( array(), array( 'twentytwentyfive', 'twentytwentyfive' ), array( false, false, false ) ),
+		);
+
+		foreach ( $cases as $label => $case ) {
+			list( $active_plugins, $theme, $expected ) = $case;
+
+			update_option( 'active_plugins', $active_plugins );
+			update_option( 'stylesheet', null === $theme ? 'twentytwentyfive' : $theme[0] );
+			update_option( 'template', null === $theme ? 'twentytwentyfive' : $theme[1] );
+			delete_transient( 'wphc_health_cache' ); // /health ha una cache di 60 s.
+
+			$summary = $this->get_route( '/health' )->get_data()['summary'];
+
+			$this->assertSame( $expected, array( $summary['has_gdpr'], $summary['has_builder'], $summary['has_ecommerce'] ), $label );
+		}
+	}
+
+	/**
+	 * `comments_pending` e' il numero dei commenti IN ATTESA di moderazione (wp_count_comments()->moderated):
+	 * non conta gli approvati.
+	 */
+	public function test_health_comments_pending_counts_only_moderated_comments() {
+		$this->enrolled();
+		$summary = $this->get_route( '/health' )->get_data()['summary'];
+		$this->assertSame( 0, $summary['comments_pending'] );
+
+		$post_id = self::factory()->post->create();
+		self::factory()->comment->create_many( 3, array( 'comment_post_ID' => $post_id, 'comment_approved' => '0' ) );
+		self::factory()->comment->create( array( 'comment_post_ID' => $post_id, 'comment_approved' => '1' ) );
+		wp_cache_flush(); // wp_count_comments() tiene un conteggio nella cache a oggetti.
+		delete_transient( 'wphc_health_cache' );
+
+		$summary = $this->get_route( '/health' )->get_data()['summary'];
+		$this->assertSame( 3, $summary['comments_pending'] );
+	}
+
+	/**
+	 * Child theme: /health riporta il NOME del tema parent (`parent_theme_name`), /detail/theme il payload del
+	 * parent e, nell'elenco, il campo `parent` solo per il child (null per gli altri temi). Si usano i temi della
+	 * test library (`block-theme-child`, che dichiara `Template: block-theme`).
+	 */
+	public function test_child_theme_reports_its_parent() {
+		$this->enrolled();
+		switch_theme( 'block-theme-child' );
+		$this->assertSame( 'block-theme', get_template(), 'precondizione: il tema attivo e un child' );
+
+		$summary = $this->get_route( '/health' )->get_data()['summary'];
+		$this->assertSame( 'Block Theme', $summary['parent_theme_name'] );
+
+		$detail = $this->get_route( '/detail/theme', array( 'fresh' => '1' ) )->get_data();
+		$this->assertSame( 'block-theme-child', $detail['active_theme']['stylesheet'] );
+		$this->assertSame( array( 'name', 'version', 'auto_update', 'auto_update_forced' ), array_keys( $detail['parent_theme'] ) );
+		$this->assertSame( 'Block Theme', $detail['parent_theme']['name'] );
+		$this->assertSame( '1.0.0', $detail['parent_theme']['version'] );
+
+		$parents = array_column( $detail['themes'], 'parent', 'stylesheet' );
+		$this->assertSame( 'block-theme', $parents['block-theme-child'] );
+		$this->assertNull( $parents['block-theme'] );
 	}
 }

@@ -85,7 +85,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		for ( $i = 1; $i <= $count; $i++ ) {
 			$plugins[] = "w{$i}/w{$i}.php";
 		}
-		$normalized = wphc_bulk_normalize_items( array( 'plugins' => $plugins ) );
+		$normalized = self::call( 'wphc_bulk_normalize_items', array( 'plugins' => $plugins ) );
 		$job        = array(
 			'job_id'        => 'abcdef0123456789',
 			'status'        => 'completed',
@@ -110,7 +110,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 				'last_error' => null,
 			),
 		);
-		wphc_bulk_recount( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
 
 		return $job;
 	}
@@ -138,25 +138,25 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		delete_option( 'wp_health_check_webhook_disabled' );
 
 		// Nessuna impostazione: default di flotta (nei test e' l'URL .invalid della config).
-		$this->assertSame( WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL, wphc_webhook_url() );
-		$this->assertSame( 'https://webhook.invalid/wphc-test', wphc_webhook_url() );
+		$this->assertSame( WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL, self::call( 'wphc_webhook_url' ) );
+		$this->assertSame( 'https://webhook.invalid/wphc-test', self::call( 'wphc_webhook_url' ) );
 
 		// URL del sito: vince sul default.
 		update_option( 'wp_health_check_webhook_url', 'https://8.8.4.4/custom' );
-		$this->assertSame( 'https://8.8.4.4/custom', wphc_webhook_url() );
+		$this->assertSame( 'https://8.8.4.4/custom', self::call( 'wphc_webhook_url' ) );
 
 		// Un URL esplicito vince anche sulla disattivazione.
 		update_option( 'wp_health_check_webhook_disabled', 1 );
-		$this->assertSame( 'https://8.8.4.4/custom', wphc_webhook_url() );
+		$this->assertSame( 'https://8.8.4.4/custom', self::call( 'wphc_webhook_url' ) );
 
 		// Senza URL, la disattivazione spegne tutto: stringa vuota.
 		delete_option( 'wp_health_check_webhook_url' );
-		$this->assertSame( '', wphc_webhook_url() );
+		$this->assertSame( '', self::call( 'wphc_webhook_url' ) );
 
 		// Campo vuoto + non disattivato = default (un campo vuoto non significa piu' "spento").
 		update_option( 'wp_health_check_webhook_url', '' );
 		update_option( 'wp_health_check_webhook_disabled', 0 );
-		$this->assertSame( WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL, wphc_webhook_url() );
+		$this->assertSame( WP_HEALTH_CHECK_WEBHOOK_DEFAULT_URL, self::call( 'wphc_webhook_url' ) );
 	}
 
 	/**
@@ -194,7 +194,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 * @param bool   $expected Atteso.
 	 */
 	public function test_webhook_url_is_allowed( $url, $expected ) {
-		$this->assertSame( $expected, wphc_webhook_url_is_allowed( $url ) );
+		$this->assertSame( $expected, self::call( 'wphc_webhook_url_is_allowed', $url ) );
 	}
 
 	// -----------------------------------------------------------------------
@@ -208,7 +208,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$this->assertSame( array( 0, 300, 1800 ), WP_HEALTH_CHECK_WEBHOOK_BACKOFF );
 		$this->assertSame( 3, WP_HEALTH_CHECK_WEBHOOK_MAX_ATTEMPTS );
 		foreach ( array( -1 => 0, 0 => 0, 1 => 300, 2 => 1800, 3 => 1800, 9 => 1800 ) as $attempt => $seconds ) {
-			$this->assertSame( $seconds, wphc_webhook_backoff_for_attempt( $attempt ), "tentativo {$attempt}" );
+			$this->assertSame( $seconds, self::call( 'wphc_webhook_backoff_for_attempt', $attempt ), "tentativo {$attempt}" );
 		}
 	}
 
@@ -221,7 +221,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_disabled_is_silent() {
 		$before = $this->plugin_options();
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array( 'a' => 1 ), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array( 'a' => 1 ), 'job1', 1 );
 
 		$this->assertSame(
 			array(
@@ -246,7 +246,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		delete_option( 'wp_health_check_token' );
 		$before = $this->plugin_options();
 
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$this->assertSame( 'wphc_webhook_not_enrolled', $result['error'] );
 		$this->assertFalse( $result['retryable'] );
@@ -269,7 +269,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'j', 'event' => self::EVENT, 'body' => array(), 'attempts' => 1 ), false );
 		wp_schedule_single_event( time() + 300, 'wphc_webhook_retry' );
 
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 2 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 2 );
 
 		$this->assertSame( 'wphc_webhook_revoked', $result['error'] );
 		$this->assertFalse( $result['retryable'] );
@@ -284,14 +284,14 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_url_blocked() {
 		update_option( 'wp_health_check_webhook_url', 'http://8.8.8.8/hook' );
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$this->assertSame( 'wphc_webhook_url_blocked', $result['error'] );
 		$this->assertFalse( $result['retryable'] );
 		$this->assertSame( array(), $this->blocked_http_calls );
 
 		update_option( 'wp_health_check_webhook_url', 'https://10.1.2.3/hook' );
-		$this->assertSame( 'wphc_webhook_url_blocked', wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 )['error'] );
+		$this->assertSame( 'wphc_webhook_url_blocked', self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 )['error'] );
 		$this->assertSame( array(), $this->blocked_http_calls );
 	}
 
@@ -302,13 +302,13 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		update_option( 'wp_health_check_webhook_url', 'http://8.8.8.8/hook' );
 		update_option( 'wp_health_check_revoked_at', time() );
 		delete_option( 'wp_health_check_token' );
-		$this->assertSame( 'wphc_webhook_not_enrolled', wphc_dispatch_webhook_payload( self::EVENT, array(), 'j', 1 )['error'] );
+		$this->assertSame( 'wphc_webhook_not_enrolled', self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'j', 1 )['error'] );
 
 		update_option( 'wp_health_check_token', 'tok' );
-		$this->assertSame( 'wphc_webhook_revoked', wphc_dispatch_webhook_payload( self::EVENT, array(), 'j', 1 )['error'] );
+		$this->assertSame( 'wphc_webhook_revoked', self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'j', 1 )['error'] );
 
 		delete_option( 'wp_health_check_revoked_at' );
-		$this->assertSame( 'wphc_webhook_url_blocked', wphc_dispatch_webhook_payload( self::EVENT, array(), 'j', 1 )['error'] );
+		$this->assertSame( 'wphc_webhook_url_blocked', self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'j', 1 )['error'] );
 	}
 
 	// -----------------------------------------------------------------------
@@ -326,7 +326,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 			'x'     => array( 'accentata' => 'perche\'', 'slash' => 'a/b' ),
 		);
 
-		$result = wphc_dispatch_webhook_payload( self::EVENT, $payload, 'job-delivery-1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, $payload, 'job-delivery-1', 1 );
 
 		$this->assertSame(
 			array(
@@ -390,7 +390,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_secret_kid_defaults_to_empty_string() {
 		$this->enable_webhook( $this->http_response( 200 ) );
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'j', 1 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'j', 1 );
 
 		$this->assertSame( '', $this->hook_calls()[0]['args']['headers']['X-WPHC-Secret-Kid'] );
 	}
@@ -400,8 +400,8 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_each_dispatch_has_fresh_nonce() {
 		$this->enable_webhook( $this->http_response( 200 ) );
-		wphc_dispatch_webhook_payload( self::EVENT, array( 'a' => 1 ), 'j', 1 );
-		wphc_dispatch_webhook_payload( self::EVENT, array( 'a' => 1 ), 'j', 2 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array( 'a' => 1 ), 'j', 1 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array( 'a' => 1 ), 'j', 2 );
 		$calls = $this->hook_calls();
 
 		$this->assertNotSame( $calls[0]['args']['headers']['X-WPHC-Nonce'], $calls[1]['args']['headers']['X-WPHC-Nonce'] );
@@ -446,7 +446,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_http_outcomes( $code, $ok, $retryable ) {
 		$this->enable_webhook( $this->http_response( $code, 'corpo del ricevente' ) );
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$this->assertSame( $ok, $result['ok'] );
 		$this->assertSame( $code, $result['code'] );
@@ -467,7 +467,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	public function test_webhook_last_shape_and_retry_at() {
 		$this->enable_webhook( $this->http_response( 500, 'boom' ) );
 		$before = $this->plugin_options();
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$last = get_option( 'wp_health_check_webhook_last' );
 		$this->assertSame( array( 'at', 'ok', 'job_id', 'attempt', 'code', 'error', 'message', 'url_host', 'duration_ms', 'retry_at' ), array_keys( $last ) );
@@ -476,21 +476,21 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$this->assertEqualsWithDelta( time() + 300, strtotime( $last['retry_at'] ), 5, 'Dopo il tentativo 1: +300 s.' );
 		$this->assert_result_golden( 'update/webhook/dispatch-http-500', $result, $before );
 
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 2 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 2 );
 		$this->assertEqualsWithDelta( time() + 1800, strtotime( get_option( 'wp_health_check_webhook_last' )['retry_at'] ), 5, 'Dopo il tentativo 2: +1800 s.' );
 
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 3 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 3 );
 		$this->assertNull( get_option( 'wp_health_check_webhook_last' )['retry_at'], 'Al terzo tentativo nessun altro retry.' );
 
 		// Preservato: un 4xx definitivo riporta comunque retry_at (calcolato dal codice d'errore, non da "retryable").
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 400, 'no' );
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 		$this->assertFalse( $result['retryable'] );
 		$this->assertNotNull( get_option( 'wp_health_check_webhook_last' )['retry_at'] );
 
 		// Un successo non ha retry_at.
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 200 );
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 		$this->assertNull( get_option( 'wp_health_check_webhook_last' )['retry_at'] );
 		$this->assertTrue( get_option( 'wp_health_check_webhook_last' )['ok'] );
 	}
@@ -500,7 +500,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_transport_error() {
 		$this->enable_webhook( new WP_Error( 'http_request_failed', 'cURL error 28: timeout' ) );
-		$result = wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		$result = self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$this->assertSame(
 			array(
@@ -522,7 +522,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_dispatch_message_is_truncated() {
 		$this->enable_webhook( $this->http_response( 500, str_repeat( 'é', 800 ) ) );
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$message = get_option( 'wp_health_check_webhook_last' )['message'];
 		$this->assertSame( 500, mb_strlen( $message ) );
@@ -534,7 +534,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	public function test_webhook_last_is_not_autoloaded() {
 		global $wpdb;
 		$this->enable_webhook( $this->http_response( 200 ) );
-		wphc_dispatch_webhook_payload( self::EVENT, array(), 'job1', 1 );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array(), 'job1', 1 );
 
 		$autoload = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", 'wp_health_check_webhook_last' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$this->assertContains( $autoload, array( 'no', 'off', 'auto-off' ) );
@@ -558,9 +558,9 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$job['items'][0]['attempts'] = 0;
 		$job['items'][0]['log_id']   = 44;
 		$job['items'][0]['finished_ts'] = time() - 20;
-		wphc_bulk_recount( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
 
-		$payload = wphc_bulk_build_webhook_payload( $job );
+		$payload = self::call( 'wphc_bulk_build_webhook_payload', $job );
 
 		$this->assertSame( array( 'schema', 'event', 'site', 'agent_version', 'secret_kid', 'generated_at', 'job', 'totals', 'items', 'items_truncated' ), array_keys( $payload ) );
 		$this->assertSame( 'wphc.bulk_update.report/1', $payload['schema'] );
@@ -596,7 +596,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		delete_option( 'wp_health_check_secret_kid' );
 		$job['started_ts']  = null;
 		$job['finished_ts'] = null;
-		$payload            = wphc_bulk_build_webhook_payload( $job );
+		$payload            = self::call( 'wphc_bulk_build_webhook_payload', $job );
 		$this->assertNull( $payload['job']['started_at'] );
 		$this->assertNull( $payload['job']['finished_at'] );
 		$this->assertSame( '', $payload['secret_kid'] );
@@ -609,19 +609,19 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$this->assertSame( 200, WP_HEALTH_CHECK_WEBHOOK_MAX_ITEMS );
 		$job = $this->sample_job( 3 );
 		for ( $i = 4; $i <= 205; $i++ ) {
-			$job['items'][] = wphc_bulk_new_item( 'plugin', "w{$i}/w{$i}.php" );
+			$job['items'][] = self::call( 'wphc_bulk_new_item', 'plugin', "w{$i}/w{$i}.php" );
 		}
-		wphc_bulk_recount( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
 
-		$payload = wphc_bulk_build_webhook_payload( $job );
+		$payload = self::call( 'wphc_bulk_build_webhook_payload', $job );
 		$this->assertCount( 200, $payload['items'] );
 		$this->assertTrue( $payload['items_truncated'] );
 		$this->assertSame( 205, $payload['totals']['total'] );
 
 		// Esattamente 200: non troncato.
 		$job['items'] = array_slice( $job['items'], 0, 200 );
-		wphc_bulk_recount( $job );
-		$payload = wphc_bulk_build_webhook_payload( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
+		$payload = self::call( 'wphc_bulk_build_webhook_payload', $job );
 		$this->assertCount( 200, $payload['items'] );
 		$this->assertFalse( $payload['items_truncated'] );
 	}
@@ -638,7 +638,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'vecchio' ), false );
 		$job = $this->sample_job( 2 );
 
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 
 		$this->assertSame( 1, $job['webhook']['attempts'] );
 		$this->assertTrue( $job['webhook']['sent'] );
@@ -665,7 +665,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$job    = $this->sample_job( 2 );
 		$before = $this->plugin_options();
 
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 
 		$this->assertFalse( $job['webhook']['sent'] );
 		$this->assertSame( 503, $job['webhook']['code'] );
@@ -691,7 +691,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	public function test_send_for_job_no_retry_when_not_retryable_or_exhausted() {
 		$this->enable_webhook( $this->http_response( 400, 'rifiutato' ) );
 		$job = $this->sample_job( 1 );
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 		$this->assertSame( 'wphc_webhook_http_error', $job['webhook']['last_error'] );
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );
 		$this->assertFalse( wp_next_scheduled( 'wphc_webhook_retry' ) );
@@ -700,7 +700,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 500, '' );
 		$job                                 = $this->sample_job( 1 );
 		$job['webhook']['attempts']          = 2;
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 		$this->assertSame( 3, $job['webhook']['attempts'] );
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );
 		$this->assertFalse( wp_next_scheduled( 'wphc_webhook_retry' ) );
@@ -711,7 +711,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	 */
 	public function test_send_for_job_when_disabled() {
 		$job = $this->sample_job( 1 );
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 
 		$this->assertSame( 1, $job['webhook']['attempts'] );
 		$this->assertFalse( $job['webhook']['sent'] );
@@ -727,11 +727,11 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	public function test_retry_resends_same_body_with_fresh_signature() {
 		$this->enable_webhook( $this->http_response( 503, '' ) );
 		$job = $this->sample_job( 2 );
-		wphc_bulk_send_webhook_for_job( $job );
+		self::call_args( 'wphc_bulk_send_webhook_for_job', array( &$job ) );
 		$first = $this->hook_calls()[0]['args'];
 
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 200, 'ok' );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 
 		$calls = $this->hook_calls();
 		$this->assertCount( 2, $calls );
@@ -764,7 +764,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		$this->assertIsArray( get_option( 'wp_health_check_webhook_pending' ) );
 
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 200, '' );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );
 		$after = $this->bulk_job();
@@ -781,7 +781,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'j1', 'event' => self::EVENT, 'body' => array( 'k' => 'v' ), 'attempts' => 1 ), false );
 
 		// Tentativo 2: fallisce ancora, ripetibile -> nuovo retry a +1800.
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$pending = get_option( 'wp_health_check_webhook_pending' );
 		$this->assertSame( 2, $pending['attempts'] );
 		$this->assertEqualsWithDelta( time() + 1800, wp_next_scheduled( 'wphc_webhook_retry' ), 5 );
@@ -789,7 +789,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 
 		// Tentativo 3: ultimo, pendente cancellato anche se ripetibile.
 		wp_clear_scheduled_hook( 'wphc_webhook_retry' );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );
 		$this->assertFalse( wp_next_scheduled( 'wphc_webhook_retry' ) );
 		$this->assertSame( 3, get_option( 'wp_health_check_webhook_last' )['attempt'] );
@@ -797,7 +797,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		// Errore definitivo al secondo tentativo: pendente cancellato.
 		$this->http_routes[ self::HOOK_URL ] = $this->http_response( 404, '' );
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'j1', 'event' => self::EVENT, 'body' => array(), 'attempts' => 1 ), false );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );
 		$this->assertFalse( wp_next_scheduled( 'wphc_webhook_retry' ) );
 	}
@@ -808,12 +808,12 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	public function test_retry_noop_cases() {
 		$this->enable_webhook( $this->http_response( 200, '' ) );
 
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$this->assertSame( array(), $this->hook_calls(), 'Nessun pendente.' );
 
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'j1', 'event' => self::EVENT, 'body' => array(), 'attempts' => 1 ), false );
 		set_transient( 'wphc_webhook_retry_lock', time(), 300 );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$this->assertSame( array(), $this->hook_calls(), 'Lock di retry attivo.' );
 		$this->assertIsArray( get_option( 'wp_health_check_webhook_pending' ) );
 		$this->assertNotFalse( get_transient( 'wphc_webhook_retry_lock' ), 'Il lock altrui resta.' );
@@ -821,7 +821,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		// Pendente non valido (non array): ignorato.
 		delete_transient( 'wphc_webhook_retry_lock' );
 		update_option( 'wp_health_check_webhook_pending', 'rotto', false );
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 		$this->assertSame( array(), $this->hook_calls() );
 	}
 
@@ -833,7 +833,7 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 		update_option( 'wp_health_check_webhook_pending', array( 'job_id' => 'j1', 'event' => self::EVENT, 'body' => array(), 'attempts' => 1 ), false );
 		update_option( 'wp_health_check_revoked_at', time() );
 
-		wphc_maybe_retry_webhook();
+		$this->run_webhook_retry();
 
 		$this->assertSame( array(), $this->hook_calls() );
 		$this->assertFalse( get_option( 'wp_health_check_webhook_pending' ) );

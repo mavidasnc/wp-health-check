@@ -8,8 +8,8 @@
         "fleet_agent_version": "<AGENT_VERSION>",
         "generated_at": "<ISO8601>",
         "last_access": {
-            "at": "<ISO8601>",
-            "enrolled_at": "<ISO8601>",
+            "at": "2022-03-03T03:03:03+00:00",
+            "enrolled_at": "2024-05-05T10:00:00+00:00",
             "ip": "198.51.100.9"
         },
         "site": "<SITE_URL>",

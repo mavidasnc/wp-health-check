@@ -7,6 +7,11 @@ Percorso (come nella vita di un sito della flotta):
   (con i rifiuti: firma errata, contenuto manomesso, stessa versione, pacchetto non valido)
   -> revoke.
 
+Il file installato e' il PLUGIN SOTTO TEST (e2e_common.plugin_under_test): WPHC_CANDIDATE_FILE se
+impostata (la build del refactoring), altrimenti la baseline 1.38.1 letta da git. Il candidato del
+push e' lo stesso file con la versione successiva (X.Y.Z+1), quindi il self-update positivo
+(backup, rename, sanity check, opcache) lo esegue il CODICE DEL PLUGIN SOTTO TEST, non quello della 1.38.1.
+
 Prima del giro "dal vivo" si controllano, senza rete, le funzioni pure di firma del codice
 vendorizzato contro i vettori di contratto (tests/fixtures/contract-vectors.json, generati
 dal codice dell'hub): se la copia vendorizzata dovesse divergere dall'hub, qui si vede.
@@ -84,14 +89,18 @@ def main() -> int:
 
     offline_vector_checks(report)
 
+    # Il mu-plugin di supporto va installato PRIMA di attendere l'ambiente (la sua rotta /state e' il segnale di pronto).
+    c.install_support_plugin()
     support = c.Support()
     support.wait_ready()
-    baseline = c.baseline_bytes()  # la 1.38.1 vera, letta da git
+    # Il plugin sotto test: WPHC_CANDIDATE_FILE o la baseline 1.38.1 da git. `baseline` resta il nome
+    # del "file iniziale" nei controlli che seguono; la versione si ricava dal file installato.
+    baseline = c.announce_plugin_under_test("hub_contract").contents
     baseline_version = c.plugin_version(baseline.decode("utf-8"))
+    pushed_version = c.next_version(baseline_version)  # versione del candidato del push positivo
 
-    # Stato di partenza: plugin 1.38.1 vero (copia), sito pulito.
-    c.install_support_plugin()
-    c.install_plugin(baseline)
+    # Stato di partenza: plugin sotto test (copia), sito pulito. Installa, invalida opcache e attende che il PHP lo esegua.
+    c.install_and_load(support, baseline)
     support.reset()
     support.webhook(status=200, clear=True)
     hub = c.Hub()
@@ -178,9 +187,11 @@ def main() -> int:
 
     # ------------------------------------------------------------------ push update
     report.section("Push di un aggiornamento firmato (k2 di test)")
-    candidate_text = c.make_candidate(baseline.decode("utf-8"), "1.99.0")
+    # Candidato = il plugin sotto test con la versione successiva (header e costante): il self-update che lo
+    # installa e' quello del plugin sotto test, non quello della 1.38.1.
+    candidate_text = c.make_candidate(baseline.decode("utf-8"), pushed_version)
     candidate = candidate_text.encode("utf-8")
-    tag = "v1.99.0"
+    tag = "v" + pushed_version
     sig = c.sign_release(candidate, tag)
     c.write_release_assets(c.CANDIDATES_DIR / "contract", candidate, sig)
     update_route = "/health-check/v1/update"
@@ -220,8 +231,8 @@ def main() -> int:
     support.clear_throttle()
     status, body = push(c.build_push_package(candidate, sig))
     report.check(
-        "push valido: updated=true da 1.38.1 a 1.99.0, firma verificata, mode=push",
-        status == 200 and body.get("updated") is True and body.get("from") == baseline_version and body.get("to") == "1.99.0" and body.get("signature") == "verified" and body.get("mode") == "push",
+        f"push valido: updated=true da {baseline_version} a {pushed_version}, firma verificata, mode=push",
+        status == 200 and body.get("updated") is True and body.get("from") == baseline_version and body.get("to") == pushed_version and body.get("signature") == "verified" and body.get("mode") == "push",
         str((status, body)),
     )
     report.check("  il file della copia ora e' il candidato (byte per byte)", c.installed_plugin_text().encode("utf-8") == candidate)
@@ -236,10 +247,12 @@ def main() -> int:
     report.check("  /health (da cache) riporta ancora la vecchia agent_version", health["summary"].get("agent_version") == baseline_version, str(health["summary"].get("agent_version")))
     support.clear_throttle()
     fresh = hub.health(fresh=True)
-    report.check("  /health?fresh=1: agent_version = 1.99.0", fresh["status"] == "ok" and fresh["summary"].get("agent_version") == "1.99.0", str(fresh.get("summary", {}).get("agent_version")))
+    report.check(f"  /health?fresh=1: agent_version = {pushed_version}", fresh["status"] == "ok" and fresh["summary"].get("agent_version") == pushed_version, str(fresh.get("summary", {}).get("agent_version")))
     support.clear_throttle()
-    report.check("  /ping: agent_version = 1.99.0", hub.ping().get("agent_version") == "1.99.0")
-    report.check("  il PHP carica la nuova versione", support.state()["loaded_version"] == "1.99.0")
+    report.check(f"  /ping: agent_version = {pushed_version}", hub.ping().get("agent_version") == pushed_version)
+    # Il codice caricato (versione in memoria, sha256 del file incluso, opcache) e' quello scritto dal self-update.
+    loaded = support.state()
+    report.check("  il PHP carica la nuova versione e il file scritto (sha256)", not c.loaded_code_mismatch(loaded, candidate), str(c.loaded_code_mismatch(loaded, candidate)))
 
     support.clear_throttle()
     status, body = push(c.build_push_package(candidate, sig))
@@ -262,7 +275,7 @@ def main() -> int:
     # ------------------------------------------------------------------ pulizia
     support.reset()
     support.webhook(status=200, clear=True)
-    c.install_plugin(baseline)
+    c.install_and_load(support, baseline)
     c.assert_repo_plugin_untouched(initial)
     return report.finish()
 

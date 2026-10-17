@@ -19,6 +19,7 @@
     beStrictAboutTestsThatDoNotTestAnything="true"
     failOnRisky="true"
     failOnWarning="true"
+    failOnSkipped="true"
 >
     <testsuites>
         <testsuite name="wp-health-check">
@@ -43,11 +44,17 @@
         <testsuite name="contract-vectors">
             <file>./tests/test-contract-vectors.php</file>
         </testsuite>
+        <testsuite name="core-auto-update">
+            <file>./tests/test-core-auto-update-state.php</file>
+        </testsuite>
         <testsuite name="cors">
             <file>./tests/test-cors.php</file>
         </testsuite>
         <testsuite name="enroll">
             <file>./tests/test-enroll.php</file>
+        </testsuite>
+        <testsuite name="hook-registry">
+            <file>./tests/test-hook-registry.php</file>
         </testsuite>
         <testsuite name="item-update">
             <file>./tests/test-item-update.php</file>
@@ -58,11 +65,17 @@
         <testsuite name="read-routes">
             <file>./tests/test-read-routes.php</file>
         </testsuite>
+        <testsuite name="refactor-map">
+            <file>./tests/test-refactor-map.php</file>
+        </testsuite>
         <testsuite name="self-update">
             <file>./tests/test-self-update.php</file>
         </testsuite>
         <testsuite name="thumbnail">
             <file>./tests/test-thumbnail.php</file>
+        </testsuite>
+        <testsuite name="throttle">
+            <file>./tests/test-throttle-double-dispatch.php</file>
         </testsuite>
         <testsuite name="update-log">
             <file>./tests/test-update-log.php</file>

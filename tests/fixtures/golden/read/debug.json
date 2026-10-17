@@ -20,7 +20,7 @@
         "health_plugins_updates": 1,
         "update_plugins_filtered": {
             "exists": true,
-            "last_checked": "<ISO8601>",
+            "last_checked": "2023-11-14T22:13:20+00:00",
             "response_count": 1,
             "response_slugs": [
                 "pre/pre.php"

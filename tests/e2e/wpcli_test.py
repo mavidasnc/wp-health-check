@@ -13,6 +13,10 @@ Uso (con l'ambiente e2e acceso):
     python -I tests/e2e/wpcli_test.py [--update-fixture]
 
 Il comando docker exec usa il container cli dell'ambiente e2e (mai quelli degli altri progetti).
+
+Il file installato e' il PLUGIN SOTTO TEST (e2e_common.plugin_under_test): WPHC_CANDIDATE_FILE se
+impostata, altrimenti la baseline 1.38.1 da git. Con la build del refactoring questo script prova
+quindi che i docblock (letti da WP-CLI via reflection) e i comandi sono rimasti identici.
 """
 import argparse
 import hashlib
@@ -41,13 +45,14 @@ def main() -> int:
     report = c.Report("wpcli_test")
     initial = c.repo_plugin_fingerprint()
     c.check_config_matches_test_keys()
+    c.install_support_plugin()
     support = c.Support()
     support.wait_ready()
 
-    baseline = c.baseline_bytes()
-    version = c.plugin_version(baseline.decode("utf-8"))
-    c.install_support_plugin()
-    c.install_plugin(baseline)
+    # Plugin sotto test (candidato o baseline); la versione attesa dallo status si ricava dal file installato.
+    under_test = c.announce_plugin_under_test("wpcli_test").contents
+    version = c.plugin_version(under_test.decode("utf-8"))
+    c.install_and_load(support, under_test)
     support.reset()
     hub = c.Hub()
 

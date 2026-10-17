@@ -4,6 +4,8 @@
 
 # wp-env (Docker/wp-cli scaffolding locale)
 .wp-env.override.json
+# Override locale dell'ambiente e2e (porte, versione di PHP): non va committato
+.wp-env.e2e.override.json
 
 # Cache di PHPUnit e vendor dedicato alla matrice PHP 7.4 (vedi tests/README.md)
 .phpunit.result.cache

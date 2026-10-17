@@ -1,4 +1,9 @@
 {
+    "ajax_actions": [
+        "wphc_test_endpoint",
+        "wphc_view_log",
+        "wphc_reveal_secret"
+    ],
     "buttons": [
         "health GET /health",
         "health_fresh GET /health?fresh=1",
@@ -42,8 +47,8 @@
             "fields": [
                 "input:hidden:_wpnonce",
                 "input:hidden:_wp_http_referer",
-                "input:checkbox:wphc_updates_enabled",
-                "input:checkbox:wphc_restrict_official_only",
+                "input:checkbox:wphc_updates_enabled:checked",
+                "input:checkbox:wphc_restrict_official_only:unchecked",
                 "input:submit:submit:Salva"
             ],
             "hidden_action": "wphc_toggle_updates",
@@ -55,7 +60,7 @@
                 "input:hidden:_wpnonce",
                 "input:hidden:_wp_http_referer",
                 "input:url:wphc_webhook_url",
-                "input:checkbox:wphc_webhook_disabled",
+                "input:checkbox:wphc_webhook_disabled:unchecked",
                 "input:submit:submit:Salva"
             ],
             "hidden_action": "wphc_save_webhook",
@@ -132,6 +137,10 @@
         "_wpnonce",
         "submit"
     ],
+    "nonce_actions": {
+        "wphc-endpoint-tester": "wphc_test_endpoint",
+        "wphc-log-viewer": "wphc_view_log"
+    },
     "notices": [],
     "rows": [
         "Versione plugin installata",

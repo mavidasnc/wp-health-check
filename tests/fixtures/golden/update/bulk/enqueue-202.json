@@ -1,7 +1,7 @@
 {
     "body": {
         "accepted": true,
-        "cron_disabled": true,
+        "cron_disabled": "<ENV:boolean>",
         "job_id": "<HEX>",
         "poll": "<POLL>",
         "rejected": [],

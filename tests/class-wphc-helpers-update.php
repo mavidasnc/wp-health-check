@@ -18,10 +18,15 @@
  * @package WP_Health_Check
  */
 
+require_once __DIR__ . '/trait-wphc-plugin-file-guard.php';
+
 /**
  * Base dei test di update/bulk/webhook: enrolled con bearer, rete mockata, guardia sul plugin.
  */
 abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
+
+	// Guardia per-test sul file del plugin sotto test (ripristino + ripulitura dei soli residui del test).
+	use WPHC_Plugin_File_Guard;
 
 	/** Token (bearer) del sito di test: protocol 1, basta l'header Authorization. */
 	const TOKEN = 'tok-upd-test';
@@ -44,13 +49,6 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	/** Quarto fixture (riattivazione fallita nel test del log). */
 	const FIXTURE_D_DIR  = 'wphc-fixture-d';
 	const FIXTURE_D_FILE = 'wphc-fixture-d/wphc-fixture-d.php';
-
-	/**
-	 * Byte del plugin reale all'inizio del test (per la guardia).
-	 *
-	 * @var string
-	 */
-	private $plugin_bytes = '';
 
 	/**
 	 * Risposte HTTP finte: URL => risposta (array WP, WP_Error o callable).
@@ -107,8 +105,8 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 		// lancia direttamente l'hook, da solo, altrimenti fallirebbe a seconda dell'ordine di esecuzione.
 		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
 
-		// Guardia: i byte del plugin reale prima del test (vedi tear_down).
-		$this->plugin_bytes = (string) file_get_contents( WPHC_PLUGIN_FILE ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
+		// Guardia sul file del plugin sotto test (vedi tear_down e il trait WPHC_Plugin_File_Guard).
+		$this->plugin_guard_arm();
 
 		// Sito enrolled con protocol 1 (basta il bearer).
 		$this->seed_enrolled( self::TOKEN, 1 );
@@ -132,8 +130,8 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	}
 
 	/**
-	 * Chiude il test. GUARDIA: se i byte del plugin reale sono cambiati li ripristina, ripulisce
-	 * i .bak/.tmp di mu-plugins e fa fallire il test ad alta voce.
+	 * Chiude il test. GUARDIA (trait WPHC_Plugin_File_Guard): se i byte del plugin sotto test sono cambiati li
+	 * ripristina, ripulisce i soli .bak/.tmp creati dal test e fa fallire il test ad alta voce.
 	 */
 	public function tear_down() {
 		// Chiude gli output buffer lasciati aperti dagli upgrader del core.
@@ -148,48 +146,12 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 		}
 		$this->tmp_files = array();
 
-		$current   = (string) file_get_contents( WPHC_PLUGIN_FILE ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents
-		$tampered  = ( $current !== $this->plugin_bytes );
-		$leftovers = $this->stray_plugin_files();
-
-		if ( $tampered ) {
-			// Ripristino prima di ogni altra cosa: il test e' comunque fallito.
-			file_put_contents( WPHC_PLUGIN_FILE, $this->plugin_bytes ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-		}
-		foreach ( $leftovers as $file ) {
-			if ( is_file( $file ) ) {
-				@unlink( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink, WordPress.PHP.NoSilencedErrors.Discouraged
-			}
-		}
+		// Ripristino e ripulitura PRIMA del tear_down della classe base; il fallimento DOPO.
+		$problems = $this->plugin_guard_release();
 
 		parent::tear_down();
 
-		if ( $tampered ) {
-			$this->fail( 'GUARDIA: il test ha modificato il file reale del plugin (ripristinato).' );
-		}
-		if ( array() !== $leftovers ) {
-			$this->fail( 'GUARDIA: file inattesi in mu-plugins (rimossi): ' . implode( ', ', $leftovers ) );
-		}
-	}
-
-	/**
-	 * File .bak / .wphc-new-*.tmp nella cartella del plugin e in WPMU_PLUGIN_DIR.
-	 *
-	 * @return string[]
-	 */
-	private function stray_plugin_files() {
-		$found = array();
-		$dirs  = array_unique( array( dirname( WPHC_PLUGIN_FILE ), rtrim( WPMU_PLUGIN_DIR, '/\\' ) ) );
-		foreach ( $dirs as $dir ) {
-			foreach ( array( '*.bak', '.wphc-new-*.tmp' ) as $pattern ) {
-				$matches = glob( $dir . '/' . $pattern );
-				if ( is_array( $matches ) ) {
-					$found = array_merge( $found, $matches );
-				}
-			}
-		}
-
-		return $found;
+		$this->plugin_guard_assert( $problems );
 	}
 
 	/**
@@ -750,7 +712,7 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	 */
 	protected function max_log_id() {
 		global $wpdb;
-		$table = wphc_update_log_table();
+		$table = self::call( 'wphc_update_log_table' );
 
 		return (int) $wpdb->get_var( "SELECT MAX(id) FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 	}
@@ -763,7 +725,7 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	 */
 	protected function log_rows( $where = '1=1' ) {
 		global $wpdb;
-		$table = wphc_update_log_table();
+		$table = self::call( 'wphc_update_log_table' );
 
 		return (array) $wpdb->get_results( $wpdb->prepare( "SELECT * FROM {$table} WHERE id > %d AND ({$where}) ORDER BY id ASC", $this->log_baseline ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 	}
@@ -794,8 +756,9 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	 * @param string           $name           Nome del golden (sotto golden/).
 	 * @param WP_REST_Response $response       Risposta.
 	 * @param array            $options_before Option prima della richiesta.
+	 * @param string[]         $env_paths      Percorsi (notazione a punti nello snapshot) da rendere indipendenti dall'ambiente.
 	 */
-	protected function assert_update_golden( $name, WP_REST_Response $response, array $options_before ) {
+	protected function assert_update_golden( $name, WP_REST_Response $response, array $options_before, array $env_paths = array() ) {
 		// "Ultimo accesso": e' un timestamp ISO al secondo, scritto da ogni richiesta autenticata. Se il test ha
 		// gia' fatto un'altra richiesta nello stesso secondo il valore non cambia e l'option non risulta
 		// "scritta", altrimenti si': il golden dipenderebbe dal secondo in cui gira. Lo si esclude (la scrittura
@@ -804,29 +767,40 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 		unset( $options_before['wp_health_check_last_request_at'], $options_after['wp_health_check_last_request_at'] );
 
 		$snapshot = WPHC_Golden::capture( $response, $options_before, $options_after );
+		// Valori che dipendono dall'ambiente (es. DISABLE_WP_CRON): restano `<ENV:tipo>`, cioe' conta solo il tipo.
+		foreach ( $env_paths as $path ) {
+			$snapshot = WPHC_Golden::mask_path( $snapshot, explode( '.', $path ) );
+		}
 		WPHC_Golden::assert_matches( $this, $name, self::scrub( $snapshot ) );
 	}
 
 	/**
-	 * Sostituisce ricorsivamente gli interi di 'log_id', 'duration_ms', 'id' e gli elementi di 'correlations'.
+	 * Sostituisce ricorsivamente gli interi di 'log_id', 'duration_ms' e gli elementi di 'correlations', e
+	 * l'`id` SOLO delle voci di `entries[*]` (le righe della tabella di log, AUTO_INCREMENT): un `id` in un
+	 * altro punto dello snapshot non e' volatile e resta visibile.
 	 *
-	 * @param mixed $value Valore.
+	 * @param mixed    $value  Valore.
+	 * @param string[] $parent Percorso del nodo corrente (chiavi dalla radice), per riconoscere `entries[*].id`.
 	 * @return mixed
 	 */
-	public static function scrub( $value ) {
+	public static function scrub( $value, array $parent = array() ) {
 		if ( ! is_array( $value ) ) {
 			return $value;
 		}
-		$out = array();
+		// L'`id` e' volatile solo dentro entries[N]: il nodo padre e' un elemento di una lista chiamata `entries`.
+		$in_entries = count( $parent ) >= 2 && 'entries' === $parent[ count( $parent ) - 2 ];
+		$out        = array();
 		foreach ( $value as $key => $item ) {
-			if ( in_array( $key, array( 'log_id', 'id' ), true ) && is_int( $item ) ) {
+			if ( 'log_id' === $key && is_int( $item ) ) {
+				$out[ $key ] = '<LOG_ID>';
+			} elseif ( 'id' === $key && is_int( $item ) && $in_entries ) {
 				$out[ $key ] = '<LOG_ID>';
 			} elseif ( 'duration_ms' === $key && is_int( $item ) ) {
 				$out[ $key ] = '<MS>';
 			} elseif ( 'correlations' === $key && is_array( $item ) ) {
 				$out[ $key ] = array_fill( 0, count( $item ), '<LOG_ID>' );
 			} else {
-				$out[ $key ] = self::scrub( $item );
+				$out[ $key ] = self::scrub( $item, array_merge( $parent, array( (string) $key ) ) );
 			}
 		}
 
@@ -843,19 +817,32 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 	 * @return array|null
 	 */
 	protected function bulk_job() {
-		return wphc_bulk_get_job( true );
+		return self::call( 'wphc_bulk_get_job', true );
 	}
 
 	/**
-	 * Esegue un tick del drain simulando il contesto WP-Cron (niente scrittura di "ultimo accesso") e
+	 * Esegue un tick del drain come farebbe WP-Cron: si lancia l'AZIONE `wphc_bulk_update_tick` (non la
+	 * funzione per nome), cosi' il test prova anche che l'hook e' registrato e non dipende dal nome della
+	 * funzione che il refactoring sposta. Simula il contesto WP-Cron (niente scrittura di "ultimo accesso") e
 	 * il fatto che WP-Cron toglie l'evento singolo prima di lanciarlo (altrimenti l'evento di
 	 * accodamento, ancora pianificato, impedirebbe al tick di pianificare il successivo).
 	 */
 	protected function run_tick() {
+		// Il callback del tick deve essere agganciato all'hook cron, con priorita' 10.
+		$this->assertSame( 10, has_action( 'wphc_bulk_update_tick', self::cb( 'wphc_bulk_run_tick' ) ), 'il tick del bulk non risulta agganciato a wphc_bulk_update_tick' );
 		wp_clear_scheduled_hook( 'wphc_bulk_update_tick' );
 		add_filter( 'wp_doing_cron', '__return_true' );
-		wphc_bulk_run_tick();
+		do_action( 'wphc_bulk_update_tick' );
 		remove_filter( 'wp_doing_cron', '__return_true' );
+	}
+
+	/**
+	 * Lancia l'evento cron del retry del webhook (`wphc_webhook_retry`) invece di chiamare la funzione per nome,
+	 * dopo aver verificato che il callback sia agganciato all'hook (priorita' 10).
+	 */
+	protected function run_webhook_retry() {
+		$this->assertSame( 10, has_action( 'wphc_webhook_retry', self::cb( 'wphc_maybe_retry_webhook' ) ), 'il retry del webhook non risulta agganciato a wphc_webhook_retry' );
+		do_action( 'wphc_webhook_retry' );
 	}
 
 	/**
@@ -868,7 +855,7 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 				$job['items'][ $index ]['next_after'] = 0;
 			}
 		}
-		wphc_bulk_save_job( $job );
+		self::call( 'wphc_bulk_save_job', $job );
 	}
 
 	/**

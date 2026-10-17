@@ -415,25 +415,14 @@ namespace {
 		}
 
 		/**
-		 * Sostituisce con `<ENV:tipo>` il valore a un percorso (errore se il percorso non esiste:
-		 * una chiave rinominata nel plugin deve far fallire il test, non passare in silenzio).
+		 * Sostituisce con `<ENV:tipo>` il valore a un percorso (implementazione in WPHC_Golden::mask_path()).
 		 *
 		 * @param array    $data    Dati.
 		 * @param string[] $segments Segmenti del percorso.
 		 * @return array
 		 */
 		protected static function mask_path( array $data, array $segments ) {
-			$key = array_shift( $segments );
-			if ( ! array_key_exists( $key, $data ) ) {
-				throw new RuntimeException( "Percorso golden inesistente: {$key}" );
-			}
-			if ( array() === $segments ) {
-				$data[ $key ] = '<ENV:' . gettype( $data[ $key ] ) . '>';
-			} else {
-				$data[ $key ] = self::mask_path( (array) $data[ $key ], $segments );
-			}
-
-			return $data;
+			return WPHC_Golden::mask_path( $data, $segments );
 		}
 
 		/**
@@ -493,6 +482,18 @@ namespace {
 				$source = preg_replace( '/^\s*(?:(?:public|private|protected|static|final)\s+)*function\s+\w+\s*\(/', 'function maybe_send_cors_headers(', $source, 1, $count );
 				if ( 1 !== $count ) {
 					throw new RuntimeException( 'Firma della funzione CORS non riconosciuta: aggiornare WPHC_Read_Test_Case::capture_cors().' );
+				}
+				// Un fatal dentro eval() abbatte l'intera suite (nessun test successivo gira): prima di eseguire si
+				// controlla che il sorgente sia autosufficiente. Dentro il namespace spia `self::`, `static::`,
+				// `parent::` e `$this` non risolverebbero (e le classi non qualificate neppure): il metodo del
+				// refactoring va scritto con nomi qualificati (`\WPHC_Options::...`) o con letterali.
+				if ( 1 === preg_match( '/\b(self|static|parent)::|\$this\b/', $source ) ) {
+					throw new RuntimeException( 'Il corpo della funzione CORS usa self::/static::/parent:: o $this: non e\' eseguibile nel namespace spia (WPHC_Cors_Spy). Qualificare i riferimenti con il backslash iniziale o adattare capture_cors().' );
+				}
+				// Plausibilita': l'estrazione dalle righe del file deve aver preso TUTTO il corpo (almeno cinque
+				// header_remove( e quattro header( ), altrimenti i test passerebbero su una funzione tagliata.
+				if ( substr_count( $source, 'header_remove(' ) < 5 || preg_match_all( '/(?<![\w])header\(/', $source ) < 4 ) {
+					throw new RuntimeException( 'Il sorgente estratto della funzione CORS non contiene almeno cinque header_remove( e quattro header( : estrazione incompleta, aggiornare capture_cors().' );
 				}
 				eval( 'namespace WPHC_Cors_Spy; ' . $source ); // phpcs:ignore Squiz.PHP.Eval.Discouraged -- vedi il docblock: esegue il sorgente reale con header() sostituito.
 			}

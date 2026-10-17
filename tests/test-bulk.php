@@ -35,7 +35,8 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		parent::set_up();
 
 		if ( ! isset( get_plugins()[ self::PLUGIN ] ) ) {
-			$this->markTestSkipped( 'Serve il plugin hello.php del container wp-env.' );
+			// Un test saltato svuota il gate (il refactoring sembrerebbe verde senza provare nulla): si fallisce.
+			$this->fail( 'Serve il plugin hello.php del container wp-env.' );
 		}
 	}
 
@@ -47,7 +48,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	private function mutate_job( callable $mutator ) {
 		$job = $this->bulk_job();
 		call_user_func_array( $mutator, array( &$job ) );
-		wphc_bulk_save_job( $job );
+		self::call( 'wphc_bulk_save_job', $job );
 	}
 
 	/**
@@ -162,7 +163,8 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 
 		// Golden: il documento del job e il riassunto, con la risposta (URL di poll dipendenti dall'ambiente).
 		$response->set_data( array_merge( $data, array( 'poll' => '<POLL>' ) ) );
-		$this->assert_update_golden( 'update/bulk/enqueue-202', $response, $before );
+		// `cron_disabled` dipende da DISABLE_WP_CRON dell'ambiente (wp-env no, e2e si): si fissa solo il tipo (bool).
+		$this->assert_update_golden( 'update/bulk/enqueue-202', $response, $before, array( 'body.cron_disabled' ) );
 	}
 
 	/**
@@ -221,7 +223,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		$this->assertSame( 'core', $item['target'] );
 		$this->assertSame( 'WordPress', $item['name'] );
 		$response->set_data( array_merge( $response->get_data(), array( 'poll' => '<POLL>' ) ) );
-		$this->assert_update_golden( 'update/bulk/enqueue-core', $response, $before );
+		$this->assert_update_golden( 'update/bulk/enqueue-core', $response, $before, array( 'body.cron_disabled' ) );
 	}
 
 	/**
@@ -521,7 +523,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 * @param string|null $error    Errore atteso.
 	 */
 	public function test_normalize_items( $raw, array $items, array $rejected, $error ) {
-		$result = wphc_bulk_normalize_items( $raw );
+		$result = self::call( 'wphc_bulk_normalize_items', $raw );
 
 		$this->assertSame( $error, $result['error'] );
 		$this->assertSame( $rejected, $result['rejected'] );
@@ -553,7 +555,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 			$plugins[] = "p{$i}/p{$i}.php";
 		}
 		$plugins[] = 'p1/p1.php'; // Duplicato: scartato in silenzio, non rifiutato.
-		$result    = wphc_bulk_normalize_items( array( 'plugins' => $plugins ) );
+		$result    = self::call( 'wphc_bulk_normalize_items', array( 'plugins' => $plugins ) );
 
 		$this->assertSame( 100, WP_HEALTH_CHECK_BULK_MAX_ITEMS );
 		$this->assertCount( 100, $result['items'] );
@@ -752,7 +754,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 				// Un elemento gia' concluso resta com'e'.
 				$job['items'][0]['state']  = 'done';
 				$job['items'][0]['result'] = 'up_to_date';
-				wphc_bulk_recount( $job );
+				self::call_args( 'wphc_bulk_recount', array( &$job ) );
 			}
 		);
 
@@ -873,7 +875,9 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 			$this->assertSame( $attempt, $item['attempts'] );
 			$this->assertSame( 'rolled_back', $item['result'] );
 			$this->assertEqualsWithDelta( time() + $expected_backoff[ $attempt - 1 ], $item['next_after'], 5 );
-			$this->assertNotNull( $item['last_error'] );
+			// PRESERVATO: l'errore dell'upgrader si perde (vedi test-item-update.php, rolled_back del plugin): il
+			// dettaglio che arriva in last_error e' il messaggio generico della verifica post-aggiornamento.
+			$this->assertSame( 'Verifica post-aggiornamento fallita.', $item['last_error'] );
 			$this->assertNull( $item['finished_ts'] );
 			$this->assertGreaterThanOrEqual( $item['next_after'] - 900 - 5, $job['next_run_ts'] );
 
@@ -1020,6 +1024,8 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		$this->assertSame( 'pending', $item['state'] );
 		$this->assertSame( 'rolled_back', $item['result'] );
 		$this->assertSame( 1, $item['attempts'] );
+		// Ramo core: l'errore del Core_Upgrader (WP_Error con il messaggio del download) SI conserva (PRESERVATO).
+		$this->assertSame( 'download mock fallito', $item['last_error'] );
 		$rows = $this->log_rows();
 		$this->assertSame( 'core', $rows[0]['type'] );
 		$this->assertSame( 'cron', $rows[0]['source'] );
@@ -1066,10 +1072,10 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		$this->assertNotFalse( get_transient( 'wp_health_check_bulk_lock' ), 'Il mutex altrui non viene rilasciato.' );
 
 		delete_transient( 'wp_health_check_bulk_lock' );
-		$this->assertTrue( wphc_bulk_acquire_lock() );
-		$this->assertFalse( wphc_bulk_acquire_lock() );
+		$this->assertTrue( self::call( 'wphc_bulk_acquire_lock' ) );
+		$this->assertFalse( self::call( 'wphc_bulk_acquire_lock' ) );
 		$this->assertEqualsWithDelta( time() + 300, (int) get_option( '_transient_timeout_wp_health_check_bulk_lock' ), 5 );
-		wphc_bulk_release_lock();
+		self::call( 'wphc_bulk_release_lock' );
 		$this->assertFalse( get_transient( 'wp_health_check_bulk_lock' ) );
 	}
 
@@ -1117,7 +1123,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 			''                       => 'retry',
 		);
 		foreach ( $map as $result => $class ) {
-			$this->assertSame( $class, wphc_bulk_classify_result( $result ), "'{$result}'" );
+			$this->assertSame( $class, self::call( 'wphc_bulk_classify_result', $result ), "'{$result}'" );
 		}
 	}
 
@@ -1128,7 +1134,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		$this->assertSame( array( 0, 60, 300, 900 ), WP_HEALTH_CHECK_BULK_BACKOFF );
 		$this->assertSame( 4, WP_HEALTH_CHECK_BULK_MAX_ATTEMPTS );
 		foreach ( array( -3 => 0, 0 => 0, 1 => 60, 2 => 300, 3 => 900, 4 => 900, 50 => 900 ) as $attempts => $seconds ) {
-			$this->assertSame( $seconds, wphc_bulk_backoff_for_attempt( $attempts ), "tentativo {$attempts}" );
+			$this->assertSame( $seconds, self::call( 'wphc_bulk_backoff_for_attempt', $attempts ), "tentativo {$attempts}" );
 		}
 	}
 
@@ -1136,48 +1142,48 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 * wphc_bulk_apply_outcome(): effetto di ogni classe di esito sull'elemento e sui contatori.
 	 */
 	public function test_apply_outcome_per_class() {
-		$normalized = wphc_bulk_normalize_items( array( 'plugins' => array( 'a/a.php', 'b/b.php', 'c/c.php', 'd/d.php', 'e/e.php' ) ) );
+		$normalized = self::call( 'wphc_bulk_normalize_items', array( 'plugins' => array( 'a/a.php', 'b/b.php', 'c/c.php', 'd/d.php', 'e/e.php' ) ) );
 		$job        = array(
 			'status'       => 'running',
 			'abort_reason' => null,
 			'finished_ts'  => null,
 			'items'        => $normalized['items'],
 		);
-		wphc_bulk_recount( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
 
 		// 0: successo con from/to, nome e log_id.
-		wphc_bulk_apply_outcome( $job, 0, array( 'result' => 'updated', 'name' => 'A', 'from' => '1', 'to' => '2', 'log_id' => 11 ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 0, array( 'result' => 'updated', 'name' => 'A', 'from' => '1', 'to' => '2', 'log_id' => 11 ) ) );
 		$this->assertSame( 'done', $job['items'][0]['state'] );
 		$this->assertSame( array( 'A', '1', '2', 11, array( 11 ) ), array( $job['items'][0]['name'], $job['items'][0]['from'], $job['items'][0]['to'], $job['items'][0]['log_id'], $job['items'][0]['correlations'] ) );
 		$this->assertSame( 1, $job['counters']['updated'] );
 
 		// 1: noop con current/latest al posto di from/to.
-		wphc_bulk_apply_outcome( $job, 1, array( 'result' => 'up_to_date', 'current' => '5' ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 1, array( 'result' => 'up_to_date', 'current' => '5' ) ) );
 		$this->assertSame( '5', $job['items'][1]['from'] );
 		$this->assertNull( $job['items'][1]['to'] );
-		wphc_bulk_apply_outcome( $job, 1, array( 'result' => 'up_to_date', 'latest' => '6' ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 1, array( 'result' => 'up_to_date', 'latest' => '6' ) ) );
 		$this->assertSame( '6', $job['items'][1]['to'] );
 		$this->assertSame( 1, $job['counters']['skipped'] );
 
 		// 2: warning (reactivation_failed) -> done, conta come 'warnings'.
-		wphc_bulk_apply_outcome( $job, 2, array( 'result' => 'reactivation_failed', 'detail' => str_repeat( 'x', 300 ) ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 2, array( 'result' => 'reactivation_failed', 'detail' => str_repeat( 'x', 300 ) ) ) );
 		$this->assertSame( 'done', $job['items'][2]['state'] );
 		$this->assertSame( 1, $job['counters']['warnings'] );
 		$this->assertSame( 200, strlen( $job['items'][2]['last_error'] ), 'Il dettaglio e\' troncato a 200 caratteri.' );
 
 		// 3: retry -> pending con attempts 1 e backoff 60.
-		wphc_bulk_apply_outcome( $job, 3, array( 'result' => 'failed' ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 3, array( 'result' => 'failed' ) ) );
 		$this->assertSame( 'pending', $job['items'][3]['state'] );
 		$this->assertSame( 1, $job['items'][3]['attempts'] );
 		$this->assertEqualsWithDelta( time() + 60, $job['items'][3]['next_after'], 5 );
 
 		// Senza 'result' l'esito vale 'failed' (retry).
-		wphc_bulk_apply_outcome( $job, 4, array() );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 4, array() ) );
 		$this->assertSame( 'failed', $job['items'][4]['result'] );
 		$this->assertSame( 1, $job['items'][4]['attempts'] );
 
 		// log_id falsy non e' registrato.
-		wphc_bulk_apply_outcome( $job, 4, array( 'result' => 'failed', 'log_id' => 0 ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 4, array( 'result' => 'failed', 'log_id' => 0 ) ) );
 		$this->assertNull( $job['items'][4]['log_id'] );
 		$this->assertSame( array(), $job['items'][4]['correlations'] );
 	}
@@ -1186,24 +1192,24 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 * Un elemento in errore dopo 4 tentativi; un job_fatal abortisce e rende 'error' i pendenti.
 	 */
 	public function test_apply_outcome_exhaustion_and_job_fatal() {
-		$normalized = wphc_bulk_normalize_items( array( 'plugins' => array( 'a/a.php', 'b/b.php' ) ) );
+		$normalized = self::call( 'wphc_bulk_normalize_items', array( 'plugins' => array( 'a/a.php', 'b/b.php' ) ) );
 		$job        = array(
 			'status'       => 'running',
 			'abort_reason' => null,
 			'finished_ts'  => null,
 			'items'        => $normalized['items'],
 		);
-		wphc_bulk_recount( $job );
+		self::call_args( 'wphc_bulk_recount', array( &$job ) );
 
 		for ( $i = 0; $i < 3; $i++ ) {
-			wphc_bulk_apply_outcome( $job, 0, array( 'result' => 'rolled_back' ) );
+			self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 0, array( 'result' => 'rolled_back' ) ) );
 			$this->assertSame( 'pending', $job['items'][0]['state'] );
 		}
-		wphc_bulk_apply_outcome( $job, 0, array( 'result' => 'rolled_back' ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 0, array( 'result' => 'rolled_back' ) ) );
 		$this->assertSame( 'error', $job['items'][0]['state'] );
 		$this->assertNotNull( $job['items'][0]['finished_ts'] );
 
-		wphc_bulk_apply_outcome( $job, 1, array( 'result' => 'unsupported_wp_version' ) );
+		self::call_args( 'wphc_bulk_apply_outcome', array( &$job, 1, array( 'result' => 'unsupported_wp_version' ) ) );
 		$this->assertSame( 'aborted', $job['status'] );
 		$this->assertSame( 'unsupported_wp_version', $job['abort_reason'] );
 		$this->assertSame( 'error', $job['items'][1]['state'] );
@@ -1215,29 +1221,29 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 * Istante di "stallo": calcolato dal claim dell'elemento in corso (con la soglia del suo tipo) oppure da next_run_ts.
 	 */
 	public function test_stall_after_computation() {
-		$plugin = wphc_bulk_new_item( 'plugin', 'a/a.php' );
-		$core   = wphc_bulk_new_item( 'core', 'core' );
+		$plugin = self::call( 'wphc_bulk_new_item', 'plugin', 'a/a.php' );
+		$core   = self::call( 'wphc_bulk_new_item', 'core', 'core' );
 
 		$job = array(
 			'next_run_ts' => 1000,
 			'items'       => array( $plugin ),
 		);
-		$this->assertSame( 1000 + 600, wphc_bulk_compute_stall_after_ts( $job ) );
+		$this->assertSame( 1000 + 600, self::call( 'wphc_bulk_compute_stall_after_ts', $job ) );
 
 		$plugin['state']      = 'running';
 		$plugin['claimed_ts'] = 2000;
 		$job['items']         = array( $plugin );
-		$this->assertSame( 2000 + 600 + 600, wphc_bulk_compute_stall_after_ts( $job ) );
+		$this->assertSame( 2000 + 600 + 600, self::call( 'wphc_bulk_compute_stall_after_ts', $job ) );
 
 		$core['state']      = 'running';
 		$core['claimed_ts'] = 2000;
 		$job['items']       = array( $core );
-		$this->assertSame( 2000 + 1800 + 600, wphc_bulk_compute_stall_after_ts( $job ) );
+		$this->assertSame( 2000 + 1800 + 600, self::call( 'wphc_bulk_compute_stall_after_ts', $job ) );
 
 		// 'running' senza claim: formula generica.
 		$plugin['claimed_ts'] = null;
 		$job['items']         = array( $plugin );
-		$this->assertSame( 1000 + 600, wphc_bulk_compute_stall_after_ts( $job ) );
+		$this->assertSame( 1000 + 600, self::call( 'wphc_bulk_compute_stall_after_ts', $job ) );
 	}
 
 	/**
@@ -1245,28 +1251,28 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 */
 	public function test_next_delay() {
 		$now = time();
-		$a   = wphc_bulk_new_item( 'plugin', 'a/a.php' );
-		$b   = wphc_bulk_new_item( 'plugin', 'b/b.php' );
+		$a   = self::call( 'wphc_bulk_new_item', 'plugin', 'a/a.php' );
+		$b   = self::call( 'wphc_bulk_new_item', 'plugin', 'b/b.php' );
 
-		$this->assertSame( 30, wphc_bulk_next_delay( array( 'items' => array() ) ), 'Nessun pendente.' );
+		$this->assertSame( 30, self::call( 'wphc_bulk_next_delay', array( 'items' => array() ) ), 'Nessun pendente.' );
 		$a['next_after'] = $now + 300;
 		$b['next_after'] = $now + 900;
-		$delay           = wphc_bulk_next_delay( array( 'items' => array( $a, $b ) ) );
+		$delay           = self::call( 'wphc_bulk_next_delay', array( 'items' => array( $a, $b ) ) );
 		$this->assertEqualsWithDelta( 300, $delay, 2 );
 		$a['next_after'] = $now - 100;
-		$this->assertSame( 30, wphc_bulk_next_delay( array( 'items' => array( $a, $b ) ) ), 'Backoff gia\' scaduto: ritardo minimo.' );
+		$this->assertSame( 30, self::call( 'wphc_bulk_next_delay', array( 'items' => array( $a, $b ) ) ), 'Backoff gia\' scaduto: ritardo minimo.' );
 		$a['state'] = 'done';
-		$this->assertEqualsWithDelta( 900, wphc_bulk_next_delay( array( 'items' => array( $a, $b ) ) ), 2, 'Solo i pendenti contano.' );
+		$this->assertEqualsWithDelta( 900, self::call( 'wphc_bulk_next_delay', array( 'items' => array( $a, $b ) ) ), 2, 'Solo i pendenti contano.' );
 	}
 
 	/**
 	 * Riassunto per /health: forma, "stalled" derivato a lettura, fallback senza stall_after_ts.
 	 */
 	public function test_bulk_summary() {
-		$this->assertNull( wphc_bulk_summary() );
+		$this->assertNull( self::call( 'wphc_bulk_summary' ) );
 
 		$this->enqueue_bulk( array( 'plugins' => array( self::PLUGIN ) ) );
-		$summary = wphc_bulk_summary();
+		$summary = self::call( 'wphc_bulk_summary' );
 		$this->assertSame(
 			array( 'job_id', 'status', 'total', 'done', 'updated', 'skipped', 'warnings', 'failed', 'created_at', 'finished_at', 'next_run_at', 'stalled', 'abort_reason' ),
 			array_keys( $summary )
@@ -1279,12 +1285,12 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		$status['next_run_ts'] = time() - WP_HEALTH_CHECK_BULK_STALL_GRACE - 10;
 		unset( $status['stall_after_ts'] );
 		update_option( 'wp_health_check_bulk_status', $status, true );
-		$this->assertTrue( wphc_bulk_summary()['stalled'] );
+		$this->assertTrue( self::call( 'wphc_bulk_summary' )['stalled'] );
 
 		// Un job terminato non e' mai "stalled".
 		$status['status'] = 'completed';
 		update_option( 'wp_health_check_bulk_status', $status, true );
-		$this->assertFalse( wphc_bulk_summary()['stalled'] );
+		$this->assertFalse( self::call( 'wphc_bulk_summary' )['stalled'] );
 	}
 
 	// -----------------------------------------------------------------------
@@ -1295,24 +1301,24 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 * Hook registrati e pianificazione di eventi SINGOLI senza duplicati.
 	 */
 	public function test_cron_hooks_and_single_event_scheduling() {
-		$this->assertSame( 10, has_action( 'wphc_bulk_update_tick', 'wphc_bulk_run_tick' ) );
-		$this->assertSame( 10, has_action( 'init', 'wphc_bulk_maybe_rearm' ) );
-		$this->assertSame( 10, has_action( 'wphc_webhook_retry', 'wphc_maybe_retry_webhook' ) );
+		$this->assert_hooked( 'wphc_bulk_update_tick', self::cb( 'wphc_bulk_run_tick' ), 10, 1 );
+		$this->assert_hooked( 'init', self::cb( 'wphc_bulk_maybe_rearm' ), 10, 1 );
+		$this->assert_hooked( 'wphc_webhook_retry', self::cb( 'wphc_maybe_retry_webhook' ), 10, 1 );
 
 		$this->clear_plugin_cron();
-		$when = wphc_bulk_schedule_tick( 100 );
+		$when = self::call( 'wphc_bulk_schedule_tick', 100 );
 		$this->assertEqualsWithDelta( time() + 100, $when, 2 );
 		$this->assertSame( $when, wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 		$this->assertFalse( wp_get_scheduled_event( 'wphc_bulk_update_tick' )->schedule );
 
 		// Un secondo schedule non duplica l'evento (resta il primo).
-		wphc_bulk_schedule_tick( 5 );
+		self::call( 'wphc_bulk_schedule_tick', 5 );
 		$this->assertSame( $when, wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 
 		// Ritardo di default: 30 s.
-		wphc_bulk_unschedule_ticks();
+		self::call( 'wphc_bulk_unschedule_ticks' );
 		$this->assertFalse( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
-		$this->assertEqualsWithDelta( time() + 30, wphc_bulk_schedule_tick(), 2 );
+		$this->assertEqualsWithDelta( time() + 30, self::call( 'wphc_bulk_schedule_tick' ), 2 );
 	}
 
 	/**
@@ -1321,7 +1327,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 	 */
 	public function test_maybe_rearm() {
 		// Nessun riassunto: niente.
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertFalse( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 
 		$this->enqueue_bulk( array( 'plugins' => array( self::PLUGIN ) ) );
@@ -1333,19 +1339,19 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 		);
 
 		// Tick gia' pianificato: niente.
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertFalse( get_transient( 'wphc_bulk_rearm_lock' ) );
 
 		// Tick perso: ri-armo.
 		$this->clear_plugin_cron();
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertIsInt( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 		$this->assertNotFalse( get_transient( 'wphc_bulk_rearm_lock' ) );
 		$this->assertEqualsWithDelta( time() + MINUTE_IN_SECONDS, (int) get_option( '_transient_timeout_wphc_bulk_rearm_lock' ), 5 );
 
 		// Con il lock attivo non ri-arma di nuovo.
 		$this->clear_plugin_cron();
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertFalse( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 
 		// Giro non ancora scaduto: niente.
@@ -1355,7 +1361,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 				$job['next_run_ts'] = time() + 500;
 			}
 		);
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertFalse( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 
 		// Job terminato: niente.
@@ -1365,7 +1371,7 @@ class WPHC_Test_Upd_Bulk extends WPHC_Update_Test_Case {
 				$job['next_run_ts'] = time() - 10;
 			}
 		);
-		wphc_bulk_maybe_rearm();
+		self::call( 'wphc_bulk_maybe_rearm' );
 		$this->assertFalse( wp_next_scheduled( 'wphc_bulk_update_tick' ) );
 	}
 

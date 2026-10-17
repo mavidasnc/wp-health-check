@@ -9,6 +9,12 @@
  * posizione, quindi valido anche per il file generato dal build) e la dichiara con eval()
  * insieme a una classe WP_CLI finta che registra log, successi ed errori.
  *
+ * ATTENZIONE: la classe WP_CLI finta (e WPHC_CLI_Command, dichiarata con eval) restano definite per
+ * TUTTO il resto del processo PHPUnit, non solo per questo file: sono dichiarazioni di classe e PHP non
+ * permette di rimuoverle. Con la suite completa i file caricati dopo questo vedono quindi una `WP_CLI`
+ * che esiste e che NON e' quella vera (nessun test degli altri file deve basarsi sulla sua assenza); la
+ * costante `WP_CLI` invece non viene mai definita, quindi il plugin non registra il comando da se'.
+ *
  * L'integrazione vera con WP-CLI (help, sinossi, validazione degli argomenti) si prova
  * nell'ambiente e2e: tests/e2e/wpcli_test.py.
  *

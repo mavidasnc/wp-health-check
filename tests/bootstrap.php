@@ -238,6 +238,13 @@ function wphc_test_url_host( $url ) {
 
 require $wphc_tests_dir . '/includes/bootstrap.php';
 
+// I test marcati @runInSeparateProcess (tests/test-core-auto-update-state.php) rilanciano QUESTO bootstrap in un
+// processo figlio. Senza WP_TESTS_SKIP_INSTALL la test library reinstallerebbe il database (DROP e CREATE delle
+// tabelle di WordPress) mentre il processo padre e' fermo in attesa del risultato, perdendo per esempio
+// l'option wp_health_check_db_version. Si imposta DOPO l'avvio del padre (che deve installare), cosi' il figlio,
+// che eredita l'ambiente, salta l'installazione.
+putenv( 'WP_TESTS_SKIP_INSTALL=1' );
+
 // -----------------------------------------------------------------------
 // 6. Controllo: il plugin caricato e' proprio quello richiesto
 // -----------------------------------------------------------------------
@@ -245,12 +252,15 @@ require $wphc_tests_dir . '/includes/bootstrap.php';
 // riconoscere il plugin sia nella forma a funzioni (1.38.1) sia in quella a classi.
 $wphc_refactor_map = require __DIR__ . '/refactor-map.php';
 
-if ( function_exists( 'wphc_normalize_url' ) ) {
-	$wphc_sentinel = new ReflectionFunction( 'wphc_normalize_url' );
-} elseif ( isset( $wphc_refactor_map['wphc_normalize_url'] ) && class_exists( $wphc_refactor_map['wphc_normalize_url'][0], false ) ) {
-	$wphc_sentinel = new ReflectionClass( $wphc_refactor_map['wphc_normalize_url'][0] );
+// Sentinella: wphc_normalize_url, risolta SEMPRE tramite la mappa (qui la classe base dei test non e' ancora caricata,
+// quindi non si puo' usare WPHC_Test_Case::cb()): la funzione se esiste (1.38.1), altrimenti il metodo che la sostituisce.
+$wphc_sentinel_name = 'wphc_normalize_url';
+if ( function_exists( $wphc_sentinel_name ) ) {
+	$wphc_sentinel = new ReflectionFunction( $wphc_sentinel_name );
+} elseif ( isset( $wphc_refactor_map[ $wphc_sentinel_name ] ) && method_exists( $wphc_refactor_map[ $wphc_sentinel_name ][0], $wphc_refactor_map[ $wphc_sentinel_name ][1] ) ) {
+	$wphc_sentinel = new ReflectionMethod( $wphc_refactor_map[ $wphc_sentinel_name ][0], $wphc_refactor_map[ $wphc_sentinel_name ][1] );
 } else {
-	fwrite( STDERR, "Il plugin non e' stato caricato (ne' wphc_normalize_url ne' il metodo che la sostituisce).\n" );
+	fwrite( STDERR, "Il plugin non e' stato caricato (ne' {$wphc_sentinel_name} ne' il metodo che la sostituisce nella mappa tests/refactor-map.php).\n" );
 	exit( 1 );
 }
 $wphc_loaded_from = realpath( (string) $wphc_sentinel->getFileName() );

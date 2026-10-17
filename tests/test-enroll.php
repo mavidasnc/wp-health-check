@@ -1250,7 +1250,7 @@ class WPHC_Test_Enroll extends WPHC_Test_Case {
 			update_option( $name, $value, false );
 		}
 		set_transient( 'wp_health_check_update_lock', 'x', 60 );
-		wphc_log_update_row( 'corr-reset-test', 'token', 'rotation', 'Riga di log di prova', null, null, 'completed' );
+		self::call( 'wphc_log_update_row', 'corr-reset-test', 'token', 'rotation', 'Riga di log di prova', null, null, 'completed' );
 		$log_before = $this->log_rows( 'token', 'rotation' );
 
 		self::call( 'wphc_reset_enrollment' );

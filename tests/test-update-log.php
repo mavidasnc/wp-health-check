@@ -25,11 +25,21 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	public function set_up() {
 		parent::set_up();
 
+		// Un `.maintenance` residuo in ABSPATH (di un run interrotto) falserebbe i test sulla manutenzione
+		// "bloccata": si toglie solo se e' piu' vecchio di qualche minuto, cosi' non si tocca il file di un
+		// aggiornamento in corso in un altro processo.
+		$maintenance = self::call( 'wphc_maintenance_file_path' );
+		clearstatcache( true, $maintenance );
+		if ( is_file( $maintenance ) && time() - (int) filemtime( $maintenance ) > 5 * MINUTE_IN_SECONDS ) {
+			unlink( $maintenance ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- pulizia di un residuo di test.
+		}
+
 		global $wpdb;
-		$table  = wphc_update_log_table();
+		$table  = self::call( 'wphc_update_log_table' );
 		$status = $wpdb->get_row( $wpdb->prepare( 'SHOW TABLE STATUS LIKE %s', $table ), ARRAY_A ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		if ( ! is_array( $status ) || 'InnoDB' !== $status['Engine'] ) {
-			$this->markTestSkipped( 'La tabella di log non e\' InnoDB: il DELETE non sarebbe annullato dal rollback.' );
+			// Un test saltato svuota il gate (il refactoring sembrerebbe verde senza provare nulla): si fallisce.
+			$this->fail( 'La tabella di log non e\' InnoDB: il DELETE non sarebbe annullato dal rollback.' );
 		}
 		$wpdb->query( "DELETE FROM {$table}" ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 		$this->log_baseline = 0;
@@ -62,7 +72,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 			),
 			$overrides
 		);
-		$wpdb->insert( wphc_update_log_table(), $row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$wpdb->insert( self::call( 'wphc_update_log_table' ), $row ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 
 		return (int) $wpdb->insert_id;
 	}
@@ -91,7 +101,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertSame( '4', WP_HEALTH_CHECK_DB_VERSION );
 		$this->assertSame( 90, WP_HEALTH_CHECK_LOG_RETENTION_DAYS );
 		$this->assertSame( 300, WP_HEALTH_CHECK_UPDATE_LOCK_TTL );
-		$this->assertSame( 'wphc_update_log', substr( wphc_update_log_table(), -15 ) );
+		$this->assertSame( 'wphc_update_log', substr( self::call( 'wphc_update_log_table' ), -15 ) );
 	}
 
 	/**
@@ -99,7 +109,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 */
 	public function test_installed_schema_is_v4() {
 		global $wpdb;
-		$table = wphc_update_log_table();
+		$table = self::call( 'wphc_update_log_table' );
 
 		$this->assertSame( '4', get_option( 'wp_health_check_db_version' ) );
 
@@ -161,7 +171,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 				return $sql;
 			}
 		);
-		wphc_maybe_install_update_log_schema();
+		self::call( 'wphc_maybe_install_update_log_schema' );
 
 		$this->assertSame( array(), $queries );
 		$this->assertSame( '4', get_option( 'wp_health_check_db_version' ) );
@@ -173,7 +183,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	public function test_schema_check_is_hooked_on_init() {
 		global $wpdb;
 
-		$this->assertNotFalse( has_action( 'init', 'wphc_maybe_install_update_log_schema' ) );
+		$this->assert_hooked( 'init', self::cb( 'wphc_maybe_install_update_log_schema' ), 10, 1 );
 		$autoload = $wpdb->get_var( $wpdb->prepare( "SELECT autoload FROM {$wpdb->options} WHERE option_name = %s", 'wp_health_check_db_version' ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
 		$this->assertNotContains( $autoload, array( 'no', 'off', 'auto-off' ) );
 	}
@@ -186,7 +196,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * wphc_log_update_row(): campi, mappatura di active (null/0/1), default source 'api', IP e data UTC.
 	 */
 	public function test_log_update_row_fields() {
-		$id = wphc_log_update_row( 'aaaaaaaaaaaaaaaa', 'plugin', 'a/a.php', 'Plugin A', '1.0', '2.0', 'requested', null, true );
+		$id = self::call( 'wphc_log_update_row', 'aaaaaaaaaaaaaaaa', 'plugin', 'a/a.php', 'Plugin A', '1.0', '2.0', 'requested', null, true );
 		$this->assertGreaterThan( 0, $id );
 
 		$rows = $this->log_rows();
@@ -202,8 +212,8 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertSame( 'api', $rows[0]['source'] );
 		$this->assertNull( $rows[0]['actor'] );
 
-		wphc_log_update_row( 'bbbbbbbbbbbbbbbb', 'theme', 't', 'T', null, null, 'completed', 'msg', false, 'cron', 'admin' );
-		wphc_log_update_row( 'cccccccccccccccc', 'core', 'core', 'WordPress', null, null, 'completed' );
+		self::call( 'wphc_log_update_row', 'bbbbbbbbbbbbbbbb', 'theme', 't', 'T', null, null, 'completed', 'msg', false, 'cron', 'admin' );
+		self::call( 'wphc_log_update_row', 'cccccccccccccccc', 'core', 'core', 'WordPress', null, null, 'completed' );
 		$rows = $this->log_rows();
 		$this->assertSame( '0', $rows[1]['active'], 'false diventa 0.' );
 		$this->assertSame( array( 'msg', 'cron', 'admin' ), array( $rows[1]['message'], $rows[1]['source'], $rows[1]['actor'] ) );
@@ -215,8 +225,8 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * Correlation id: 16 caratteri esadecimali, diversi a ogni chiamata.
 	 */
 	public function test_correlation_id_format() {
-		$a = wphc_generate_correlation_id();
-		$b = wphc_generate_correlation_id();
+		$a = self::call( 'wphc_generate_correlation_id' );
+		$b = self::call( 'wphc_generate_correlation_id' );
 
 		$this->assertMatchesRegularExpression( '/^[0-9a-f]{16}$/', $a );
 		$this->assertNotSame( $a, $b );
@@ -226,14 +236,14 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * wphc_record_last_update(): forma dell'option (chiavi, ISO 8601 UTC), origine di default 'api'.
 	 */
 	public function test_record_last_update_shape() {
-		wphc_record_last_update( 'plugin', 'a/a.php', 'completed' );
+		self::call( 'wphc_record_last_update', 'plugin', 'a/a.php', 'completed' );
 		$last = get_option( 'wp_health_check_last_update' );
 
 		$this->assertSame( array( 'type', 'target', 'phase', 'source', 'at' ), array_keys( $last ) );
 		$this->assertSame( 'api', $last['source'] );
 		$this->assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/', $last['at'] );
 
-		wphc_record_last_update( 'core', 'core', 'failed', 'cron' );
+		self::call( 'wphc_record_last_update', 'core', 'core', 'failed', 'cron' );
 		$this->assertSame( 'cron', get_option( 'wp_health_check_last_update' )['source'] );
 	}
 
@@ -412,7 +422,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->insert_log( array( 'target' => 'new/new.php', 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 89 * DAY_IN_SECONDS ) ) );
 
 		$this->assertFalse( get_transient( 'wp_health_check_log_pruned_at' ) );
-		wphc_maybe_prune_update_log();
+		self::call( 'wphc_maybe_prune_update_log' );
 
 		$targets = array_column( $this->log_rows(), 'target' );
 		sort( $targets );
@@ -422,12 +432,12 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertNotFalse( get_transient( 'wp_health_check_log_pruned_at' ) );
 		$this->assertEqualsWithDelta( time() + DAY_IN_SECONDS, (int) get_option( '_transient_timeout_wp_health_check_log_pruned_at' ), 5 );
 		$this->insert_log( array( 'target' => 'old2/old.php', 'created_at' => gmdate( 'Y-m-d H:i:s', time() - 120 * DAY_IN_SECONDS ) ) );
-		wphc_maybe_prune_update_log();
+		self::call( 'wphc_maybe_prune_update_log' );
 		$this->assertContains( 'old2/old.php', array_column( $this->log_rows(), 'target' ), 'Con il gate attivo il prune non riparte.' );
 
 		// Gate scaduto: riparte.
 		delete_transient( 'wp_health_check_log_pruned_at' );
-		wphc_maybe_prune_update_log();
+		self::call( 'wphc_maybe_prune_update_log' );
 		$this->assertNotContains( 'old2/old.php', array_column( $this->log_rows(), 'target' ) );
 	}
 
@@ -439,15 +449,15 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * Il preambolo acquisisce il lock con TTL di 300 s e wphc_release_update_lock() lo libera.
 	 */
 	public function test_preflight_lock_ttl_and_release() {
-		$this->assertTrue( wphc_update_preflight( true ) );
+		$this->assertTrue( self::call( 'wphc_update_preflight', true ) );
 
 		$this->assertNotFalse( get_transient( 'wp_health_check_update_lock' ) );
 		$this->assertEqualsWithDelta( time() + 300, (int) get_option( '_transient_timeout_wp_health_check_update_lock' ), 5 );
 		// Un secondo preambolo trova il lock.
-		$second = wphc_update_preflight( true );
+		$second = self::call( 'wphc_update_preflight', true );
 		$this->assertSame( array( 'result' => 'locked', 'http' => 409 ), $second );
 
-		wphc_release_update_lock();
+		self::call( 'wphc_release_update_lock' );
 		$this->assertFalse( get_transient( 'wp_health_check_update_lock' ) );
 	}
 
@@ -455,17 +465,17 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * Un file .maintenance orfano (piu' vecchio di 600 s) viene rimosso, uno recente no.
 	 */
 	public function test_stale_maintenance_file_is_cleared_but_fresh_one_is_kept() {
-		$file = wphc_maintenance_file_path();
+		$file = self::call( 'wphc_maintenance_file_path' );
 		$this->assertFileDoesNotExist( $file, 'Il container non deve essere in manutenzione.' );
 
 		try {
 			file_put_contents( $file, '<?php $upgrading = ' . time() . ';' ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-			wphc_clear_stale_maintenance();
+			self::call( 'wphc_clear_stale_maintenance' );
 			$this->assertFileExists( $file, 'Recente: resta.' );
 
 			touch( $file, time() - 700 );
 			clearstatcache();
-			wphc_clear_stale_maintenance();
+			self::call( 'wphc_clear_stale_maintenance' );
 			$this->assertFileDoesNotExist( $file, 'Piu\' vecchio di 600 s: rimosso.' );
 		} finally {
 			if ( file_exists( $file ) ) {
@@ -494,10 +504,10 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		// D: un tema attivo non conta (solo type plugin).
 		$this->insert_log( array( 'type' => 'theme', 'target' => 'd', 'name' => 'D', 'active' => 1 ) );
 
-		$targets = array_column( wphc_get_reactivation_candidates(), 'target' );
+		$targets = array_column( self::call( 'wphc_get_reactivation_candidates' ), 'target' );
 		sort( $targets );
 		$this->assertSame( array( 'a/a.php', 'c/c.php' ), $targets );
-		$this->assertSame( array( 'target', 'name' ), array_keys( wphc_get_reactivation_candidates()[0] ) );
+		$this->assertSame( array( 'target', 'name' ), array_keys( self::call( 'wphc_get_reactivation_candidates' )[0] ) );
 	}
 
 	// -----------------------------------------------------------------------
@@ -610,7 +620,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertNull( $rows[0]['active'] );
 		$this->assertSame( $data['results'][0]['detail'], $rows[0]['message'] );
 		// Il candidato resta tale (l'ultima riga non nulla e' ancora active=1).
-		$this->assertContains( self::FIXTURE_D_FILE, array_column( wphc_get_reactivation_candidates(), 'target' ) );
+		$this->assertContains( self::FIXTURE_D_FILE, array_column( self::call( 'wphc_get_reactivation_candidates' ), 'target' ) );
 	}
 
 	/**
@@ -627,7 +637,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertCount( 1, $rows );
 		$this->assertSame( 'sparito/sparito.php', $rows[0]['target'] );
 		$this->assertSame( '0', $rows[0]['active'] );
-		$this->assertSame( array(), wphc_get_reactivation_candidates() );
+		$this->assertSame( array(), self::call( 'wphc_get_reactivation_candidates' ) );
 
 		// Il dry-run, invece, non scrive la riga 'deleted' (non chiude i candidati).
 		$this->insert_log( array( 'target' => 'sparito2/s.php', 'name' => 'S2', 'active' => 1 ) );
@@ -779,7 +789,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	public function test_audit_plugin_deactivation_closes_reactivation_candidate() {
 		$this->install_fixture_plugin( '1.0.0', self::FIXTURE_C_DIR );
 		$this->insert_log( array( 'target' => self::FIXTURE_C_FILE, 'name' => 'WPHC Fixture', 'active' => 1 ) );
-		$this->assertCount( 1, wphc_get_reactivation_candidates() );
+		$this->assertCount( 1, self::call( 'wphc_get_reactivation_candidates' ) );
 
 		do_action( 'deactivated_plugin', self::FIXTURE_C_FILE, false );
 
@@ -790,7 +800,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertNull( $rows[0]['version_to'] );
 		$this->assertSame( '0', $rows[0]['active'] );
 		$this->assertSame( 'wp-admin', $rows[0]['source'] );
-		$this->assertSame( array(), wphc_get_reactivation_candidates() );
+		$this->assertSame( array(), self::call( 'wphc_get_reactivation_candidates' ) );
 
 		// Plugin illeggibile: il nome ricade sul plugin file e la versione e' NULL.
 		do_action( 'deactivated_plugin', 'non/esiste.php', false );
@@ -838,14 +848,14 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$now = (string) get_bloginfo( 'version' );
 
 		// Prima esecuzione: semina.
-		wphc_maybe_log_core_version_change();
+		self::call( 'wphc_maybe_log_core_version_change' );
 		$this->assertSame( $now, get_option( 'wp_health_check_core_version' ) );
 		$this->assertSame( array(), $this->log_rows() );
 		$this->assertFalse( get_option( 'wp_health_check_last_update' ) );
 
 		// Divergenza.
 		update_option( 'wp_health_check_core_version', '6.0.0' );
-		wphc_maybe_log_core_version_change();
+		self::call( 'wphc_maybe_log_core_version_change' );
 		$rows = $this->log_rows();
 		$this->assertCount( 1, $rows );
 		$this->assertSame( 'core', $rows[0]['type'] );
@@ -860,7 +870,7 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 		$this->assertSame( 'core', get_option( 'wp_health_check_last_update' )['type'] );
 
 		// Stessa versione: nessuna nuova riga.
-		wphc_maybe_log_core_version_change();
+		self::call( 'wphc_maybe_log_core_version_change' );
 		$this->assertCount( 1, $this->log_rows() );
 	}
 
@@ -868,29 +878,29 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	 * Origine e autore dell'operazione.
 	 */
 	public function test_detect_update_source_and_actor() {
-		$this->assertSame( 'wp-admin', wphc_detect_update_source() );
+		$this->assertSame( 'wp-admin', self::call( 'wphc_detect_update_source' ) );
 		add_filter( 'wp_doing_cron', '__return_true' );
-		$this->assertSame( 'cron', wphc_detect_update_source() );
+		$this->assertSame( 'cron', self::call( 'wphc_detect_update_source' ) );
 		// Limite: il ramo 'wp-cli' dipende dalla costante WP_CLI, non definibile in-process nei test.
 		$this->assertFalse( defined( 'WP_CLI' ) );
 
 		wp_set_current_user( 0 );
-		$this->assertNull( wphc_current_actor() );
+		$this->assertNull( self::call( 'wphc_current_actor' ) );
 		$user_id = self::factory()->user->create( array( 'user_login' => 'attore' ) );
 		wp_set_current_user( $user_id );
-		$this->assertSame( 'attore', wphc_current_actor() );
+		$this->assertSame( 'attore', self::call( 'wphc_current_actor' ) );
 	}
 
 	/**
 	 * Host del pacchetto ammessi (usato anche dalle rotte di update): senza restrizione tutti.
 	 */
 	public function test_package_host_allowlist() {
-		$this->assertTrue( wphc_is_package_host_allowed( 'https://qualunque.example/x.zip' ) );
+		$this->assertTrue( self::call( 'wphc_is_package_host_allowed', 'https://qualunque.example/x.zip' ) );
 
 		update_option( 'wp_health_check_restrict_official_only', 1 );
-		$this->assertTrue( wphc_is_package_host_allowed( 'https://downloads.wordpress.org/x.zip' ) );
-		$this->assertTrue( wphc_is_package_host_allowed( 'https://api.wordpress.org/x.zip' ) );
-		$this->assertFalse( wphc_is_package_host_allowed( 'https://example.com/x.zip' ) );
-		$this->assertFalse( wphc_is_package_host_allowed( '' ) );
+		$this->assertTrue( self::call( 'wphc_is_package_host_allowed', 'https://downloads.wordpress.org/x.zip' ) );
+		$this->assertTrue( self::call( 'wphc_is_package_host_allowed', 'https://api.wordpress.org/x.zip' ) );
+		$this->assertFalse( self::call( 'wphc_is_package_host_allowed', 'https://example.com/x.zip' ) );
+		$this->assertFalse( self::call( 'wphc_is_package_host_allowed', '' ) );
 	}
 }

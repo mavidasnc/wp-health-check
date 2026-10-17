@@ -268,16 +268,25 @@ class WPHC_Test_Admin extends WPHC_Admin_Test_Case {
 	}
 
 	/**
-	 * Un segreto corto (10 caratteri o meno) e' mascherato per intero, senza svelare nulla.
+	 * Un segreto corto (10 caratteri o meno) e' mascherato per intero con TANTI pallini quanti sono i caratteri
+	 * (strlen), senza svelare nulla. Le lunghezze sono scelte DIVERSE da 8 (il numero fisso di pallini del ramo
+	 * "lungo"): con un segreto di 8 caratteri i due rami darebbero lo stesso HTML e non si distinguerebbero.
+	 * Il confine e' a 10 caratteri (mascherato per intero), con 11 si passa al formato 6 + 8 pallini + 4.
 	 */
 	public function test_tab_short_secret_is_fully_masked() {
-		$this->seed_enrolled_v1( 'shorttok' ); // 8 caratteri.
 		$this->login_as( 'administrator' );
 
-		$html = $this->render_tab();
+		foreach ( array( 'wxyzq', 'wxyzqrstuv' ) as $secret ) { // 5 e 10 caratteri (lettere non esadecimali: mai nel fingerprint).
+			$this->seed_enrolled_v1( $secret );
+			$html = $this->render_tab();
 
-		$this->assertStringNotContainsString( 'shorttok', $html );
-		$this->assertStringContainsString( '<code id="wphc-secret-masked">' . str_repeat( '•', 8 ) . '</code>', $html );
+			$this->assertStringNotContainsString( $secret, $html, "segreto di {$secret} svelato" );
+			$this->assertStringContainsString( '<code id="wphc-secret-masked">' . str_repeat( '•', strlen( $secret ) ) . '</code>', $html, 'pallini = strlen per ' . strlen( $secret ) . ' caratteri' );
+		}
+
+		// 11 caratteri: primo ramo "lungo" (6 caratteri, 8 pallini, ultimi 4).
+		$this->seed_enrolled_v1( 'wxyzqrstuvw' );
+		$this->assertStringContainsString( '<code id="wphc-secret-masked">wxyzqr' . str_repeat( '•', 8 ) . 'tuvw</code>', $this->render_tab() );
 	}
 
 	/**
@@ -1236,7 +1245,8 @@ class WPHC_Test_Admin extends WPHC_Admin_Test_Case {
 		);
 		$error = get_option( 'wp_health_check_thumb_error' );
 		$this->assertIsArray( $error );
-		$this->assertContains( $error['code'], array( 'wphc_thumb_download_failed', 'wphc_thumb_uploads_not_writable' ) );
+		// Codice FISSO (non due varianti): con la rete bloccata e uploads/ scrivibile il fallimento e' il download.
+		$this->assertSame( 'wphc_thumb_download_failed', $error['code'] );
 		$this->assertSame( WP_HEALTH_CHECK_THUMB_SERVICE, $error['provider'] );
 		$this->assertFalse( get_option( 'wp_health_check_thumb' ), 'La thumbnail precedente deve sparire' );
 		$this->assertNotFalse( get_transient( 'wphc_thumb_retry_lock' ) );

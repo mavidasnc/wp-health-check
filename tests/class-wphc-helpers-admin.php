@@ -20,6 +20,7 @@
 
 require_once __DIR__ . '/class-wphc-test-case.php';
 require_once __DIR__ . '/class-wphc-golden.php';
+require_once __DIR__ . '/trait-wphc-plugin-file-guard.php';
 
 /**
  * Segnale lanciato al posto del redirect (filtro wp_redirect): interrompe l'handler prima di exit.
@@ -59,6 +60,9 @@ final class WPHC_Die_Signal extends RuntimeException {
  */
 abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 
+	// Guardia per-test sul file del plugin sotto test: gli handler admin possono arrivare al self-update.
+	use WPHC_Plugin_File_Guard;
+
 	/**
 	 * Ultimo codice impostato con status_header() durante una cattura (wp_send_json_* lo usa).
 	 *
@@ -84,10 +88,11 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * Come la classe base, piu' superglobali ripulite: gli handler leggono $_POST/$_GET/$_REQUEST.
+	 * Come la classe base, piu' guardia sul file del plugin e superglobali ripulite: gli handler leggono $_POST/$_GET/$_REQUEST.
 	 */
 	public function set_up() {
 		parent::set_up();
+		$this->plugin_guard_arm();
 		// La tab Site Health controlla l'ultima release su GitHub (API e ripiego senza API): chiamata
 		// di sfondo nota che questi test non mockano (il blocco la fa fallire e la tab la gestisce).
 		$this->allow_unmocked_http_hosts( array( 'api.github.com', 'github.com' ) );
@@ -112,7 +117,10 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 			$_SERVER['REQUEST_METHOD'] = $this->original_request_method;
 		}
 		wp_set_current_user( 0 );
+		// Ripristino e ripulitura PRIMA del tear_down della classe base; il fallimento DOPO.
+		$problems = $this->plugin_guard_release();
 		parent::tear_down();
+		$this->plugin_guard_assert( $problems );
 	}
 
 	// -----------------------------------------------------------------------
@@ -535,8 +543,16 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 					$entry['hidden_action'] = $field->getAttribute( 'value' );
 					continue;
 				}
-				// Il campo _wp_http_referer e il nonce variano da richiesta a richiesta: solo il nome.
-				$entry['fields'][] = $field->nodeName . ':' . $type . ':' . $name . ( 'submit' === $type ? ':' . $field->getAttribute( 'value' ) : '' );
+				// Il campo _wp_http_referer e il nonce variano da richiesta a richiesta: solo il nome. Per le
+				// checkbox si registra anche lo stato (`checked` / `unchecked`): e' il valore salvato che il
+				// template rende, e un'inversione (es. un `checked()` sbagliato) deve far fallire il golden.
+				$state = '';
+				if ( 'submit' === $type ) {
+					$state = ':' . $field->getAttribute( 'value' );
+				} elseif ( 'checkbox' === $type ) {
+					$state = $field->hasAttribute( 'checked' ) ? ':checked' : ':unchecked';
+				}
+				$entry['fields'][] = $field->nodeName . ':' . $type . ':' . $name . $state;
 			}
 			$structure['forms'][] = $entry;
 		}
@@ -552,6 +568,31 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 			$structure['data_nonce_elements'][] = $node->getAttribute( 'id' ) . ':' . ( '' !== $node->getAttribute( 'data-nonce' ) ? 'nonce' : 'vuoto' );
 		}
 		$structure['scripts'] = $xpath->query( '//script' )->length;
+
+		// Azioni AJAX che lo script inline invia (`fd.append( 'action', '...' )`): sono il contratto fra il JavaScript
+		// della tab e gli hook `wp_ajax_*` del plugin, e non compaiono in nessun altro punto della struttura.
+		preg_match_all( "/append\(\s*'action',\s*'([a-z_]+)'/", $html, $matches );
+		$structure['ajax_actions'] = $matches[1];
+
+		// Azione di ciascun nonce: si cerca fra le azioni note (AJAX e admin-post della tab) quella per cui il nonce
+		// e' valido. Un nonce creato con un'azione diversa (o rinominata) darebbe 'sconosciuta' e farebbe fallire il golden.
+		$candidates = array_unique( array_merge( array( 'wphc_test_endpoint', 'wphc_view_log', 'wphc_reveal_secret' ), $structure['ajax_actions'] ) );
+		foreach ( $structure['forms'] as $form_entry ) {
+			if ( isset( $form_entry['hidden_action'] ) ) {
+				$candidates[] = $form_entry['hidden_action'];
+			}
+		}
+		$structure['nonce_actions'] = array();
+		foreach ( $xpath->query( '//*[@data-nonce]' ) as $node ) {
+			$nonce_action = 'sconosciuta';
+			foreach ( $candidates as $candidate ) {
+				if ( false !== wp_verify_nonce( $node->getAttribute( 'data-nonce' ), $candidate ) ) {
+					$nonce_action = $candidate;
+					break;
+				}
+			}
+			$structure['nonce_actions'][ $node->getAttribute( 'id' ) ] = $nonce_action;
+		}
 
 		return $structure;
 	}
@@ -604,7 +645,7 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 	 * @return int ID della riga.
 	 */
 	protected function seed_log_row( $type, $target, $source ) {
-		return wphc_log_update_row( wphc_generate_correlation_id(), $type, $target, $target, '1.0', '2.0', 'completed', null, null, $source, 'tester' );
+		return self::call( 'wphc_log_update_row', self::call( 'wphc_generate_correlation_id' ), $type, $target, $target, '1.0', '2.0', 'completed', null, null, $source, 'tester' );
 	}
 
 	// -----------------------------------------------------------------------
@@ -655,7 +696,7 @@ abstract class WPHC_Admin_Test_Case extends WPHC_Test_Case {
 	protected function last_log_row_with_message( $message ) {
 		global $wpdb;
 
-		$table = wphc_update_log_table();
+		$table = self::call( 'wphc_update_log_table' );
 
 		return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE message = %s ORDER BY id DESC LIMIT 1", $message ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery
 	}

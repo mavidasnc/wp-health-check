@@ -209,8 +209,9 @@ class WPHC_Test_Cors extends WPHC_Read_Test_Case {
 	public function test_hook_registration() {
 		rest_get_server(); // Fa girare rest_api_init e i filtri predefiniti del core.
 
-		$this->assertSame( 20, has_filter( 'rest_pre_serve_request', self::cb( 'wphc_reassert_cors_headers' ) ) );
-		$this->assertSame( 10, has_filter( 'rest_pre_dispatch', self::cb( 'wphc_handle_options_preflight' ) ) );
+		// Priorita' e accepted_args: la riasserzione (20, 3 argomenti: $served, $result, $request) e il preflight (10, 3 argomenti).
+		$this->assert_hooked( 'rest_pre_serve_request', self::cb( 'wphc_reassert_cors_headers' ), 20, 3 );
+		$this->assert_hooked( 'rest_pre_dispatch', self::cb( 'wphc_handle_options_preflight' ), 10, 3 );
 		$this->assertSame( 10, has_filter( 'rest_pre_serve_request', 'rest_send_cors_headers' ) );
 	}
 

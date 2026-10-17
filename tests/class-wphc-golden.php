@@ -98,7 +98,7 @@ final class WPHC_Golden {
 	}
 
 	/**
-	 * Normalizza ricorsivamente i valori volatili: interi (TS_INT) e stringhe numeriche (TS_STR) vicini all'ora corrente, date ISO 8601
+	 * Normalizza ricorsivamente i valori volatili: interi (TS_INT) e stringhe numeriche (TS_STR) vicini all'ora corrente, date ISO 8601 (solo entro un giorno dall'ora corrente)
 	 * UTC (gmdate('c')), stringhe esadecimali lunghe (id/nonce casuali) e chiavi ordinate.
 	 *
 	 * @param mixed $value Valore da normalizzare.
@@ -134,8 +134,10 @@ final class WPHC_Golden {
 			if ( ctype_digit( $value ) && abs( (int) $value - time() ) <= DAY_IN_SECONDS ) {
 				return self::TS_STR;
 			}
-			// Data ISO 8601 come la produce gmdate('c'): 2026-10-17T10:00:00+00:00.
-			if ( preg_match( '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/', $value ) ) {
+			// Data ISO 8601 come la produce gmdate('c'): 2026-10-17T10:00:00+00:00. Si maschera SOLO se e' entro un
+			// giorno dall'ora corrente (un "adesso" generato dal plugin): una data lontana e' un valore fisso
+			// (un fixture dei test, una data scritta nel codice) e un cambiamento deve restare visibile.
+			if ( preg_match( '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$/', $value ) && abs( (int) strtotime( $value ) - time() ) <= DAY_IN_SECONDS ) {
 				return self::ISO;
 			}
 			// Stringa esadecimale di almeno 16 caratteri (nonce, correlation id).
@@ -145,6 +147,29 @@ final class WPHC_Golden {
 		}
 
 		return $value;
+	}
+
+	/**
+	 * Sostituisce con `<ENV:tipo>` il valore a un percorso (errore se il percorso non esiste: una chiave
+	 * rinominata nel plugin deve far fallire il test, non passare in silenzio). Il test resta sensibile alla
+	 * PRESENZA e al TIPO del valore, non al suo contenuto (per i valori che dipendono dall'ambiente).
+	 *
+	 * @param array    $data     Dati.
+	 * @param string[] $segments Segmenti del percorso (notazione a punti gia' separata).
+	 * @return array
+	 */
+	public static function mask_path( array $data, array $segments ) {
+		$key = array_shift( $segments );
+		if ( ! array_key_exists( $key, $data ) ) {
+			throw new RuntimeException( "Percorso golden inesistente: {$key}" );
+		}
+		if ( array() === $segments ) {
+			$data[ $key ] = '<ENV:' . gettype( $data[ $key ] ) . '>';
+		} else {
+			$data[ $key ] = self::mask_path( (array) $data[ $key ], $segments );
+		}
+
+		return $data;
 	}
 
 	/**

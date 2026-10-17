@@ -1,0 +1,12 @@
+# Fine riga: nel repo e nel checkout sempre LF, anche su Windows con core.autocrlf=true.
+# Il mu-plugin viene distribuito cosi' com'e': con CRLF cambierebbero i byte e lo sha256 della
+# release firmata (e quello atteso dai test), e i golden/fixture verrebbero letti in modo diverso.
+* text=auto eol=lf
+
+# File binari: nessuna conversione dei fine riga.
+*.zip binary
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.phar binary

@@ -219,7 +219,7 @@ class WPHC_Test_Autologin extends WPHC_Read_Test_Case {
 	 * Il callback e' registrato su `init` con priorita' 10.
 	 */
 	public function test_consume_is_hooked_on_init() {
-		$this->assertSame( 10, has_action( 'init', self::cb( 'wphc_maybe_consume_autologin' ) ) );
+		$this->assert_hooked( 'init', self::cb( 'wphc_maybe_consume_autologin' ), 10, 1 );
 	}
 
 	/**
@@ -617,7 +617,8 @@ class WPHC_Test_Last_Login extends WPHC_Read_Test_Case {
 	 * L'azione `wp_login` e' agganciata con priorita' 10 e due argomenti.
 	 */
 	public function test_hooked_on_wp_login() {
-		$this->assertSame( 10, has_action( 'wp_login', self::cb( 'wphc_record_last_login' ) ) );
+		// Priorita' 10 e DUE argomenti ($user_login, $user): senza il secondo il callback non vedrebbe l'utente.
+		$this->assert_hooked( 'wp_login', self::cb( 'wphc_record_last_login' ), 10, 2 );
 	}
 
 	/**

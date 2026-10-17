@@ -252,6 +252,14 @@ abstract class WPHC_Test_Case extends WP_UnitTestCase {
 	}
 
 	/**
+	 * Voci di mappa aggiunte SOLO dai test di cb()/call() stessi (tests/test-refactor-map.php), per provare il
+	 * ramo "metodo non pubblico" con una classe di prova anche mentre il plugin e' ancora a funzioni.
+	 *
+	 * @var array<string,string[]>
+	 */
+	protected static $map_overrides = array();
+
+	/**
 	 * Mappa funzione 1.38.1 -> metodo del refactoring (tests/refactor-map.php), caricata una volta.
 	 *
 	 * @return array<string,string[]>
@@ -262,25 +270,46 @@ abstract class WPHC_Test_Case extends WP_UnitTestCase {
 			$map = require __DIR__ . '/refactor-map.php';
 		}
 
-		return $map;
+		// Le voci aggiunte da test-refactor-map.php (fixture di prova di cb()) si sommano a quelle del file.
+		return array_merge( $map, self::$map_overrides );
 	}
 
 	/**
 	 * Callable di una funzione del plugin: il nome della funzione se esiste ancora (plugin 1.38.1),
 	 * altrimenti il metodo statico che la sostituisce secondo tests/refactor-map.php. E' l'UNICO
 	 * punto di adattamento ai nomi del refactoring: i test chiamano le funzioni interne del plugin
-	 * solo tramite cb() / call() (o direttamente, se la funzione non e' nella mappa).
+	 * solo tramite cb() / call() / call_args().
+	 *
+	 * Un metodo `private` o `protected` (la visibilita' prevista dal refactoring per le funzioni
+	 * interne) non e' chiamabile da fuori: in quel caso si restituisce una Closure ottenuta con la
+	 * Reflection. La Closure conserva i parametri per riferimento (`array &$job`) se si chiama con la
+	 * sintassi diretta `$fn( $job )` o con call_args(); NON e' adatta a has_action()/has_filter(), che
+	 * confrontano l'identita' del callback (per gli hook servono i metodi `public`, come prevede la mappa).
 	 *
 	 * @param string $function_name Nome della funzione del plugin 1.38.1 (chiave della mappa).
-	 * @return string|string[] Callable valido per call_user_func(), has_filter() e has_action().
+	 * @return callable Valido per call_user_func(); per i metodi pubblici anche per has_filter() e has_action().
+	 * @throws RuntimeException Se ne' la funzione ne' il metodo che la sostituisce esistono.
 	 */
 	public static function cb( $function_name ) {
 		if ( function_exists( $function_name ) ) {
 			return $function_name;
 		}
 		$map = self::refactor_map();
-		if ( isset( $map[ $function_name ] ) && is_callable( $map[ $function_name ] ) ) {
-			return $map[ $function_name ];
+		if ( isset( $map[ $function_name ] ) && method_exists( $map[ $function_name ][0], $map[ $function_name ][1] ) ) {
+			$reflection = new ReflectionMethod( $map[ $function_name ][0], $map[ $function_name ][1] );
+			// La mappa prevede solo metodi statici (il refactoring non crea istanze): un metodo d'istanza non e' chiamabile.
+			if ( ! $reflection->isStatic() ) {
+				throw new RuntimeException( "Il metodo {$map[ $function_name ][0]}::{$map[ $function_name ][1]} non e' statico: la mappa prevede solo metodi statici." );
+			}
+			if ( $reflection->isPublic() ) {
+				return $map[ $function_name ];
+			}
+			// Metodo non pubblico: lo si rende chiamabile da fuori (da PHP 8.1 setAccessible() non serve piu').
+			if ( PHP_VERSION_ID < 80100 ) {
+				$reflection->setAccessible( true );
+			}
+
+			return $reflection->getClosure( null );
 		}
 
 		throw new RuntimeException( "Ne' la funzione {$function_name} ne' il metodo che la sostituisce esistono: aggiornare tests/refactor-map.php." );
@@ -288,6 +317,8 @@ abstract class WPHC_Test_Case extends WP_UnitTestCase {
 
 	/**
 	 * Chiama una funzione del plugin (o il metodo che la sostituisce) per nome 1.38.1.
+	 * Gli argomenti arrivano per VALORE: per le funzioni con parametri per riferimento (`array &$job`)
+	 * si usa call_args().
 	 *
 	 * @param string $function_name Nome della funzione 1.38.1.
 	 * @param mixed  ...$args       Argomenti.
@@ -295,6 +326,38 @@ abstract class WPHC_Test_Case extends WP_UnitTestCase {
 	 */
 	public static function call( $function_name, ...$args ) {
 		return call_user_func_array( self::cb( $function_name ), $args );
+	}
+
+	/**
+	 * Come call(), ma gli argomenti si passano in un array che puo' contenere RIFERIMENTI: serve per le
+	 * funzioni con parametri per riferimento, per esempio
+	 * `self::call_args( 'wphc_bulk_apply_outcome', array( &$job, $index, $outcome ) )`. Con call() il job
+	 * verrebbe copiato e PHP segnalerebbe un warning (che la suite trasforma in errore).
+	 *
+	 * @param string $function_name Nome della funzione 1.38.1.
+	 * @param array  $args          Argomenti (i riferimenti restano tali).
+	 * @return mixed
+	 */
+	public static function call_args( $function_name, array $args ) {
+		return call_user_func_array( self::cb( $function_name ), $args );
+	}
+
+	/**
+	 * Verifica che un callback sia agganciato a un hook con la priorita' E il numero di argomenti accettati
+	 * attesi. has_filter()/has_action() dicono solo la priorita': `accepted_args` (terzo argomento di
+	 * add_action/add_filter) cambia quanti parametri riceve il callback, quindi e' parte del contratto.
+	 *
+	 * @param string          $hook          Nome dell'hook.
+	 * @param string|string[] $callback      Callback (per i callback del plugin: cb()).
+	 * @param int             $priority      Priorita' attesa.
+	 * @param int             $accepted_args Argomenti accettati attesi.
+	 */
+	protected function assert_hooked( $hook, $callback, $priority = 10, $accepted_args = 1 ) {
+		global $wp_filter;
+
+		$this->assertSame( $priority, has_filter( $hook, $callback ), "priorita' del callback su {$hook}" );
+		$id = _wp_filter_build_unique_id( $hook, $callback, $priority );
+		$this->assertSame( $accepted_args, $wp_filter[ $hook ]->callbacks[ $priority ][ $id ]['accepted_args'], "accepted_args del callback su {$hook}" );
 	}
 
 	/**

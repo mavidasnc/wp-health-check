@@ -22,6 +22,12 @@ lavorare su qualunque altro percorso.
 """
 from __future__ import annotations
 
+import sys
+
+# Nessun __pycache__ ne' dentro il repo ne' dentro hub/ e hub-cli/ (sola lettura): va impostato
+# PRIMA di importare qualunque modulo, in particolare quelli dell'hub vendorizzato.
+sys.dont_write_bytecode = True
+
 import base64
 import copy
 import gzip
@@ -32,7 +38,6 @@ import os
 import re
 import site
 import subprocess
-import sys
 import tempfile
 import time
 from pathlib import Path
@@ -157,6 +162,100 @@ def baseline_bytes() -> bytes:
     return done.stdout
 
 
+# Dichiarazione della versione nel file: header "Version:" e costante WP_HEALTH_CHECK_VERSION.
+# make_candidate() e il controllo di integrita' del plugin (che cerca "Version: <tag>" nel file) le richiedono entrambe.
+VERSION_CONST_RE = re.compile(r"(define\(\s*'WP_HEALTH_CHECK_VERSION',\s*')([^']+)('\s*\))")
+CANDIDATE_ENV = "WPHC_CANDIDATE_FILE"
+
+
+def validate_plugin_source(contents: bytes, origin: str) -> str:
+    """Controlla che un file di plugin sia installabile e ne restituisce la versione.
+
+    Falliscono, con un messaggio che dice COSA manca, i file che: non sono UTF-8, non iniziano con
+    `<?php`, non hanno l'header `Version:`, non dichiarano la costante WP_HEALTH_CHECK_VERSION nella
+    forma `define( 'WP_HEALTH_CHECK_VERSION', 'x.y.z' )` o la dichiarano con un valore diverso
+    dall'header. Una build che cambia quella forma non e' sostituibile con make_candidate() e il
+    suo self-update non supererebbe il controllo di integrita' del plugin: va corretto il build, non il test.
+    """
+    try:
+        text = contents.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"{origin}: il file non e' UTF-8 ({exc})")
+    if not text.startswith("<?php"):
+        raise SystemExit(f"{origin}: il file non inizia con '<?php'")
+    header = BASELINE_VERSION_RE.search(text)
+    if not header:
+        raise SystemExit(f"{origin}: header ' * Version: x.y.z' non trovato (il plugin lo richiede per il controllo di integrita' del self-update)")
+    const = VERSION_CONST_RE.search(text)
+    if not const:
+        raise SystemExit(f"{origin}: costante WP_HEALTH_CHECK_VERSION non trovata nella forma define( 'WP_HEALTH_CHECK_VERSION', 'x.y.z' )")
+    if const.group(2) != header.group(1):
+        raise SystemExit(f"{origin}: l'header dichiara Version {header.group(1)} ma WP_HEALTH_CHECK_VERSION vale {const.group(2)}")
+    return header.group(1)
+
+
+class PluginUnderTest:
+    """Il file di plugin che gli e2e installano: contenuto, versione, sha256 e provenienza."""
+
+    def __init__(self, contents: bytes, origin: str, from_candidate_file: bool) -> None:
+        self.contents = contents
+        self.text = contents.decode("utf-8", errors="replace")
+        self.origin = origin
+        self.from_candidate_file = from_candidate_file
+        self.version = validate_plugin_source(contents, origin)
+        self.sha256 = hashlib.sha256(contents).hexdigest()
+
+    def describe(self) -> str:
+        return f"{self.origin}  versione {self.version}  sha256 {self.sha256}  ({len(self.contents)} byte)"
+
+
+_PLUGIN_UNDER_TEST: PluginUnderTest | None = None
+
+
+def plugin_under_test_info() -> PluginUnderTest:
+    """Il plugin sotto test: WPHC_CANDIDATE_FILE se impostata, altrimenti la baseline (1.38.1 da git).
+
+    E' l'UNICO punto in cui gli e2e decidono quale file installare: hub_contract, wpcli_test e
+    upgrade_test (scenario candidate-self-update e fasi dei controlli) passano da qui.
+    """
+    global _PLUGIN_UNDER_TEST
+    if _PLUGIN_UNDER_TEST is None:
+        path = os.environ.get(CANDIDATE_ENV)
+        if path:
+            file = Path(path)
+            if not file.is_file():
+                raise SystemExit(f"{CANDIDATE_ENV}={path}: il file non esiste")
+            _PLUGIN_UNDER_TEST = PluginUnderTest(file.read_bytes(), str(file.resolve()), True)
+        else:
+            _PLUGIN_UNDER_TEST = PluginUnderTest(baseline_bytes(), f"baseline git {BASELINE_REF}:mu-plugins/wp-health-check.php", False)
+    return _PLUGIN_UNDER_TEST
+
+
+def plugin_under_test() -> bytes:
+    """Byte del plugin sotto test (vedi plugin_under_test_info)."""
+    return plugin_under_test_info().contents
+
+
+def announce_plugin_under_test(script: str) -> PluginUnderTest:
+    """Stampa quale file installera' lo script (percorso, versione, sha256): finisce nei log."""
+    info = plugin_under_test_info()
+    print(f"[{script}] plugin sotto test: {info.describe()}")
+    return info
+
+
+def next_version(version: str) -> str:
+    """Versione immediatamente successiva (X.Y.Z -> X.Y.Z+1): quella del candidato del push positivo."""
+    match = re.match(r"^(\d+)\.(\d+)\.(\d+)", version)
+    if not match:
+        raise SystemExit(f"Versione non nel formato X.Y.Z: {version}")
+    major, minor, patch = (int(part) for part in match.groups())
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def sha256_hex(contents: bytes) -> str:
+    return hashlib.sha256(contents).hexdigest()
+
+
 def _refuse_repo_path(path: Path) -> None:
     if path.resolve() == REPO_PLUGIN.resolve() or REPO_PLUGIN.parent.resolve() in path.resolve().parents:
         raise SystemExit(f"RIFIUTO: {path} e' dentro la cartella mu-plugins reale del repo")
@@ -170,6 +269,68 @@ def install_plugin(contents: bytes | str) -> None:
     tmp = WORK_MU_DIR / ".install.tmp"
     tmp.write_bytes(data)
     os.replace(tmp, WORK_PLUGIN)
+
+
+def loaded_code_mismatch(state: dict, contents: bytes) -> list[str]:
+    """Motivi per cui il codice CARICATO dal PHP del sito non e' ancora quello di `contents` (vuoto = coincide)."""
+    reasons = []
+    version = plugin_version(contents.decode("utf-8"))
+    if state.get("loaded_version") != version:
+        reasons.append(f"versione caricata {state.get('loaded_version')!r} (attesa {version})")
+    if state.get("loaded_from_installed") is not True:
+        reasons.append("il file installato non risulta fra i file inclusi dal PHP")
+    if state.get("loaded_sha256") != sha256_hex(contents):
+        reasons.append(f"sha256 del file caricato {state.get('loaded_sha256')} (atteso {sha256_hex(contents)})")
+    if state.get("loaded_symbol_matches") is False:
+        reasons.append(f"i simboli del plugin sono dichiarati da {state.get('loaded_symbol_file')}, non dal file installato")
+    if (state.get("opcache") or {}).get("fresh") is False:
+        reasons.append("opcache serve ancora uno script compilato prima dell'ultima modifica del file")
+    return reasons
+
+
+def wait_until_loaded(support: "Support", contents: bytes, timeout: int = 30, what: str = "il plugin installato") -> dict:
+    """Attende che il PHP del sito esegua davvero `contents`; scaduto il tempo FALLISCE con il motivo.
+
+    Il controllo non si fida del solo file su disco: opcache (revalidate_freq=2) puo' servire per
+    qualche secondo il codice precedente, e un test che gira su codice vecchio dimostrerebbe il nulla.
+    Si confrontano versione caricata (in memoria), sha256 del file incluso e freschezza di opcache.
+    """
+    deadline = time.time() + timeout
+    reasons: list[str] = ["stato non letto"]
+    state: dict = {}
+    while time.time() < deadline:
+        state = support.state()
+        reasons = loaded_code_mismatch(state, contents)
+        if not reasons:
+            return state
+        time.sleep(1)
+    raise SystemExit(f"ERRORE: dopo {timeout}s {what} non risulta caricato dal PHP del sito: " + "; ".join(reasons))
+
+
+def install_and_load(support: "Support", contents: bytes, timeout: int = 30) -> dict:
+    """Installa `contents` nella copia montata, invalida opcache e attende che il PHP lo esegua.
+
+    Da usare dopo OGNI sostituzione esterna del file (install_plugin da solo non basta: opcache).
+    """
+    install_plugin(contents)
+    support.opcache_invalidate()
+    return wait_until_loaded(support, contents, timeout)
+
+
+def install_residue() -> list[str]:
+    """Nomi di .bak e .tmp (file O directory) rimasti nella cartella montata, tranne il temporaneo della libreria."""
+    return sorted(p.name for p in WORK_MU_DIR.iterdir() if p.name.endswith((".bak", ".tmp")) and p.name != ".install.tmp")
+
+
+def clear_install_residue() -> None:
+    """Toglie da QUESTA cartella montata (mai dal repo) i .bak/.tmp lasciati da un self-update fallito."""
+    _refuse_repo_path(WORK_MU_DIR / "x")
+    for name in install_residue():
+        path = WORK_MU_DIR / name
+        if path.is_dir():
+            path.rmdir()
+        else:
+            path.unlink()
 
 
 def install_support_plugin() -> None:
@@ -199,11 +360,12 @@ def plugin_version(text: str) -> str:
 
 def make_candidate(baseline_text: str, version: str) -> str:
     """Copia del plugin con la versione alzata (header e costante), il resto identico."""
-    current = plugin_version(baseline_text)
+    # Se il file non ha le due dichiarazioni nella forma attesa, si ferma con un messaggio chiaro.
+    current = validate_plugin_source(baseline_text.encode("utf-8"), "make_candidate")
     header, n_header = re.subn(r"(^\s*\*\s*Version:\s+)" + re.escape(current), r"\g<1>" + version, baseline_text, count=1, flags=re.MULTILINE)
     const, n_const = re.subn(r"(define\(\s*'WP_HEALTH_CHECK_VERSION',\s*')" + re.escape(current) + r"('\s*\))", r"\g<1>" + version + r"\g<2>", header, count=1)
     if n_header != 1 or n_const != 1:
-        raise ValueError("header Version o costante WP_HEALTH_CHECK_VERSION non trovati")
+        raise SystemExit("make_candidate: header Version o costante WP_HEALTH_CHECK_VERSION non sostituibili")
     return const
 
 
@@ -237,6 +399,17 @@ def write_release_assets(directory: Path, contents: bytes, sig: dict) -> None:
     (directory / "wp-health-check.php.sig").write_text(json.dumps(sig, indent=2) + "\n", encoding="utf-8")
 
 
+# Limite del body di POST /update (JSON con il pacchetto): 128 KiB. Il budget del progetto per il solo
+# contenuto gzip+base64 e' piu' basso (110.000 caratteri) e vale come informazione.
+PUSH_BODY_LIMIT = 131072
+PUSH_GZIP_B64_BUDGET = 110000
+
+
+def push_sizes(package: dict) -> tuple[int, int]:
+    """(byte del body come lo spedisce l'hub, caratteri di contents_gz_b64) di un pacchetto di push."""
+    return len(json_bytes({"package": package})), len(package["contents_gz_b64"])
+
+
 def build_push_package(contents: bytes, sig: dict, force: bool = False) -> dict:
     """Pacchetto del body di POST /update (push), come hub/services/fleet/agent_release.py:build_push_package."""
     return {
@@ -246,6 +419,34 @@ def build_push_package(contents: bytes, sig: dict, force: bool = False) -> dict:
         "contents_gz_b64": base64.b64encode(gzip.compress(contents, 9)).decode("ascii"),
         "force": bool(force),
     }
+
+
+_HUB_PROXY = MONOREPO_DIR / "hub" / "services" / "fleet" / "proxy.py"
+
+
+def hub_push_support():
+    """(_agent_supports_push, _PUSH_MIN_AGENT) dell'hub vero, estratti per percorso con `ast`.
+
+    hub/services/fleet/proxy.py non si importa da solo (import relativi, requests, Supabase): come
+    fa tests/tools/gen_contract_vectors.py si prende il codice della funzione e della costante dal
+    sorgente e lo si esegue in un namespace isolato, senza scrivere bytecode. E' la regola con cui
+    l'hub decide se un sito accetta il push: va applicata alla versione che il candidato riporta.
+    """
+    import ast
+
+    tree = ast.parse(_HUB_PROXY.read_text(encoding="utf-8"))
+    namespace: dict = {"re": re, "__name__": "hub_proxy_estratto"}
+    wanted = {"_agent_supports_push": False, "_PUSH_MIN_AGENT": False}
+    for node in tree.body:
+        is_func = isinstance(node, ast.FunctionDef) and node.name == "_agent_supports_push"
+        is_const = isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "_PUSH_MIN_AGENT" for t in node.targets)
+        if is_func or is_const:
+            exec(compile(ast.Module([node], []), str(_HUB_PROXY), "exec"), namespace)  # noqa: S102
+            wanted["_agent_supports_push" if is_func else "_PUSH_MIN_AGENT"] = True
+    missing = [name for name, found in wanted.items() if not found]
+    if missing:
+        raise SystemExit(f"{_HUB_PROXY}: {', '.join(missing)} non trovati (l'hub e' cambiato?)")
+    return namespace["_agent_supports_push"], namespace["_PUSH_MIN_AGENT"]
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +486,7 @@ class Support:
         resp.raise_for_status()
         state = resp.json()
         # PHP codifica un array vuoto come [] e non come {}: si riporta a dict dove serve un dict.
-        for key in ("options", "transients"):
+        for key in ("options", "options_autoload", "transients"):
             if isinstance(state.get(key), list) and not state[key]:
                 state[key] = {}
         return state
@@ -316,6 +517,12 @@ class Support:
 
     def empty_updates(self) -> None:
         self.session.post(self._url("/updates"), timeout=60).raise_for_status()
+
+    def opcache_invalidate(self) -> dict:
+        """Invalida l'opcache del file del plugin (dopo una sostituzione esterna del file)."""
+        resp = self.session.post(self._url("/opcache"), timeout=60)
+        resp.raise_for_status()
+        return resp.json()
 
 
 # ---------------------------------------------------------------------------

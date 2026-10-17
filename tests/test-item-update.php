@@ -47,7 +47,8 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		parent::set_up();
 
 		if ( ! isset( get_plugins()[ $this->plugin ] ) || ! wp_get_theme( $this->theme )->exists() ) {
-			$this->markTestSkipped( 'Servono il plugin hello.php e il tema twentytwentyfive del container wp-env.' );
+			// Un test saltato svuota il gate (il refactoring sembrerebbe verde senza provare nulla): si fallisce.
+			$this->fail( 'Servono il plugin hello.php e il tema twentytwentyfive del container wp-env.' );
 		}
 	}
 
@@ -430,7 +431,10 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$this->assertFalse( $data['updated'] );
 		$this->assertSame( 'rolled_back', $data['result'] );
 		$this->assertIsInt( $data['log_id'] );
-		$this->assertNotSame( '', (string) $data['detail'] );
+		// PRESERVATO (bug noto di diagnostica): l'errore dell'upgrader ('download mock fallito') si PERDE. Sul
+		// download fallito Plugin_Upgrader::upgrade() restituisce `$this->result` null, quindi il plugin non vede
+		// un WP_Error e scrive il messaggio generico "Verifica post-aggiornamento fallita." (riga 4812 della 1.38.1).
+		$this->assertSame( 'Verifica post-aggiornamento fallita.', $data['detail'] );
 		$this->assertSame( array( 'updated', 'result', 'detail', 'log_id' ), array_keys( $data ) );
 		$this->assert_update_golden( 'update/item/plugin-rolled-back', $response, $before );
 
@@ -702,6 +706,9 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$data = $response->get_data();
 		$this->assertFalse( $data['updated'] );
 		$this->assertSame( 'rolled_back', $data['result'] );
+		// Sul ramo CORE l'errore del Core_Upgrader (un WP_Error) invece SI conserva: a differenza del plugin il
+		// dettaglio e' il messaggio dell'upgrader (PRESERVATO: stesso comportamento della 1.38.1, riga 4999).
+		$this->assertSame( 'download core fallito', $data['detail'] );
 		$this->assertSame( array( 'updated', 'result', 'detail', 'log_id' ), array_keys( $data ) );
 		$this->assert_update_golden( 'update/item/core-rolled-back', $response, $before );
 
@@ -775,7 +782,7 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 	 * @param mixed $expected Dati attesi oppure array( codice, status ) per un WP_Error.
 	 */
 	public function test_map_item_update_outcome( array $outcome, $expected ) {
-		$mapped = wphc_map_item_update_outcome( $outcome );
+		$mapped = self::call( 'wphc_map_item_update_outcome', $outcome );
 
 		if ( isset( $expected[1] ) && is_int( $expected[1] ) ) {
 			$this->assertInstanceOf( WP_Error::class, $mapped );
@@ -793,12 +800,10 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 	 * Lo status 403/409 dell'esito prevale sul campo "result" (la mappatura guarda prima http).
 	 */
 	public function test_map_prefers_http_over_result() {
-		$mapped = wphc_map_item_update_outcome(
-			array(
+		$mapped = self::call( 'wphc_map_item_update_outcome', array(
 				'result' => 'updated',
 				'http'   => 409,
-			)
-		);
+			) );
 
 		$this->assertInstanceOf( WP_Error::class, $mapped );
 		$this->assertSame( 'wphc_update_locked', $mapped->get_error_code() );

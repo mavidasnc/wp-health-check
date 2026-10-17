@@ -4,6 +4,10 @@ Uso (con l'ambiente e2e acceso, vedi tests/e2e/README.md):
     python -I tests/e2e/run_all.py
 
 Variabili d'ambiente inoltrate agli script: WPHC_CANDIDATE_FILE, WPHC_BASELINE_REF.
+Con WPHC_CANDIDATE_FILE impostata TUTTI e tre gli script installano quel file come plugin sotto test
+(hub_contract e wpcli_test lo installano e lo provano; upgrade_test lo usa come candidato dell'upgrade
+dalla 1.38.1 e come plugin installato nei blocchi candidate-self-update e backup-failed). Ognuno stampa
+all'avvio percorso, versione e sha256 del file che usa ("[script] plugin sotto test: ...").
 """
 import os
 import subprocess
@@ -16,6 +20,7 @@ SCRIPTS = ["hub_contract.py", "upgrade_test.py", "wpcli_test.py"]
 
 def main() -> int:
     results = {}
+    print("WPHC_CANDIDATE_FILE =", os.environ.get("WPHC_CANDIDATE_FILE") or "(non impostata: plugin sotto test = baseline git)", flush=True)
     for script in SCRIPTS:
         print(f"\n######## {script}", flush=True)
         # Interprete isolato anche per i figli; PYTHONDONTWRITEBYTECODE evita __pycache__ nel repo.

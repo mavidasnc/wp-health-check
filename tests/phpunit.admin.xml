@@ -18,6 +18,7 @@
     beStrictAboutTestsThatDoNotTestAnything="true"
     failOnRisky="true"
     failOnWarning="true"
+    failOnSkipped="true"
 >
     <testsuites>
         <testsuite name="wp-health-check-admin">

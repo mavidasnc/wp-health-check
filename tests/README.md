@@ -10,18 +10,23 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | File | Contenuto |
 |---|---|
 | `bootstrap.php` | carica Composer, la test library e il plugin SOTTO TEST (una copia, vedi "Guardia anti-sovrascrittura"); guardie su costanti, provenienza dei simboli e integrita' dei file |
-| `refactor-map.php` | mappa UNICA "funzione 1.38.1 -> metodo del refactoring" (vedi "Convenzione cb() / REFACTOR_MAP") |
+| `refactor-map.php` | mappa UNICA "funzione 1.38.1 -> metodo del refactoring" (vedi "Convenzione cb() / call() / call_args() e mappa unica") |
 | `class-wphc-test-case.php` | classe base: buste firmate, firma HMAC, `request()`, reset dello stato, `cb()`/`call()`, controllo delle chiamate HTTP non mockate |
 | `class-wphc-golden.php` | confronto con gli snapshot in `fixtures/golden/` |
 | `class-wphc-helpers-read.php` | helper dei test di lettura (GET/POST con Bearer, HTTP mockato, golden normalizzati, spia degli header CORS) |
-| `class-wphc-helpers-update.php` | helper dei test di update (pacchetti di release SEMPRE difettosi, tabella di log, bulk, guardia sul plugin) |
+| `class-wphc-helpers-update.php` | helper dei test di update (pacchetti di release SEMPRE difettosi, tabella di log, bulk, cron lanciato con `do_action`) |
 | `class-wphc-helpers-admin.php` | helper dei test di admin e WP-CLI (tab Site Health, handler `admin-post`, `admin-ajax`) |
+| `trait-wphc-plugin-file-guard.php` | guardia PER-TEST sul file del plugin sotto test, usata dalle classi base di update e di admin (vedi "Guardia anti-sovrascrittura") |
 | `test-contract-vectors.php` | il plugin verifica/produce gli stessi byte dell'hub (vettori); URL del sito di test fissato in modo indipendente |
 | `test-enroll.php` | `/enroll` v1 e v2, `/rotate`, `/revoke`, stato dopo la revoca, reset dell'enrollment, candidati URL |
 | `test-auth.php` | `wphc_require_token`: ordine dei controlli, throttle, Bearer, HMAC v2, dual-stack, grazia |
 | `test-read-routes.php`, `test-misc-read.php`, `test-cors.php`, `test-thumbnail.php` | rotte di lettura (`/health`, `/ping`, `/detail/*`), `/debug`, autologin, ultimo login, CORS, miniatura |
 | `test-self-update.php`, `test-item-update.php`, `test-update-log.php`, `test-bulk.php`, `test-webhook.php` | self-update (solo i rami che NON riscrivono il file), update di plugin/temi/core, tabella di log, job bulk, webhook in uscita |
 | `test-admin.php`, `test-cli.php` | tab Site Health (HTML, notice, handler, AJAX) e comandi `wp health-check ...` (con WP-CLI simulata in-process) |
+| `test-refactor-map.php` | la mappa unica e `cb()` / `call()` / `call_args()`: 157 funzioni, destinazioni uniche, la mappa coincide con le funzioni dichiarate dal plugin (o, a classi, i metodi esistono e sono statici), ramo "metodo privato" e riferimenti provati con una classe di prova |
+| `test-hook-registry.php` | registro di TUTTI i callback del plugin agganciati agli hook (priorita', `accepted_args`, ordine, nomi della 1.38.1), delle 22 registrazioni REST (metodi, callback, `permission_callback`), ordine dei quattro callback su `init`, hook dell'upgrader e i 20 hook di flush su `auto_update_*`; golden `fixtures/golden/hooks/registry.json` SENZA maschere |
+| `test-throttle-double-dispatch.php` | pin del finding sul throttle (PRESERVATO: bug noto): il contatore dei fallimenti con la fase `rest_post_dispatch` che in-process manca |
+| `test-core-auto-update-state.php` | valori di `wphc_core_auto_update_state()` (ha una `static $cache`): un processo PHP per test, vedi "Test con processo separato" |
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
@@ -52,10 +57,14 @@ chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
   `WPMU_PLUGIN_DIR`; in caso contrario scrive su STDERR e termina con `exit(1)`, anche se tutti i test erano
   verdi. Dimostrata con una sonda temporanea (modifica della copia: exit 1 e "plugin sotto test modificato";
   creazione del `.bak`: exit 1 e "esiste ...wp-health-check.php.bak").
-- La guardia per-test di `class-wphc-helpers-update.php` (confronta i byte del plugin prima e dopo ogni test
-  di update, ripristina e fa fallire) resta: e' piu' fine (indica QUALE test ha scritto); quella del bootstrap
-  e' l'ultima rete per tutti gli altri file di test. Le due non si duplicano: una e' per-test con ripristino,
-  l'altra e' globale a fine processo.
+- La guardia per-test e' il trait `WPHC_Plugin_File_Guard` (`trait-wphc-plugin-file-guard.php`), usato da
+  `WPHC_Update_Test_Case` E da `WPHC_Admin_Test_Case` (prima solo dagli update: `test-admin.php` percorre il pull
+  vero fino al download, che si ferma solo perche' il mock risponde 500). Confronta i byte del file sotto test
+  prima e dopo ogni test, li RIPRISTINA e fa fallire il test indicando quale ha scritto; cancella solo i
+  `<file sotto test>.bak` e i `.wphc-new-*.tmp` creati DAL test (quelli gia' presenti a inizio test e qualunque
+  altro `*.bak` non si toccano). La guardia del bootstrap e' l'ultima rete per tutti gli altri file di test. Le due
+  non si duplicano: una e' per-test con ripristino, l'altra e' globale a fine processo e se la prima ha gia'
+  ripristinato non vede nulla.
 - **Provenienza dei simboli**: dopo l'avvio di WordPress ogni funzione `wphc_*` (tranne `wphc_test_*`) e ogni
   classe `WPHC_*` non di test devono essere dichiarate sotto la cartella del file indicato, e il plugin del
   repo non deve essere in `get_included_files()` se il file indicato e' un altro. Il caricamento del plugin
@@ -107,8 +116,9 @@ container: vanno impostate dentro `bash -c '...'` (vedi sotto) o con `docker exe
 # Dalla radice del progetto. Comando esatto, equivalente a `composer run test`:
 npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit
 
-# Un singolo file: un testsuite per file (nomi: admin, auth, bulk, cli, contract-vectors, cors, enroll,
-# item-update, misc-read, read-routes, self-update, thumbnail, update-log, webhook)
+# Un singolo file: un testsuite per file (nomi: admin, auth, bulk, cli, contract-vectors, core-auto-update,
+# cors, enroll, hook-registry, item-update, misc-read, read-routes, refactor-map, self-update, throttle,
+# thumbnail, update-log, webhook)
 npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit --testsuite enroll
 
 # Un singolo test (o una classe) con --filter
@@ -128,7 +138,11 @@ d'errore, non quegli header. Verificato nel container: dopo `header('X: 1')` in 
 
 `phpunit.xml.dist` converte in eccezioni errori, warning, notice E deprecazioni
 (`convertDeprecationsToExceptions="true"`): una deprecazione del plugin (o di una nuova versione
-di PHP) fa fallire il test invece di restare invisibile.
+di PHP) fa fallire il test invece di restare invisibile. Con `failOnRisky`, `failOnWarning` e `failOnSkipped`
+(attivi anche in `tests/phpunit.admin.xml`, e supportati da PHPUnit 9.6 nei due vendor) un test rischioso, con
+avviso o SALTATO rende rosso il run: un test saltato svuoterebbe il gate (il refactoring sembrerebbe verde senza
+provare nulla). Le tre condizioni di ambiente che prima facevano `markTestSkipped` (plugin `hello.php`, tema
+`twentytwentyfive`, tabella di log InnoDB) ora fanno `fail()` con il messaggio che spiega cosa manca.
 
 ### Lock di phpunit (ambiente condiviso)
 
@@ -251,7 +265,8 @@ se la richiesta ha scritto option, `options_autoload` (nome => valore GREZZO del
 con WordPress 7.x `on`/`off` quando il plugin passa il terzo argomento di `update_option`, `auto` quando lo
 omette). Normalizzazione: interi entro un giorno dall'ora corrente diventano `<TS_INT>` e stringhe numeriche
 (le option lette dal DB) `<TS_STR>` (due segnaposto distinti, cosi' un cambio di tipo non passa inosservato);
-date ISO 8601 `<ISO8601>`; stringhe esadecimali lunghe `<HEX>`; URL del sito `<SITE_URL>`; versione `<AGENT_VERSION>`.
+date ISO 8601 `<ISO8601>` SOLO se entro un giorno dall'ora corrente (un "adesso" generato dal plugin; una data lontana e' un valore
+fisso del fixture e resta letterale nel golden); stringhe esadecimali lunghe `<HEX>`; URL del sito `<SITE_URL>`; versione `<AGENT_VERSION>`.
 
 ## 5. Provare un altro file di plugin (build del refactoring)
 
@@ -265,49 +280,90 @@ Il bootstrap verifica la provenienza di TUTTI i simboli (funzioni e classi) e ch
 incluso. Il file indicato e' usato cosi' com'e' (non viene copiato): se la build scrive su `__FILE__`, la guardia
 a fine run se ne accorge.
 
-### Convenzione cb() / REFACTOR_MAP (API di test da riadattare nel refactoring)
+### Convenzione cb() / call() / call_args() e mappa unica (API di test da riadattare nel refactoring)
 
 Il refactoring non lascia wrapper `wphc_*` permanenti: le funzioni diventano metodi statici
-(`WPHC_Util::normalize_url`, `WPHC_Crypto::verify_central_signature`, ...). I test delle funzioni "note" le
-richiamano tramite l'UNICO punto condiviso `tests/refactor-map.php` (mappa funzione 1.38.1 -> `array( classe, metodo )`,
-dalla tabella 2.2 di `__docs/wp-health-check/refactoring-classi.md`):
+(`WPHC_Util::normalize_url`, `WPHC_Crypto::verify_central_signature`, ...). I test richiamano le funzioni interne
+del plugin SOLO tramite l'UNICO punto condiviso `tests/refactor-map.php`: la mappa funzione 1.38.1 ->
+`array( classe, metodo )` con TUTTE le 157 funzioni `wphc_*` del file (tabella 2.2 di
+`__docs/wp-health-check/refactoring-classi.md`, nello stesso ordine, con la visibilita' prevista a fianco):
 
-- `WPHC_Test_Case::cb( 'wphc_x' )` restituisce il nome della funzione se esiste ancora, altrimenti il metodo che
-  la sostituisce (valido per `call_user_func()`, `has_filter()`, `has_action()`); se non esiste nessuno dei due
+- `WPHC_Test_Case::cb( 'wphc_x' )` restituisce il nome della funzione se esiste ancora (plugin 1.38.1), altrimenti il
+  metodo che la sostituisce: l'array `array( classe, metodo )` se il metodo e' `public` (valido per
+  `call_user_func()`, `has_filter()`, `has_action()`), oppure una `Closure` ottenuta con la Reflection se e' `private`
+  o `protected` (chiamabile ma non adatta agli hook, che per definizione sono pubblici). Se non esiste nessuno dei due
   lancia un'eccezione che rimanda alla mappa;
-- `WPHC_Test_Case::call( 'wphc_x', ...$args )` fa `call_user_func_array( cb(...), $args )`;
-- il bootstrap legge la stessa mappa per riconoscere il plugin caricato (forma a funzioni o a classi).
+- `WPHC_Test_Case::call( 'wphc_x', ...$args )` fa `call_user_func_array( cb(...), $args )`: gli argomenti arrivano per
+  VALORE;
+- `WPHC_Test_Case::call_args( 'wphc_x', array( &$job, ... ) )` e' la variante con RIFERIMENTI, obbligatoria per le otto
+  funzioni con `array &$job` (`wphc_bulk_recount`, `wphc_bulk_apply_outcome`, `wphc_bulk_abort_job`,
+  `wphc_bulk_reap_stuck_items`, `wphc_bulk_maybe_reap`, `wphc_bulk_maybe_finalize`, `wphc_bulk_finish`,
+  `wphc_bulk_send_webhook_for_job`): con `call()` il job verrebbe copiato e PHP darebbe un warning (che la suite
+  trasforma in errore);
+- `WPHC_Test_Case::assert_hooked( $hook, cb(...), $priority, $accepted_args )` verifica priorita' E `accepted_args`;
+- il bootstrap legge la stessa mappa per riconoscere il plugin caricato (forma a funzioni o a classi), e il registro
+  degli hook (`test-hook-registry.php`) ne usa la mappa inversa per riportare i callback registrati ai nomi della 1.38.1.
 
-Se un nome cambia si aggiorna SOLO `tests/refactor-map.php`. I test del lotto 1 (`test-enroll.php`,
-`test-auth.php`, `test-contract-vectors.php`, `class-wphc-test-case.php`, `class-wphc-golden.php`) usano gia' solo
-`self::call()`; quelli di lettura usano `self::cb()`.
+Se un nome cambia si aggiorna SOLO `tests/refactor-map.php`. Nessun file di test chiama piu' una funzione `wphc_*` per
+nome (verificabile con `grep -nE "(^|[^'\"_a-zA-Z>:$])wphc_[a-z_0-9]+\(" tests/*.php`: restano solo le funzioni di supporto
+`wphc_test_*` e `wphc_read_test_passthrough`, e commenti). I cron si lanciano con `do_action( 'wphc_bulk_update_tick' )`
+e `do_action( 'wphc_webhook_retry' )` (helper `run_tick()` e `run_webhook_retry()`, che verificano anche la
+registrazione del callback), non chiamando `wphc_bulk_run_tick()` / `wphc_maybe_retry_webhook()`.
 
-Le funzioni interne che i test usano e che NON sono ancora nella mappa (chiamate per nome, da riadattare nel
-refactoring aggiungendole alla mappa e passando da `call()`/`cb()`), con i file che le usano:
+Funzioni NON ancora mappate: nessuna (la mappa e' completa). Le sostitute dei metodi vanno comunque verificate con la
+prima build: una chiave che non risolve fa lanciare a `cb()` un'eccezione esplicita. Metodi `private` nella mappa che i
+test usano e che `cb()` rende raggiungibili solo con la Reflection (se la build li rende `public` meglio, ma non e'
+necessario): `wphc_bulk_acquire_lock`, `wphc_bulk_apply_outcome`, `wphc_bulk_backoff_for_attempt`,
+`wphc_bulk_build_webhook_payload`, `wphc_bulk_classify_result`, `wphc_bulk_compute_stall_after_ts`,
+`wphc_bulk_get_job`, `wphc_bulk_new_item`, `wphc_bulk_next_delay`, `wphc_bulk_normalize_items`, `wphc_bulk_recount`,
+`wphc_bulk_save_job`, `wphc_bulk_schedule_tick`, `wphc_bulk_send_webhook_for_job`, `wphc_bulk_unschedule_ticks`,
+`wphc_core_auto_update_state` (con la sua `static $cache`, che nel refactoring diventa `private static
+$core_auto_update_state`: i test sono a processo separato e non dipendono da come e' resa), `wphc_current_actor`,
+`wphc_fetch_latest_release`, `wphc_fetch_latest_release_from_hub`, `wphc_fetch_latest_release_without_api`,
+`wphc_install_release`, `wphc_is_package_host_allowed`, `wphc_is_release_tag`, `wphc_map_item_update_outcome`,
+`wphc_update_preflight`. Un metodo non statico o con firma diversa da quella della funzione fa fallire il test con un
+messaggio che rimanda alla mappa.
 
-- bulk: `wphc_bulk_acquire_lock`, `wphc_bulk_apply_outcome`, `wphc_bulk_backoff_for_attempt`,
-  `wphc_bulk_classify_result`, `wphc_bulk_compute_stall_after_ts`, `wphc_bulk_get_job`, `wphc_bulk_maybe_rearm`,
-  `wphc_bulk_new_item`, `wphc_bulk_next_delay`, `wphc_bulk_normalize_items`, `wphc_bulk_recount`,
-  `wphc_bulk_release_lock`, `wphc_bulk_run_tick`, `wphc_bulk_save_job`, `wphc_bulk_schedule_tick`,
-  `wphc_bulk_summary`, `wphc_bulk_unschedule_ticks` (`test-bulk.php`, `class-wphc-helpers-update.php`);
-- webhook: `wphc_bulk_build_webhook_payload`, `wphc_bulk_send_webhook_for_job`, `wphc_dispatch_webhook_payload`,
-  `wphc_maybe_retry_webhook`, `wphc_webhook_backoff_for_attempt`, `wphc_webhook_url`, `wphc_webhook_url_is_allowed`
-  (`test-webhook.php`);
-- log di update e update: `wphc_clear_stale_maintenance`, `wphc_current_actor`, `wphc_detect_update_source`,
-  `wphc_generate_correlation_id`, `wphc_get_reactivation_candidates`, `wphc_is_package_host_allowed`,
-  `wphc_log_update_row`, `wphc_maintenance_file_path`, `wphc_maybe_install_update_log_schema`,
-  `wphc_maybe_log_core_version_change`, `wphc_maybe_prune_update_log`, `wphc_perform_core_update`,
-  `wphc_record_last_update`, `wphc_release_update_lock`, `wphc_update_preflight`, `wphc_map_item_update_outcome`
-  (`test-update-log.php`, `test-item-update.php`, `test-bulk.php`, `class-wphc-helpers-admin.php`);
-- self-update e lettura: `wphc_fetch_latest_release`, `wphc_fetch_latest_release_from_hub`,
-  `wphc_fetch_latest_release_without_api`, `wphc_get_latest_version` (`test-self-update.php`),
-  `wphc_core_auto_update_state` (`test-read-routes.php`).
+Restano fuori dalla mappa per natura (non sono funzioni del plugin): le costanti `WP_HEALTH_CHECK_*` e le stringhe
+`'wphc_...'` che sono nomi di azioni admin-post/AJAX, di nonce, di campi POST (`wphc_webhook_url`, `wphc_save_webhook`,
+...), di hook cron e di option, che il refactoring NON rinomina (sezione 1.7 del progetto).
 
-Anche `wphc_update_log_table` e le funzioni gia' in mappa sono ancora chiamate direttamente in alcuni file
-degli altri lotti (`test-update-log.php`, `class-wphc-helpers-*.php`): vanno portate a `call()`/`cb()`.
-In piu' i test dipendono dalle costanti `WP_HEALTH_CHECK_*` e dagli hook registrati (nomi, priorita').
-Le funzioni `private` del refactoring (es. `install_release`, `is_release_tag`) vanno rese raggiungibili dalla
-build di test o i test che le usano vanno adattati.
+### Registro degli hook (`test-hook-registry.php`)
+
+Fotografa, dopo il bootstrap e `rest_get_server()`, ogni callback del plugin agganciato a un hook di
+`$GLOBALS['wp_filter']`: e' "del plugin" se la Reflection lo dichiara nel file sotto test (il solo prefisso
+`wphc_`/`WPHC_` non basta: le classi di supporto dei test hanno lo stesso prefisso e stanno sotto `tests/`). Per ogni
+hook registra l'elenco ORDINATO di `[priorita, callback normalizzato, accepted_args]` (ordine di esecuzione) e per le
+rotte `[metodi, callback, permission_callback, nomi degli args]`; il golden `fixtures/golden/hooks/registry.json` non ha
+maschere (45 hook, 48 registrazioni, 20 percorsi REST, 22 handler). Un callback che la mappa non conosce fa FALLIRE il
+test (mai un ripiego sul callable grezzo). Asserzioni esplicite in piu': i quattro callback su `init`
+(3963 schema del log, 4383 versione del core, 5962 ri-armo del bulk, 7410 autologin: righe della 1.38.1), gli hook
+dell'upgrader e dell'audit con `accepted_args`, i 20 hook di flush su `auto_update_*` (12 dinamici sul core), le
+rotte (22 registrazioni su 20 percorsi, `wphc_require_token` su 17 handler). Il comando `WP_CLI::add_command(
+'health-check', ... )` non gira in PHPUnit (`WP_CLI` non e' definita): si verifica nel sorgente (anche in
+`test-cli.php`) e con la WP-CLI vera in `tests/e2e/wpcli_test.py`.
+
+Per rigenerare il golden: `EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash C:/tmp/wphc-run-phpunit.sh 81 --testsuite hook-registry`
+e controllare il diff: un cambiamento di priorita', di ordine o di `accepted_args` e' un cambiamento di comportamento
+da decidere, non da rigenerare.
+
+### Test con processo separato (`test-core-auto-update-state.php`)
+
+I test marcati `@runInSeparateProcess` (con `@preserveGlobalState disabled`) rilanciano `tests/bootstrap.php` in un
+processo figlio: servono quando il codice sotto test ha stato per processo (la `static $cache` di
+`wphc_core_auto_update_state()`) o costanti da definire (`AUTOMATIC_UPDATER_DISABLED`, `WP_AUTO_UPDATE_CORE`).
+Il bootstrap imposta `WP_TESTS_SKIP_INSTALL=1` DOPO l'avvio del padre: senza, il figlio farebbe reinstallare il
+database alla test library mentre il padre aspetta. Ogni figlio costa circa 5 secondi (rifa' il bootstrap di
+WordPress), quindi il file di 12 test pesa circa un minuto: i test sono pochi e solo dove serve.
+
+### Fine riga (`.gitattributes`)
+
+`.gitattributes` impone `* text=auto eol=lf` (e i binari come `binary`): nel repo e nel checkout i file sono sempre
+LF anche su Windows con `core.autocrlf=true`. Con CRLF cambierebbero i byte e lo SHA-256 del plugin distribuito
+(release firmata) e dei golden. Diagnosi: `git ls-files --eol` (colonne `i/` indice, `w/` copia di lavoro) e, per il
+plugin, `tr -d '\r' < mu-plugins/wp-health-check.php | sha256sum` deve coincidere con
+`git show HEAD:mu-plugins/wp-health-check.php | sha256sum`. Una copia di lavoro ancora in CRLF (`w/crlf`) non e' un
+problema per git (con l'attributo `git diff` non vede differenze) e si normalizza con un nuovo checkout del file.
 
 ## Chiamate HTTP in uscita nei test
 
@@ -344,8 +400,14 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
   esercitato davvero da `test-contract-vectors.php::test_release_message_builder_accepts_the_hub_signature`: una
   DIRECTORY al posto del `.bak` fa fallire il backup subito dopo la verifica della firma, quindi il vettore firmato
   dall'hub supera integrita' e firma e la pipeline si ferma con `wphc_update_backup_failed` senza scrivere nulla.
-- Su richieste HTTP reali il `permission_callback` `wphc_require_token` gira due volte (in-process, con
-  `rest_do_request()`, no): vedi `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`.
+- Su richieste HTTP reali il `permission_callback` `wphc_require_token` gira piu' volte per richiesta (la prima nel
+  dispatch, le altre dentro `rest_send_allow_header()`), e la rivalutazione di una richiesta firmata fallisce sul
+  nonce gia' usato: vedi `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`. Con `rest_do_request()` il
+  fenomeno non si vede, ma `test-throttle-double-dispatch.php` lo riproduce chiamando
+  `apply_filters( 'rest_post_dispatch', ... )` con lo stesso oggetto richiesta e FISSA i delta del contatore
+  (PRESERVATO: bug noto): GET `/ping` valido v2 +1, GET `/update/bulk` valido v2 +2 (due handler), Bearer errato +2 su
+  `/ping` e +3 su `/update/bulk`, OPTIONS 0, protocollo 1 valido 0. Se il bug verra' corretto questi test vanno
+  invertiti con decisione esplicita (stessi numeri misurati su HTTP vero in `tests/e2e/hub_contract.py`).
 
 ## Comportamenti "scomodi" fissati dai test (da preservare o cambiare con decisione esplicita)
 
