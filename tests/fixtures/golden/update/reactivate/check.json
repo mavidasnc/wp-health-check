@@ -1,0 +1,22 @@
+{
+    "body": {
+        "check": true,
+        "discrepancies": 1,
+        "failed": 0,
+        "generated_at": "<ISO8601>",
+        "reactivated": 0,
+        "results": [
+            {
+                "currently_active": false,
+                "name": "WPHC Fixture",
+                "target": "wphc-fixture-c/wphc-fixture-c.php",
+                "was_active": true
+            }
+        ],
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

@@ -1,0 +1,23 @@
+{
+    "body": {
+        "error": {
+            "at": "<ISO8601>",
+            "code": "wphc_thumb_not_an_image",
+            "message": "vecchio errore",
+            "provider": "https://image.thum.io/get/noanimate/png/width/400/"
+        },
+        "generated_at": "<ISO8601>",
+        "thumbnail": "https://uploads.invalid/t.png"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

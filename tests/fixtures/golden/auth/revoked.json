@@ -1,0 +1,13 @@
+{
+    "body": {
+        "code": "wphc_revoked",
+        "data": {
+            "status": 403
+        },
+        "message": "Segreto revocato dal sistema centrale."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 403
+}

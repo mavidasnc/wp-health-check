@@ -1,0 +1,90 @@
+{
+    "body": {
+        "generated_at": "<ISO8601>",
+        "job": {
+            "abort_reason": null,
+            "counters": {
+                "done": 3,
+                "failed": 0,
+                "pending": 0,
+                "skipped": 3,
+                "total": 3,
+                "updated": 0,
+                "warnings": 0
+            },
+            "created_at": "<ISO8601>",
+            "finished_at": "<ISO8601>",
+            "items": [
+                {
+                    "attempts": 0,
+                    "claimed_ts": "<TS_INT>",
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": "<TS_INT>",
+                    "from": null,
+                    "last_error": null,
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": "not_found",
+                    "state": "done",
+                    "target": "nulla/nulla.php",
+                    "to": null,
+                    "type": "plugin"
+                },
+                {
+                    "attempts": 0,
+                    "claimed_ts": "<TS_INT>",
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": "<TS_INT>",
+                    "from": "1.7.2",
+                    "last_error": null,
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": "up_to_date",
+                    "state": "done",
+                    "target": "hello.php",
+                    "to": null,
+                    "type": "plugin"
+                },
+                {
+                    "attempts": 0,
+                    "claimed_ts": "<TS_INT>",
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": "<TS_INT>",
+                    "from": null,
+                    "last_error": "pacchetto non ospitato su wordpress.org",
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": "not_updatable",
+                    "state": "done",
+                    "target": "twentytwentyfive",
+                    "to": null,
+                    "type": "theme"
+                }
+            ],
+            "job_id": "<HEX>",
+            "next_run_at": "<ISO8601>",
+            "stalled": false,
+            "started_at": "<ISO8601>",
+            "status": "completed",
+            "webhook": {
+                "attempts": 1,
+                "code": 0,
+                "last_error": null,
+                "sending_ts": "<TS_INT>",
+                "sent": false,
+                "sent_ts": null
+            }
+        },
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

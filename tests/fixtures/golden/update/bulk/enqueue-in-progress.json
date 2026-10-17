@@ -1,0 +1,19 @@
+{
+    "body": {
+        "code": "wphc_bulk_job_in_progress",
+        "data": {
+            "done": 0,
+            "job_id": "<HEX>",
+            "job_status": "queued",
+            "next_run_at": "<ISO8601>",
+            "stalled": false,
+            "status": 409,
+            "total": 1
+        },
+        "message": "Un job di aggiornamento bulk e' gia' in corso."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 409
+}

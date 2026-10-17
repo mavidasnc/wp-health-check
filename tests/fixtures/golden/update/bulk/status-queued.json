@@ -1,0 +1,56 @@
+{
+    "body": {
+        "generated_at": "<ISO8601>",
+        "job": {
+            "abort_reason": null,
+            "counters": {
+                "done": 0,
+                "failed": 0,
+                "pending": 1,
+                "skipped": 0,
+                "total": 1,
+                "updated": 0,
+                "warnings": 0
+            },
+            "created_at": "<ISO8601>",
+            "finished_at": null,
+            "items": [
+                {
+                    "attempts": 0,
+                    "claimed_ts": null,
+                    "correlations": [],
+                    "deferrals": 0,
+                    "finished_ts": null,
+                    "from": null,
+                    "last_error": null,
+                    "log_id": null,
+                    "name": null,
+                    "next_after": 0,
+                    "result": null,
+                    "state": "pending",
+                    "target": "hello.php",
+                    "to": null,
+                    "type": "plugin"
+                }
+            ],
+            "job_id": "<HEX>",
+            "next_run_at": "<ISO8601>",
+            "stalled": false,
+            "started_at": null,
+            "status": "queued",
+            "webhook": {
+                "attempts": 0,
+                "code": null,
+                "last_error": null,
+                "sending_ts": null,
+                "sent": false,
+                "sent_ts": null
+            }
+        },
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 200
+}

@@ -1,0 +1,50 @@
+{
+    "body": {
+        "count": 2,
+        "entries": [
+            {
+                "active": false,
+                "actor": "admin",
+                "correlation_id": "<HEX>",
+                "created_at": "<ISO8601>",
+                "id": "<LOG_ID>",
+                "ip": "203.0.113.10",
+                "message": "errore",
+                "name": "WordPress",
+                "phase": "failed",
+                "source": "cron",
+                "target": "core",
+                "type": "core",
+                "version_from": null,
+                "version_to": null
+            },
+            {
+                "active": true,
+                "actor": null,
+                "correlation_id": "<HEX>",
+                "created_at": "<ISO8601>",
+                "id": "<LOG_ID>",
+                "ip": "203.0.113.10",
+                "message": null,
+                "name": "X",
+                "phase": "requested",
+                "source": "api",
+                "target": "x/x.php",
+                "type": "plugin",
+                "version_from": "1.0",
+                "version_to": "2.0"
+            }
+        ],
+        "site": "<SITE_URL>",
+        "total": 2
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

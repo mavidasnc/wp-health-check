@@ -1,0 +1,460 @@
+{
+  "_meta": {
+    "descrizione": "Vettori di contratto hub -> plugin wp-health-check. File GENERATO: non modificare a mano.",
+    "generato_da": "tests/tools/gen_contract_vectors.py",
+    "hub_sorgenti_sha256": {
+      "services/enroll.py": "6ba36976bb912838d5f9b8476a29d046a80490116bce27cf38a9cff968003dd1",
+      "services/fleet/proxy.py": "ec6bc014ceabd246bf4ed426b9d30eb9ed1c0cebb937f8ccb799aea40b56bc7d",
+      "services/fleet/webhook.py": "e25aa39879a342183bdbfb53ab3aaddf3e410ed91a6280f0715e2302e81221bb",
+      "scripts/sign_release.py": "37d22882f14234eb011abe019850a9fa58f11cdf03123ffb390af5937e15461a"
+    },
+    "issued_at_fisso": 1700000000
+  },
+  "keys": {
+    "k1": {
+      "seed_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "public_b64": "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg=",
+      "uso": "buste centro -> sito (envelope)"
+    },
+    "k2": {
+      "seed_b64": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8=",
+      "public_b64": "Kay64UG8yvCyLhqU000LxzYeUm0L/hLIl5S8kyKWbdc=",
+      "uso": "release"
+    }
+  },
+  "normalize_url": [
+    {
+      "input": "https://example.com",
+      "hub": "https://example.com",
+      "hub_error": null,
+      "note": "base",
+      "plugin": "https://example.com",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com/",
+      "hub": "https://example.com",
+      "hub_error": null,
+      "note": "slash finale",
+      "plugin": "https://example.com",
+      "diverge": false
+    },
+    {
+      "input": "https://www.Example.com/Blog/",
+      "hub": "https://www.example.com/Blog",
+      "hub_error": null,
+      "note": "www + maiuscole host, path case-sensitive",
+      "plugin": "https://www.example.com/Blog",
+      "diverge": false
+    },
+    {
+      "input": "HTTP://EXAMPLE.COM/",
+      "hub": "http://example.com",
+      "hub_error": null,
+      "note": "schema e host maiuscoli",
+      "plugin": "http://example.com",
+      "diverge": false
+    },
+    {
+      "input": "http://example.com/",
+      "hub": "http://example.com",
+      "hub_error": null,
+      "note": "http resta http",
+      "plugin": "http://example.com",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com:8443/sub/",
+      "hub": "https://example.com:8443/sub",
+      "hub_error": null,
+      "note": "porta non standard",
+      "plugin": "https://example.com:8443/sub",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com:443/",
+      "hub": "https://example.com:443",
+      "hub_error": null,
+      "note": "porta standard esplicita: conservata da entrambi",
+      "plugin": "https://example.com:443",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com/path?x=1#frag",
+      "hub": "https://example.com/path",
+      "hub_error": null,
+      "note": "query e fragment scartati",
+      "plugin": "https://example.com/path",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com//",
+      "hub": "https://example.com",
+      "hub_error": null,
+      "note": "slash finali multipli",
+      "plugin": "https://example.com",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com/a/b///",
+      "hub": "https://example.com/a/b",
+      "hub_error": null,
+      "note": "slash finali multipli dopo un path",
+      "plugin": "https://example.com/a/b",
+      "diverge": false
+    },
+    {
+      "input": "https://esempio.com/blog/",
+      "hub": "https://esempio.com/blog",
+      "hub_error": null,
+      "note": "esempio del README",
+      "plugin": "https://esempio.com/blog",
+      "diverge": false
+    },
+    {
+      "input": "https://example.com/Path/CaSe",
+      "hub": "https://example.com/Path/CaSe",
+      "hub_error": null,
+      "note": "path case-sensitive",
+      "plugin": "https://example.com/Path/CaSe",
+      "diverge": false
+    },
+    {
+      "input": "https://xn--bcher-kva.example/",
+      "hub": "https://xn--bcher-kva.example",
+      "hub_error": null,
+      "note": "IDN gia' in punycode",
+      "plugin": "https://xn--bcher-kva.example",
+      "diverge": false
+    },
+    {
+      "input": "https://bücher.example/",
+      "hub": "https://bücher.example",
+      "hub_error": null,
+      "note": "IDN con carattere minuscolo non ASCII: nessuna conversione punycode",
+      "plugin": "https://bücher.example",
+      "diverge": false
+    },
+    {
+      "input": "https://[::1]:8080/x/",
+      "hub": "https://[::1]:8080/x",
+      "hub_error": null,
+      "note": "IPv6 con porta",
+      "plugin": "https://[::1]:8080/x",
+      "diverge": false
+    },
+    {
+      "input": "https://EXAMPLE.com/Blog",
+      "hub": "https://example.com/Blog",
+      "hub_error": null,
+      "note": "host maiuscolo senza slash",
+      "plugin": "https://example.com/Blog",
+      "diverge": false
+    },
+    {
+      "input": "http://example.com:80/",
+      "hub": "http://example.com:80",
+      "hub_error": null,
+      "note": "http con porta 80 esplicita: conservata da entrambi (nessun default per schema)",
+      "plugin": "http://example.com:80",
+      "diverge": false
+    },
+    {
+      "input": "https://BÜCHER.example/",
+      "hub": "https://bücher.example",
+      "hub_error": null,
+      "note": "host con maiuscola non ASCII: Python .lower() la abbassa, strtolower() di PHP e' solo ASCII",
+      "plugin": "https://bÜcher.example",
+      "diverge": true
+    },
+    {
+      "input": "https://user:pw@Example.com/x",
+      "hub": "https://user:pw@example.com/x",
+      "hub_error": null,
+      "note": "userinfo: l'hub lo conserva nel netloc, il plugin lo scarta (wp_parse_url separa user/pass)",
+      "plugin": "https://example.com/x",
+      "diverge": true
+    },
+    {
+      "input": "https://example.com\\",
+      "hub": "https://example.com\\",
+      "hub_error": null,
+      "note": "backslash finale: untrailingslashit() lo toglie, rstrip('/') dell'hub no",
+      "plugin": "https://example.com",
+      "diverge": true
+    },
+    {
+      "input": "example.com",
+      "hub": null,
+      "hub_error": "URL non valido",
+      "note": "senza schema: l'hub solleva ValueError; per il plugin 'example.com' e' un path (nessun host) e lo accoda a 'https://'",
+      "plugin": "https://example.com",
+      "diverge": true
+    },
+    {
+      "input": "ftp://example.com",
+      "hub": null,
+      "hub_error": "URL non valido",
+      "note": "schema non http(s): l'hub solleva ValueError, il plugin lo accetta cosi' com'e'",
+      "plugin": "ftp://example.com",
+      "diverge": true
+    },
+    {
+      "input": "",
+      "hub": null,
+      "hub_error": "URL non valido",
+      "note": "stringa vuota: l'hub solleva ValueError; il plugin non ha host e restituisce 'https:' (untrailingslashit di 'https://')",
+      "plugin": "https:",
+      "diverge": true
+    },
+    {
+      "input": "//example.com/x",
+      "hub": null,
+      "hub_error": "URL non valido",
+      "note": "URL relativo al protocollo: l'hub solleva ValueError (niente schema), il plugin assume https",
+      "plugin": "https://example.com/x",
+      "diverge": true
+    }
+  ],
+  "token_v1": [
+    {
+      "url_normalizzato": "https://esempio.com/blog",
+      "master_secret": "K7xVq2mZ9pL4wRt8yUbN3cF6hJdS1oGiEaXk0nT5vM2r",
+      "token": "hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI"
+    },
+    {
+      "url_normalizzato": "https://example.org",
+      "master_secret": "master-di-test",
+      "token": "mCai_ScY0Qs0VpzLNi_8YnbAluayc7QLLPEmTHO1PJw"
+    },
+    {
+      "url_normalizzato": "https://www.example.org:8443/sub",
+      "master_secret": "master-di-test",
+      "token": "uanM_tTuFbRDTMBpkCDKh-7l__odaJSmbImdQUkrnGs"
+    }
+  ],
+  "enroll_v1": [
+    {
+      "site_url": "https://example.org",
+      "token": "mCai_ScY0Qs0VpzLNi_8YnbAluayc7QLLPEmTHO1PJw",
+      "dashboard_origin": "",
+      "issued_at": 1700000000,
+      "canonical": "https://example.org\nmCai_ScY0Qs0VpzLNi_8YnbAluayc7QLLPEmTHO1PJw\n\n1700000000",
+      "signature": "btE0WUKvNJzRHbqyQs2mEmiHQPcJN7OiNysERnKsW8UI/O1PFjq70LZxVe4r8E7yeb5KuSlE1TjRETD9Xw8uDw=="
+    },
+    {
+      "site_url": "https://example.org",
+      "token": "mCai_ScY0Qs0VpzLNi_8YnbAluayc7QLLPEmTHO1PJw",
+      "dashboard_origin": "https://fleet.example",
+      "issued_at": 1700000000,
+      "canonical": "https://example.org\nmCai_ScY0Qs0VpzLNi_8YnbAluayc7QLLPEmTHO1PJw\nhttps://fleet.example\n1700000000",
+      "signature": "DtYs/kCJZiJKN4nURzEBLitHrPVaS6WT0EvJUzgKBYhO+yLVu0uyVo+dxjX6qyKaeJgg7dAkcAsLXRzv9wJwAw=="
+    },
+    {
+      "site_url": "https://example.org/blog",
+      "token": "tok-v1-fisso",
+      "dashboard_origin": "",
+      "issued_at": 1700000000,
+      "canonical": "https://example.org/blog\ntok-v1-fisso\n\n1700000000",
+      "signature": "et3IunUsy+mHHkarpp5jooPYtXVbQ3EIdvZ4phladUt+F9u4YwX8TzePEpWVf8ebhmZgmXPI3O4u5MMM4PpEAQ=="
+    }
+  ],
+  "enroll_v2": [
+    {
+      "site_url": "https://example.org",
+      "token": "tok-v2-fisso-1",
+      "dashboard_origin": "https://fleet.example",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "issued_at": 1700000000,
+      "protocol": 2,
+      "canonical": "enroll\nhttps://example.org\ntok-v2-fisso-1\nhttps://fleet.example\n00112233445566778899aabbccddeeff\n1700000000\n2",
+      "signature": "+rGQCc7BP8OaqcL5DGwi1ZjN8vEIu2tsCPcubwwIUun6HW7ed7UL0a3rwiy8BAZ927/79VX94r5P81qW86VCCw=="
+    },
+    {
+      "site_url": "https://example.org",
+      "token": "tok-v2-fisso-2",
+      "dashboard_origin": "",
+      "nonce": "ffeeddccbbaa99887766554433221100",
+      "issued_at": 1700000000,
+      "protocol": 2,
+      "canonical": "enroll\nhttps://example.org\ntok-v2-fisso-2\n\nffeeddccbbaa99887766554433221100\n1700000000\n2",
+      "signature": "EpDsgZKyiysfrokXOaZtqKA7d7peEYxVEriZxjuxpnFI8y3HkHAPmKFrLIuYgXzm65kOLneSP3Z3bWRhRawZAg=="
+    }
+  ],
+  "rotate": [
+    {
+      "site_url": "https://example.org",
+      "new_token": "nuovo-segreto-fisso",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "issued_at": 1700000000,
+      "protocol": 2,
+      "canonical": "rotate\nhttps://example.org\nnuovo-segreto-fisso\n00112233445566778899aabbccddeeff\n1700000000\n2",
+      "signature": "VT/GyltB4jYt/VqynLL/dOaxmSrmaR/+r+/NCtKXf4bZJ3p5C0fq+bLJeIMcbqUGgbp9tKOBKuQfxnUfcl3ZDA=="
+    }
+  ],
+  "revoke": [
+    {
+      "site_url": "https://example.org",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "issued_at": 1700000000,
+      "canonical": "revoke\nhttps://example.org\n00112233445566778899aabbccddeeff\n1700000000",
+      "signature": "JcyOGU+GId4ymWSPRcZGgiR40kFO/C/g92Ad46IpHa0vxCUaCDeiiWetpgbUUnxL1YB2c/SN7LA4nEuRXZGaAg=="
+    }
+  ],
+  "request_hmac": [
+    {
+      "secret": "segreto-di-test-1",
+      "method": "GET",
+      "route": "/health-check/v1/health",
+      "body": "",
+      "body_producer": "nessun corpo",
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "GET\n/health-check/v1/health\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "VaW772wTvo-D28KMQMsuOvgtn8w0E7sOEhccua1vvo8"
+    },
+    {
+      "secret": "segreto-di-test-1",
+      "method": "POST",
+      "route": "/health-check/v1/update/plugin",
+      "body": "{\"plugin\":\"akismet/akismet.php\"}",
+      "body_producer": "stringa scritta a mano, senza spazi (NON e' il formato dell'hub)",
+      "body_sha256": "01f784604e3964929ae6d34cc67c6da2197794cf8fd4d8a451ac976ee15a80a2",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\n/health-check/v1/update/plugin\n01f784604e3964929ae6d34cc67c6da2197794cf8fd4d8a451ac976ee15a80a2\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "lpIEFPh89luBebqeeslGS-11WD_xt0AWljwHhE_Q9M4"
+    },
+    {
+      "secret": "segreto-di-test-1",
+      "method": "POST",
+      "route": "/health-check/v1/update/plugin",
+      "body": "{\"plugin\": \"akismet/akismet.php\"}",
+      "body_producer": "json.dumps(dict, allow_nan=False) dell'hub",
+      "body_sha256": "ad297f51b54ad0d7560ff69480988a71db291216fc4ceb556669dd160efdd65d",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\n/health-check/v1/update/plugin\nad297f51b54ad0d7560ff69480988a71db291216fc4ceb556669dd160efdd65d\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "1t-GrAqkeh54r8VQ0uiQxqLvivPECT_VncgEUpHdjKc"
+    },
+    {
+      "secret": "segreto-di-test-1",
+      "method": "POST",
+      "route": "/health-check/v1/update/bulk",
+      "body": "{\"items\": [{\"type\": \"plugin\", \"target\": \"akismet/akismet.php\"}, {\"type\": \"theme\", \"target\": \"twentytwentyfive\"}], \"note\": \"caff\\u00e8 \\u20ac \\u00fc\", \"force\": false, \"dry_run\": true, \"after\": null}",
+      "body_producer": "json.dumps(dict, allow_nan=False) dell'hub, con escape \\uXXXX non ASCII",
+      "body_sha256": "cc28fb723a0f36d599d8b06b76803368aafeb86b07048a6c535480b5f98cb78c",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\n/health-check/v1/update/bulk\ncc28fb723a0f36d599d8b06b76803368aafeb86b07048a6c535480b5f98cb78c\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "O3GlKwUYZf-hosOI1vH6aC93wAXivuJsaUHHGYAC09k"
+    },
+    {
+      "secret": "segreto-di-test-2",
+      "method": "POST",
+      "route": "/health-check/v1/update/bulk",
+      "body": "{\"note\":\"caffè € ü\"}",
+      "body_producer": "byte UTF-8 grezzi non ASCII",
+      "body_sha256": "cc3ec3d1213330444b5a27762e43a1e830423a36d441e5ef06ba045e5fa334dc",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\n/health-check/v1/update/bulk\ncc3ec3d1213330444b5a27762e43a1e830423a36d441e5ef06ba045e5fa334dc\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "DhfcdRYfy-gU7fViYcw0ShNSQlrcB5xU6M27AdIPyUs"
+    },
+    {
+      "secret": "segreto-di-test-2",
+      "method": "GET",
+      "route": "/health-check/v1/detail/plugins",
+      "body": "",
+      "body_producer": "nessun corpo",
+      "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "GET\n/health-check/v1/detail/plugins\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "9O-XIIb2rTeU3rhy3Ry9TAIylSrnRECgcIUXsaktteg"
+    }
+  ],
+  "webhook": [
+    {
+      "secret": "segreto-di-test-1",
+      "event": "wphc.test",
+      "body": "{\"event\":\"wphc.test\",\"site\":\"https://example.org\"}",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\nwphc.test\nf3f6e7211410951d70725328570a84c1adf80cbe8f3b193d1bbfd30b52dfac16\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "__wQ9KwsWq9rBTzG1D4-tRQkXjoolx3HtXoDFom3lgw"
+    },
+    {
+      "secret": "segreto-di-test-1",
+      "event": "wphc.bulk_update.completed",
+      "body": "{\"event\":\"wphc.bulk_update.completed\",\"items\":[{\"target\":\"akismet/akismet.php\",\"phase\":\"completed\"}]}",
+      "timestamp": "1700000000",
+      "nonce": "00112233445566778899aabbccddeeff",
+      "canonical": "POST\nwphc.bulk_update.completed\nabd6809cc41a47df9bff52cb11bba35b47ed3c5784c37b5b4f9a239330264821\n1700000000\n00112233445566778899aabbccddeeff",
+      "signature": "opswi--P-XIH5_5qFTT0hMadETL7LLMdYh75AyrR9VY"
+    }
+  ],
+  "release": [
+    {
+      "tag": "v1.38.1",
+      "content": "<?php\n/**\n * Version:     1.38.1\n */\n// contenuto fisso di test 1.38.1\n",
+      "sha256": "f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+      "kid": "k2",
+      "canonical": "release\nv1.38.1\nf63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+      "signature": "oKAnUunPiAHapuEuLP5RyjwlLL22H1RjxSliV0V9v3nX24U0jeqNm5ukqleLu2hqvLKKH+A3wn5o9LdV8vcWBQ==",
+      "sig": {
+        "tag": "v1.38.1",
+        "sha256": "f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+        "kid": "k2",
+        "signature": "oKAnUunPiAHapuEuLP5RyjwlLL22H1RjxSliV0V9v3nX24U0jeqNm5ukqleLu2hqvLKKH+A3wn5o9LdV8vcWBQ=="
+      },
+      "sig_json": "{\n  \"tag\": \"v1.38.1\",\n  \"sha256\": \"f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07\",\n  \"kid\": \"k2\",\n  \"signature\": \"oKAnUunPiAHapuEuLP5RyjwlLL22H1RjxSliV0V9v3nX24U0jeqNm5ukqleLu2hqvLKKH+A3wn5o9LdV8vcWBQ==\"\n}\n"
+    },
+    {
+      "tag": "1.38.1",
+      "content": "<?php\n/**\n * Version:     1.38.1\n */\n// contenuto fisso di test 1.38.1\n",
+      "sha256": "f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+      "kid": "k2",
+      "canonical": "release\n1.38.1\nf63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+      "signature": "Y668xgxkB+lflR6gH7+JUXebW9QGVjm1bgziyz0qooSNw3UC8Wni5wnOybKtg7wS3Qh3FtRtDkLilzbtHu11DA==",
+      "sig": {
+        "tag": "1.38.1",
+        "sha256": "f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07",
+        "kid": "k2",
+        "signature": "Y668xgxkB+lflR6gH7+JUXebW9QGVjm1bgziyz0qooSNw3UC8Wni5wnOybKtg7wS3Qh3FtRtDkLilzbtHu11DA=="
+      },
+      "sig_json": "{\n  \"tag\": \"1.38.1\",\n  \"sha256\": \"f63562f61fff0684a0ddbfb3e94faaf84bf82e67ee45351dad19fff25dfadd07\",\n  \"kid\": \"k2\",\n  \"signature\": \"Y668xgxkB+lflR6gH7+JUXebW9QGVjm1bgziyz0qooSNw3UC8Wni5wnOybKtg7wS3Qh3FtRtDkLilzbtHu11DA==\"\n}\n"
+    },
+    {
+      "tag": "v9.9.9",
+      "content": "<?php\n/**\n * Version:     9.9.9\n */\n// contenuto fisso di test 9.9.9\n",
+      "sha256": "e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+      "kid": "k2",
+      "canonical": "release\nv9.9.9\ne62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+      "signature": "gLXSkpkcSjXR/HLRgg/jNkEILVLLPZu5M/wn+A0bIG+3kwAkOImuAxExyGTY6sD9mmIafsL+4sH18Yd19igUCw==",
+      "sig": {
+        "tag": "v9.9.9",
+        "sha256": "e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+        "kid": "k2",
+        "signature": "gLXSkpkcSjXR/HLRgg/jNkEILVLLPZu5M/wn+A0bIG+3kwAkOImuAxExyGTY6sD9mmIafsL+4sH18Yd19igUCw=="
+      },
+      "sig_json": "{\n  \"tag\": \"v9.9.9\",\n  \"sha256\": \"e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230\",\n  \"kid\": \"k2\",\n  \"signature\": \"gLXSkpkcSjXR/HLRgg/jNkEILVLLPZu5M/wn+A0bIG+3kwAkOImuAxExyGTY6sD9mmIafsL+4sH18Yd19igUCw==\"\n}\n"
+    },
+    {
+      "tag": "9.9.9",
+      "content": "<?php\n/**\n * Version:     9.9.9\n */\n// contenuto fisso di test 9.9.9\n",
+      "sha256": "e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+      "kid": "k2",
+      "canonical": "release\n9.9.9\ne62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+      "signature": "qr+EX+C0HokSrCI7fL/b5S1tguH75CEowPE2b0H6l5EHLmFaQKdULLzNxqueDOCAfkHLWXN0ZqXliCS4ycnxDg==",
+      "sig": {
+        "tag": "9.9.9",
+        "sha256": "e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230",
+        "kid": "k2",
+        "signature": "qr+EX+C0HokSrCI7fL/b5S1tguH75CEowPE2b0H6l5EHLmFaQKdULLzNxqueDOCAfkHLWXN0ZqXliCS4ycnxDg=="
+      },
+      "sig_json": "{\n  \"tag\": \"9.9.9\",\n  \"sha256\": \"e62d181a42dad65ff1c5ffe41506f5f4f816929c901c89173543a15102792230\",\n  \"kid\": \"k2\",\n  \"signature\": \"qr+EX+C0HokSrCI7fL/b5S1tguH75CEowPE2b0H6l5EHLmFaQKdULLzNxqueDOCAfkHLWXN0ZqXliCS4ycnxDg==\"\n}\n"
+    }
+  ]
+}

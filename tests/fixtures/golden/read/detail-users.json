@@ -1,0 +1,38 @@
+{
+    "body": {
+        "count": 2,
+        "generated_at": "<ISO8601>",
+        "site": "<SITE_URL>",
+        "users": [
+            {
+                "display_name": "Admin Con Login",
+                "email": "admin-login@example.org",
+                "id": "<ID>",
+                "last_login": "<ISO8601>",
+                "last_login_ip": "198.51.100.20",
+                "registered": "<ISO8601>",
+                "user_login": "wphc_admin_login"
+            },
+            {
+                "display_name": "Admin Senza Login",
+                "email": "admin-nologin@example.org",
+                "id": "<ID>",
+                "last_login": null,
+                "last_login_ip": null,
+                "registered": "<ISO8601>",
+                "user_login": "wphc_admin_nologin"
+            }
+        ]
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

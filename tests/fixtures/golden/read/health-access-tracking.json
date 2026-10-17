@@ -1,0 +1,64 @@
+{
+    "body": {
+        "detail_routes": {
+            "plugins": "<SITE_URL>/index.php?rest_route=/health-check/v1/detail/plugins",
+            "server": "<SITE_URL>/index.php?rest_route=/health-check/v1/detail/server",
+            "theme": "<SITE_URL>/index.php?rest_route=/health-check/v1/detail/theme"
+        },
+        "fleet_agent_version": "<AGENT_VERSION>",
+        "generated_at": "<ISO8601>",
+        "last_access": {
+            "at": "<ISO8601>",
+            "enrolled_at": "<ISO8601>",
+            "ip": "198.51.100.9"
+        },
+        "site": "<SITE_URL>",
+        "summary": {
+            "bulk_update": null,
+            "comments_pending": 0,
+            "core_auto_update": "<ENV:boolean>",
+            "core_auto_update_blocked_by": "<ENV:string>",
+            "core_auto_update_level": "<ENV:string>",
+            "core_update": false,
+            "has_builder": false,
+            "has_ecommerce": false,
+            "has_gdpr": false,
+            "is_multisite": false,
+            "last_update": null,
+            "maintenance_stuck": false,
+            "mu_dir_writable": "<ENV:boolean>",
+            "parent_theme_name": "<ENV:NULL>",
+            "php_memory_limit": "<ENV:string>",
+            "php_version": "<ENV:string>",
+            "plugin_version": "<AGENT_VERSION>",
+            "plugins_active": "<ENV:integer>",
+            "plugins_auto_update_enabled": false,
+            "plugins_total": "<ENV:integer>",
+            "plugins_updates": 0,
+            "public_ip": "8.8.8.8",
+            "restrict_official_only": false,
+            "server_ip": "8.8.8.8",
+            "server_ip_is_private": false,
+            "theme_name": "<ENV:string>",
+            "themes_auto_update_enabled": false,
+            "themes_total": "<ENV:integer>",
+            "themes_updates": 0,
+            "thumbnail": "https://uploads.invalid/thumb.png",
+            "thumbnail_error": null,
+            "updates_checked_at": null,
+            "updates_via_api_enabled": true,
+            "wp_version": "<ENV:string>"
+        }
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

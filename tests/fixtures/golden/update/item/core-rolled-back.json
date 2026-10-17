@@ -1,0 +1,27 @@
+{
+    "body": {
+        "detail": "download core fallito",
+        "log_id": "<LOG_ID>",
+        "result": "rolled_back",
+        "updated": false
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_core_version": "auto",
+        "wp_health_check_last_request_ip": "off",
+        "wp_health_check_last_update": "auto"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_core_version": "7.1.1",
+        "wp_health_check_last_request_ip": "203.0.113.10",
+        "wp_health_check_last_update": {
+            "at": "<ISO8601>",
+            "phase": "rolled_back",
+            "source": "api",
+            "target": "core",
+            "type": "core"
+        }
+    },
+    "status": 200
+}

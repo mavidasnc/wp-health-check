@@ -1,0 +1,26 @@
+{
+    "body": {
+        "autologin_url": "<SITE_URL>/?wphc_autologin=<TOKEN>",
+        "expires_in": 20,
+        "user_id": "<ID>",
+        "user_login": "wphc_al_admin"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_autologin_pending": "off",
+        "wp_health_check_last_autologin": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_autologin_pending": [
+            "wphc_autologin_<HASH>"
+        ],
+        "wp_health_check_last_autologin": {
+            "at": "<ISO8601>",
+            "ip": "203.0.113.10",
+            "login": "wphc_al_admin",
+            "user_id": "<ID>"
+        }
+    },
+    "status": 200
+}

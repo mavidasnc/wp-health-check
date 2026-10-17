@@ -1,0 +1,20 @@
+{
+    "options_deleted": [
+        "wp_health_check_webhook_pending",
+        "wp_health_check_webhook_url"
+    ],
+    "options_written": [],
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_webhook_saved": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [],
+    "transients_written": []
+}

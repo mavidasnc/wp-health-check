@@ -1,0 +1,30 @@
+{
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_webhook_last": {
+            "at": "<ISO8601>",
+            "attempt": 1,
+            "code": 0,
+            "duration_ms": null,
+            "error": "wphc_webhook_not_enrolled",
+            "job_id": "test-<HEX>",
+            "message": "",
+            "ok": false,
+            "retry_at": null,
+            "url_host": "webhook.invalid"
+        }
+    },
+    "result": {
+        "redirect": {
+            "path": "/wp-admin/site-health.php",
+            "query": {
+                "tab": "wp-health-check",
+                "wphc_webhook_tested": "1"
+            }
+        },
+        "status": 302,
+        "type": "redirect"
+    },
+    "transients_deleted": [],
+    "transients_written": []
+}

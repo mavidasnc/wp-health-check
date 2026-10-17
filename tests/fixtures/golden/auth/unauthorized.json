@@ -1,0 +1,13 @@
+{
+    "body": {
+        "code": "wphc_unauthorized",
+        "data": {
+            "status": 401
+        },
+        "message": "Non autorizzato."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 401
+}

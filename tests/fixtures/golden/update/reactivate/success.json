@@ -1,0 +1,29 @@
+{
+    "body": {
+        "check": false,
+        "discrepancies": 1,
+        "failed": 0,
+        "generated_at": "<ISO8601>",
+        "reactivated": 1,
+        "results": [
+            {
+                "currently_active": true,
+                "log_id": "<LOG_ID>",
+                "name": "WPHC Fixture",
+                "reactivated": true,
+                "target": "wphc-fixture-c/wphc-fixture-c.php",
+                "was_active": true
+            }
+        ],
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

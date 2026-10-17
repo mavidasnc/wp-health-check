@@ -1,0 +1,161 @@
+{
+    "buttons": [
+        "wphc-secret-reveal-btn Mostra",
+        "wphc-secret-copy-btn Copia",
+        "health GET /health",
+        "health_fresh GET /health?fresh=1",
+        "detail_plugins GET /detail/plugins",
+        "detail_plugins_fresh GET /detail/plugins?fresh=1",
+        "detail_theme GET /detail/theme",
+        "detail_theme_fresh GET /detail/theme?fresh=1",
+        "detail_server GET /detail/server",
+        "detail_server_fresh GET /detail/server?fresh=1",
+        "wphc-log-view-btn Visualizza log",
+        "×",
+        "wphc-log-load-more Carica altri 50"
+    ],
+    "data_nonce_elements": [
+        "wphc-secret-reveal-btn:nonce",
+        "wphc-endpoint-tester:nonce",
+        "wphc-log-viewer:nonce"
+    ],
+    "forms": [
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:submit:submit:Rigenera anteprima ora"
+            ],
+            "hidden_action": "wphc_regenerate_thumbnail",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:submit:submit:Verifica e aggiorna adesso"
+            ],
+            "hidden_action": "wphc_self_update",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:checkbox:wphc_updates_enabled",
+                "input:checkbox:wphc_restrict_official_only",
+                "input:submit:submit:Salva"
+            ],
+            "hidden_action": "wphc_toggle_updates",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:url:wphc_webhook_url",
+                "input:checkbox:wphc_webhook_disabled",
+                "input:submit:submit:Salva"
+            ],
+            "hidden_action": "wphc_save_webhook",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:submit:submit:Invia un webhook di prova"
+            ],
+            "hidden_action": "wphc_test_webhook",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:submit:submit:Svuota cache e ricontrolla"
+            ],
+            "hidden_action": "wphc_clear_caches",
+            "method": "post"
+        },
+        {
+            "action": "<admin-post.php>",
+            "fields": [
+                "input:hidden:_wpnonce",
+                "input:hidden:_wp_http_referer",
+                "input:submit:submit:Resetta enrollment"
+            ],
+            "hidden_action": "wphc_reset_enrollment",
+            "method": "post"
+        }
+    ],
+    "headings": [
+        "h2: WP Health Check — Fleet Agent",
+        "h3: Riepilogo plugin e temi",
+        "h3: Test degli endpoint",
+        "h3: Log degli aggiornamenti",
+        "h3: Aggiornamento del plugin",
+        "h3: Aggiornamenti plugin, temi e core via API",
+        "h3: Webhook di notifica aggiornamenti bulk",
+        "h3: Svuota cache e ricontrolla aggiornamenti",
+        "h3: Reset enrollment"
+    ],
+    "ids": [
+        "_wpnonce",
+        "submit",
+        "wphc-secret-masked",
+        "wphc-secret-reveal-btn",
+        "wphc-secret-full",
+        "wphc-secret-copy-btn",
+        "wphc-endpoint-tester",
+        "wphc-log-viewer",
+        "wphc-log-type",
+        "wphc-log-source",
+        "wphc-log-view-btn",
+        "wphc-modal",
+        "wphc-modal-title",
+        "wphc-modal-meta",
+        "wphc-modal-body",
+        "wphc-modal-table",
+        "wphc-log-tbody",
+        "wphc-log-load-more",
+        "_wpnonce",
+        "submit",
+        "_wpnonce",
+        "submit",
+        "_wpnonce",
+        "wphc-webhook-url",
+        "submit",
+        "_wpnonce",
+        "submit",
+        "_wpnonce",
+        "submit",
+        "_wpnonce",
+        "submit"
+    ],
+    "notices": [],
+    "rows": [
+        "Versione plugin installata",
+        "Ultima versione disponibile",
+        "Anteprima sito",
+        "Repository GitHub",
+        "Stato enrollment",
+        "Segreto di flotta",
+        "URL firmato registrato",
+        "URL validi per l'enroll",
+        "Ultimo enroll fallito",
+        "Ultimo accesso registrato",
+        "Trust proxy (X-Forwarded-For)",
+        "",
+        "Plugin",
+        "Temi",
+        "Data"
+    ],
+    "scripts": 2
+}

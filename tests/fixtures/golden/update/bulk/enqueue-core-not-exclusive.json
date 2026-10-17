@@ -1,0 +1,19 @@
+{
+    "body": {
+        "code": "wphc_bulk_core_not_exclusive",
+        "data": {
+            "reason": "core_must_be_exclusive",
+            "status": 400
+        },
+        "message": "Un job che include il core WordPress non puo' contenere anche plugin o temi: accoda due job separati, in sequenza."
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 400
+}

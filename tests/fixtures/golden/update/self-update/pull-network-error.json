@@ -1,0 +1,18 @@
+{
+    "body": {
+        "code": "wphc_update_network_error",
+        "data": {
+            "status": 502
+        },
+        "message": "Impossibile contattare GitHub. (cURL error 28: Operation timed out)"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 502
+}

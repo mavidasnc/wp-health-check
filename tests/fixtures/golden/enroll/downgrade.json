@@ -1,0 +1,24 @@
+{
+    "body": {
+        "code": "wphc_enroll_downgrade",
+        "data": {
+            "status": 409
+        },
+        "message": "Il sito e' al protocollo 2: enroll v1 non ammesso."
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_enroll_error": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_enroll_error": {
+            "at": "<ISO8601>",
+            "code": "wphc_enroll_downgrade",
+            "ip": "203.0.113.10",
+            "reason": "Busta di enroll v1 rifiutata: il sito e' gia' al protocollo 2.",
+            "received": "<SITE_URL>"
+        }
+    },
+    "status": 409
+}

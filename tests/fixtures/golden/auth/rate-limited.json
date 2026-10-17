@@ -1,0 +1,13 @@
+{
+    "body": {
+        "code": "wphc_rate_limited",
+        "data": {
+            "status": 429
+        },
+        "message": "Troppi tentativi falliti: riprova piu' tardi."
+    },
+    "headers": [],
+    "options_deleted": [],
+    "options_written": [],
+    "status": 429
+}

@@ -1,0 +1,17 @@
+{
+    "body": {
+        "count": 0,
+        "entries": [],
+        "site": "<SITE_URL>",
+        "total": 0
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

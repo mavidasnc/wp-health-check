@@ -1,0 +1,18 @@
+{
+    "body": {
+        "code": "wphc_updates_disabled",
+        "data": {
+            "status": 403
+        },
+        "message": "Aggiornamenti via API disattivati per questo sito."
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 403
+}

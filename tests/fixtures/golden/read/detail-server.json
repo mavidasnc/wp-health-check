@@ -1,0 +1,33 @@
+{
+    "body": {
+        "generated_at": "<ISO8601>",
+        "server": {
+            "extensions": "<ENV:array>",
+            "https": true,
+            "max_execution_time": "<ENV:string>",
+            "max_input_vars": "<ENV:string>",
+            "mysql_version": "<ENV:string>",
+            "php_memory_limit": "<ENV:string>",
+            "php_sapi": "cli",
+            "php_version": "<ENV:string>",
+            "post_max_size": "<ENV:string>",
+            "public_ip": null,
+            "server_ip": null,
+            "server_ip_is_private": false,
+            "software": "<ENV:string>",
+            "upload_max_filesize": "<ENV:string>"
+        },
+        "site": "<SITE_URL>"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off"
+    },
+    "options_deleted": [],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10"
+    },
+    "status": 200
+}

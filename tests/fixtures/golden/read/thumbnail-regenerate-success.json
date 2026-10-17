@@ -1,0 +1,25 @@
+{
+    "body": {
+        "error": null,
+        "thumbnail": "https://uploads.invalid/wphc-test/wp-health-check-site-thumb.png"
+    },
+    "headers": [],
+    "options_autoload": {
+        "wp_health_check_last_request_at": "off",
+        "wp_health_check_last_request_ip": "off",
+        "wp_health_check_thumb": "off",
+        "wp_health_check_thumb_at": "off",
+        "wp_health_check_thumb_id": "off"
+    },
+    "options_deleted": [
+        "wp_health_check_thumb_error"
+    ],
+    "options_written": {
+        "wp_health_check_last_request_at": "<ISO8601>",
+        "wp_health_check_last_request_ip": "203.0.113.10",
+        "wp_health_check_thumb": "https://uploads.invalid/wphc-test/wp-health-check-site-thumb.png",
+        "wp_health_check_thumb_at": "<TS_STR>",
+        "wp_health_check_thumb_id": "<ENV:string>"
+    },
+    "status": 200
+}
