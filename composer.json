@@ -31,7 +31,11 @@
     "scripts": {
         "lint": "phpcs",
         "lint:fix": "phpcbf",
-        "analyse": "phpstan analyse",
+        "analyse": "phpstan analyse --memory-limit=4G",
+        "build": "@php bin/build.php --strip",
+        "build:dev": "@php bin/build.php --no-strip",
+        "build:check": "@php bin/build.php --check",
+        "test:build": "@php tests/build/run.php",
         "test": "npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit",
         "test:check-locks": "php tests/tools/check-locks.php"
     }

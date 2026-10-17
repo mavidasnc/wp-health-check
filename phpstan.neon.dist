@@ -1,7 +1,9 @@
 parameters:
     level: 5
+    # Sorgente: src/ e bin/. mu-plugins/wp-health-check.php e' il file GENERATO da bin/build.php
+    # (senza commenti con lo strip): non si analizza, si analizza il sorgente da cui nasce.
     paths:
-        - mu-plugins
+        - src
         - bin
     scanFiles:
         # WP-CLI non fa parte del core WordPress: la classe WP_CLI, usata solo

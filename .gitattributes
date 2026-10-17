@@ -10,3 +10,8 @@
 *.jpg binary
 *.jpeg binary
 *.phar binary
+
+# Sorgenti del plugin e file generato dalla build (bin/build.php): sempre testo con LF, mai conversioni.
+# Il file generato e' l'asset firmato e pubblicato: un CRLF ne cambierebbe i byte e lo SHA-256.
+src/** text eol=lf
+mu-plugins/wp-health-check.php text eol=lf

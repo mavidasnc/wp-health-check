@@ -6,8 +6,10 @@
         tooling di sviluppo di questo repository gira su PHP 8.1+.
     </description>
 
-    <!-- Sorgente analizzata: solo il plugin runtime -->
-    <file>mu-plugins</file>
+    <!-- Sorgente analizzata: src/ (da cui bin/build.php genera il plugin distribuito) e bin/.
+         mu-plugins/wp-health-check.php e' il file GENERATO: lo strip dei commenti toglie anche le
+         annotazioni phpcs:ignore, quindi su di esso phpcs darebbe centinaia di falsi errori. -->
+    <file>src</file>
     <file>bin</file>
 
     <arg name="basepath" value="."/>
@@ -47,7 +49,6 @@
             </property>
         </properties>
     </rule>
-
     <rule ref="WordPress.Files.FileName">
         <properties>
             <!-- bin/generate-keys.php e' uno script CLI, non una classe -->
@@ -55,4 +56,13 @@
         </properties>
     </rule>
 
+    <!-- Checkpoint zero del refactoring (vedi src/README.md): src/constants.php e src/legacy.php sono
+         tagli a byte del file 1.38.1 e iniziano con un commento di riga (barre e trattini) invece che con un docblock di
+         file. Aggiungere il docblock sposterebbe le righe e romperebbe l'identita' byte per byte con il
+         file di HEAD (criterio di uscita del passo). E' l'unica esclusione nuova rispetto a prima e va
+         tolta quando legacy.php sparisce (lotto 4) e constants.php riceve il suo docblock. -->
+    <rule ref="Squiz.Commenting.FileComment.WrongStyle">
+        <exclude-pattern>src/constants\.php</exclude-pattern>
+        <exclude-pattern>src/legacy\.php</exclude-pattern>
+    </rule>
 </ruleset>
