@@ -129,6 +129,9 @@ final class WPHC_Golden {
 			if ( WP_HEALTH_CHECK_VERSION === $value ) {
 				return '<AGENT_VERSION>';
 			}
+			// La versione puo' comparire anche DENTRO una stringa (User-Agent del webhook "wp-health-check-agent/<versione>"):
+			// si maschera li' dentro, cosi' i golden non dipendono dalla versione corrente del plugin.
+			$value = str_replace( 'wp-health-check-agent/' . WP_HEALTH_CHECK_VERSION, 'wp-health-check-agent/<AGENT_VERSION>', $value );
 			// Le option lette dal database sono stringhe: stesso criterio per un intero scritto come testo,
 			// ma con un segnaposto diverso da quello degli interi.
 			if ( ctype_digit( $value ) && abs( (int) $value - time() ) <= DAY_IN_SECONDS ) {

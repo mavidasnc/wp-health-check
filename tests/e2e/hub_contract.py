@@ -8,9 +8,9 @@ Percorso (come nella vita di un sito della flotta):
   -> revoke.
 
 Il file installato e' il PLUGIN SOTTO TEST (e2e_common.plugin_under_test): WPHC_CANDIDATE_FILE se
-impostata (la build del refactoring), altrimenti la baseline 1.38.1 letta da git. Il candidato del
-push e' lo stesso file con la versione successiva (X.Y.Z+1), quindi il self-update positivo
-(backup, rename, sanity check, opcache) lo esegue il CODICE DEL PLUGIN SOTTO TEST, non quello della 1.38.1.
+impostata (un file esterno), altrimenti mu-plugins/wp-health-check.php del repo (letto, mai scritto, uguale alla
+build strip di src/). Il candidato del push e' lo stesso file con la versione successiva (X.Y.Z+1), quindi il
+self-update positivo (backup, rename, sanity check, opcache) lo esegue il CODICE DEL PLUGIN SOTTO TEST.
 
 Prima del giro "dal vivo" si controllano, senza rete, le funzioni pure di firma del codice
 vendorizzato contro i vettori di contratto (tests/fixtures/contract-vectors.json, generati
@@ -93,7 +93,7 @@ def main() -> int:
     c.install_support_plugin()
     support = c.Support()
     support.wait_ready()
-    # Il plugin sotto test: WPHC_CANDIDATE_FILE o la baseline 1.38.1 da git. `baseline` resta il nome
+    # Il plugin sotto test: WPHC_CANDIDATE_FILE o il file del repo (mu-plugins/). `baseline` resta il nome
     # del "file iniziale" nei controlli che seguono; la versione si ricava dal file installato.
     baseline = c.announce_plugin_under_test("hub_contract").contents
     baseline_version = c.plugin_version(baseline.decode("utf-8"))
@@ -188,7 +188,7 @@ def main() -> int:
     # ------------------------------------------------------------------ push update
     report.section("Push di un aggiornamento firmato (k2 di test)")
     # Candidato = il plugin sotto test con la versione successiva (header e costante): il self-update che lo
-    # installa e' quello del plugin sotto test, non quello della 1.38.1.
+    # installa e' quello del plugin sotto test.
     candidate_text = c.make_candidate(baseline.decode("utf-8"), pushed_version)
     candidate = candidate_text.encode("utf-8")
     tag = "v" + pushed_version

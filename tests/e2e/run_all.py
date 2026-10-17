@@ -4,10 +4,11 @@ Uso (con l'ambiente e2e acceso, vedi tests/e2e/README.md):
     python -I tests/e2e/run_all.py
 
 Variabili d'ambiente inoltrate agli script: WPHC_CANDIDATE_FILE, WPHC_BASELINE_REF.
-Con WPHC_CANDIDATE_FILE impostata TUTTI e tre gli script installano quel file come plugin sotto test
+Il plugin sotto test e' mu-plugins/wp-health-check.php del repo (letto, mai scritto; verificato uguale alla build
+strip di src/) oppure, con WPHC_CANDIDATE_FILE impostata, quel file esterno. Vale per TUTTI e tre gli script
 (hub_contract e wpcli_test lo installano e lo provano; upgrade_test lo usa come candidato dell'upgrade
-dalla 1.38.1 e come plugin installato nei blocchi candidate-self-update e backup-failed). Ognuno stampa
-all'avvio percorso, versione e sha256 del file che usa ("[script] plugin sotto test: ...").
+dalla baseline 1.38.1 letta da git e come plugin installato nei blocchi candidate-self-update e backup-failed).
+Ognuno stampa all'avvio percorso, versione e sha256 del file che usa ("[script] plugin sotto test: ...").
 """
 import os
 import subprocess
@@ -20,7 +21,7 @@ SCRIPTS = ["hub_contract.py", "upgrade_test.py", "wpcli_test.py"]
 
 def main() -> int:
     results = {}
-    print("WPHC_CANDIDATE_FILE =", os.environ.get("WPHC_CANDIDATE_FILE") or "(non impostata: plugin sotto test = baseline git)", flush=True)
+    print("WPHC_CANDIDATE_FILE =", os.environ.get("WPHC_CANDIDATE_FILE") or "(non impostata: plugin sotto test = mu-plugins/wp-health-check.php del repo)", flush=True)
     for script in SCRIPTS:
         print(f"\n######## {script}", flush=True)
         # Interprete isolato anche per i figli; PYTHONDONTWRITEBYTECODE evita __pycache__ nel repo.

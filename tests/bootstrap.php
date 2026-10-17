@@ -9,11 +9,12 @@
  *  3. sceglie il file di plugin SOTTO TEST: per default una COPIA in una cartella temporanea
  *     (una per run, rimossa a fine run; mai il file del repo, che il self-update del plugin potrebbe
  *     riscrivere), dopo aver verificato che mu-plugins/wp-health-check.php coincida con la build di
- *     src/ (bin/build.php in un processo figlio; modo da WPHC_BUILD_MODE come "build:check": dev di default,
- *     strip con WPHC_BUILD_MODE=strip) e che la copia coincida con quella build;
- *     oppure il file indicato esplicitamente con WPHC_PLUGIN_FILE (es. la build strip: nessun controllo
- *     di coincidenza con src/). Stampa su STDERR lo SHA-256 del file sotto test. Registra una guardia
- *     che a fine run segnala qualunque scrittura sul plugin o sul file del repo;
+ *     src/ (bin/build.php in un processo figlio; modo da WPHC_BUILD_MODE come "build:check": strip di default,
+ *     dev con WPHC_BUILD_MODE=dev) e che la copia coincida con quella build;
+ *     oppure il file indicato esplicitamente con WPHC_PLUGIN_FILE, che deve ANCH'ESSO coincidere con la build di
+ *     src/ (stesso processo figlio) salvo WPHC_ALLOW_FOREIGN_BUILD=1 (per provare un candidato esterno). Stampa su
+ *     STDERR lo SHA-256 del file sotto test. Registra una guardia che a fine run segnala qualunque scrittura sul
+ *     plugin o sul file del repo;
  *  4. definisce, se mancano, le costanti di TEST del plugin (chiavi derivate da seed
  *     deterministici, mai quelle di produzione), verifica che siano coerenti e che nessuna
  *     costante possa raggiungere servizi reali (release, webhook, email);
@@ -84,8 +85,10 @@ if ( ! is_readable( $wphc_tests_dir . '/includes/functions.php' ) ) {
 // (le chiavi k2 di test firmano release valide) lo sovrascriverebbe. Per questo per default si
 // carica una COPIA in sys_get_temp_dir()/wphc-under-test-<id>/: una cartella per run (id univoco, quindi
 // piu' run in parallelo non si pestano i piedi e non servono pulizie di residui), rimossa a fine run.
-// Con WPHC_PLUGIN_FILE si indica invece un file esplicito (es. la build strip del refactoring):
-// e' una copia di lavoro anch'essa, ma il file del repo in mu-plugins/ e' sempre rifiutato.
+// Con WPHC_PLUGIN_FILE si indica invece un file esplicito (es. una copia della build in una cartella scratch):
+// e' una copia di lavoro anch'essa, ma il file del repo in mu-plugins/ e' sempre rifiutato. Anche il file esplicito
+// deve coincidere con la build di src/ (un candidato diverso darebbe un falso verde: la suite proverebbe codice che
+// non e' quello del sorgente), salvo il consenso esplicito WPHC_ALLOW_FOREIGN_BUILD=1.
 $wphc_repo_plugin = realpath( $wphc_project_dir . '/mu-plugins/wp-health-check.php' );
 if ( false === $wphc_repo_plugin ) {
 	fwrite( STDERR, "File del plugin del repo non trovato: {$wphc_project_dir}/mu-plugins/wp-health-check.php\n" );
@@ -123,27 +126,55 @@ $wphc_cleanup_copy     = null; // Pulizia della cartella della copia (solo in mo
 $wphc_guard_registered = false; // True quando la guardia di fine run e' registrata (e' lei a chiamare la pulizia).
 
 $wphc_plugin_file = getenv( 'WPHC_PLUGIN_FILE' );
-if ( false === $wphc_plugin_file || '' === $wphc_plugin_file ) {
-	// 3a. Il file del repo deve essere la build di src/: un "composer run build:dev" dimenticato darebbe un falso
-	// verde (si testerebbe un mu-plugins/ vecchio mentre src/ e' cambiato). Il modo e' quello di "build:check":
-	// WPHC_BUILD_MODE (dev | strip), dev di default (al passaggio finale allo strip si inverte il default, vedi la
-	// checklist di src/README.md). Il confronto e' sul testo con gli a capo normalizzati a LF (la copia di lavoro su
-	// Windows puo' essere CRLF con core.autocrlf; nell'indice e' LF).
-	$wphc_mode = getenv( 'WPHC_BUILD_MODE' );
-	$wphc_mode = false === $wphc_mode || '' === $wphc_mode ? 'dev' : $wphc_mode;
-	if ( ! in_array( $wphc_mode, array( 'dev', 'strip' ), true ) ) {
-		fwrite( STDERR, "WPHC_BUILD_MODE non valido: {$wphc_mode} (ammessi: dev, strip).\n" );
-		exit( 1 );
-	}
+$wphc_explicit    = false !== $wphc_plugin_file && '' !== $wphc_plugin_file;
+
+// 3a. Modo della build di riferimento: e' quello di "build:check", WPHC_BUILD_MODE (dev | strip), strip di default
+// (dal passaggio finale il file committato in mu-plugins/ e' la build strip).
+$wphc_mode = getenv( 'WPHC_BUILD_MODE' );
+$wphc_mode = false === $wphc_mode || '' === $wphc_mode ? 'strip' : $wphc_mode;
+if ( ! in_array( $wphc_mode, array( 'dev', 'strip' ), true ) ) {
+	fwrite( STDERR, "WPHC_BUILD_MODE non valido: {$wphc_mode} (ammessi: dev, strip).\n" );
+	exit( 1 );
+}
+
+// Consenso esplicito a provare un file esterno diverso da src/ (ha senso solo con WPHC_PLUGIN_FILE).
+$wphc_allow_foreign = '1' === getenv( 'WPHC_ALLOW_FOREIGN_BUILD' );
+
+// La build di riferimento si calcola in un processo figlio, sia per il file del repo sia per un file esplicito; l'unico
+// caso in cui non serve e' un file esplicito con il consenso a un file esterno.
+$wphc_built     = null;
+$wphc_built_sha = null;
+if ( ! $wphc_explicit || ! $wphc_allow_foreign ) {
 	$wphc_built     = wphc_test_build_from_src( $wphc_project_dir, 'strip' === $wphc_mode );
-	$wphc_repo_lf   = str_replace( "\r\n", "\n", (string) file_get_contents( $wphc_repo_plugin ) );
 	$wphc_built_sha = hash( 'sha256', $wphc_built );
-	if ( $wphc_repo_lf !== $wphc_built ) {
-		fwrite( STDERR, 'mu-plugins/wp-health-check.php (sha256 ' . hash( 'sha256', $wphc_repo_lf ) . ") non coincide con la build {$wphc_mode} di src/ (sha256 {$wphc_built_sha}): eseguire `composer run " . ( 'strip' === $wphc_mode ? 'build' : 'build:dev' ) . "` e rilanciare la suite.\n" );
-		exit( 1 );
-	}
 	if ( false !== strpos( $wphc_built, "\0" ) ) {
 		fwrite( STDERR, "La build {$wphc_mode} di src/ contiene byte NUL.\n" );
+		exit( 1 );
+	}
+}
+
+if ( $wphc_explicit ) {
+	// 3a'. File esplicito: deve coincidere BYTE PER BYTE con la build di src/ (nessuna normalizzazione dei fine riga: il
+	// file si usa cosi' com'e', e un CRLF cambierebbe i byte provati rispetto a quelli distribuiti), salvo
+	// WPHC_ALLOW_FOREIGN_BUILD=1. Un candidato diverso da src/ darebbe un falso verde.
+	if ( ! $wphc_allow_foreign ) {
+		$wphc_explicit_raw = is_readable( $wphc_plugin_file ) ? file_get_contents( $wphc_plugin_file ) : false;
+		if ( false === $wphc_explicit_raw ) {
+			fwrite( STDERR, "File del plugin non leggibile: {$wphc_plugin_file}\n" );
+			exit( 1 );
+		}
+		if ( $wphc_explicit_raw !== $wphc_built ) {
+			fwrite( STDERR, "WPHC_PLUGIN_FILE ({$wphc_plugin_file}, sha256 " . hash( 'sha256', $wphc_explicit_raw ) . ") non coincide con la build {$wphc_mode} di src/ (sha256 {$wphc_built_sha}): rigenerare il file con `bin/build.php` oppure, per provare un candidato esterno di proposito, impostare WPHC_ALLOW_FOREIGN_BUILD=1.\n" );
+			exit( 1 );
+		}
+	}
+} else {
+	// 3a''. Il file del repo deve essere la build di src/: un "composer run build" dimenticato darebbe un falso verde
+	// (si testerebbe un mu-plugins/ vecchio mentre src/ e' cambiato). Il confronto e' sul testo con gli a capo
+	// normalizzati a LF (la copia di lavoro su Windows puo' essere CRLF con core.autocrlf; nell'indice e' LF).
+	$wphc_repo_lf = str_replace( "\r\n", "\n", (string) file_get_contents( $wphc_repo_plugin ) );
+	if ( $wphc_repo_lf !== $wphc_built ) {
+		fwrite( STDERR, 'mu-plugins/wp-health-check.php (sha256 ' . hash( 'sha256', $wphc_repo_lf ) . ") non coincide con la build {$wphc_mode} di src/ (sha256 {$wphc_built_sha}): eseguire `composer run build` (file distribuito = build strip) e rilanciare la suite.\n" );
 		exit( 1 );
 	}
 
@@ -223,12 +254,12 @@ if ( file_exists( $wphc_plugin_real . '.bak' ) ) {
 define( 'WPHC_PLUGIN_FILE', $wphc_plugin_real );
 
 // SHA-256 del file sotto test su STDERR (in entrambe le modalita'): permette di riconoscere nei log quale build e'
-// stata provata. Con WPHC_PLUGIN_FILE e' solo un'informazione: il file indicato non deve coincidere con src/.
+// stata provata. Con WPHC_PLUGIN_FILE il file coincide comunque con la build di src/, salvo WPHC_ALLOW_FOREIGN_BUILD=1.
 // Si stampa UNA volta per run: i test @runInSeparateProcess rilanciano questo bootstrap in un figlio che eredita
 // l'ambiente, e PHPUnit tratterebbe qualunque cosa scritta dal figlio su STDERR come un errore del test.
 if ( false === getenv( 'WPHC_SHA_PRINTED' ) ) {
 	putenv( 'WPHC_SHA_PRINTED=1' );
-	fwrite( STDERR, 'Plugin sotto test: ' . WPHC_PLUGIN_FILE . ' sha256 ' . hash_file( 'sha256', WPHC_PLUGIN_FILE ) . ( null === $wphc_cleanup_copy ? ' (file indicato da WPHC_PLUGIN_FILE)' : ' (copia della build di src/, uguale a mu-plugins/)' ) . PHP_EOL );
+	fwrite( STDERR, 'Plugin sotto test: ' . WPHC_PLUGIN_FILE . ' sha256 ' . hash_file( 'sha256', WPHC_PLUGIN_FILE ) . ( null !== $wphc_cleanup_copy ? ' (copia della build di src/, uguale a mu-plugins/)' : ( $wphc_allow_foreign ? ' (file indicato da WPHC_PLUGIN_FILE, build ESTERNA ammessa da WPHC_ALLOW_FOREIGN_BUILD=1)' : ' (file indicato da WPHC_PLUGIN_FILE, uguale alla build di src/)' ) ) . PHP_EOL );
 }
 
 // Guardia di integrita' a fine run: ne' il file sotto test ne' quello del repo devono cambiare,

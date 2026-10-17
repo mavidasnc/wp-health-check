@@ -12,7 +12,7 @@
  * della release, come prova aggiuntiva di integrita'.
  */
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.38.1' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.39.0' );
 }
 
 /** Coordinate del repository GitHub pubblico da cui arrivano le release. */

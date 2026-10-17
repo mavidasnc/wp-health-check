@@ -36,6 +36,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import site
 import subprocess
 import tempfile
@@ -212,11 +213,52 @@ class PluginUnderTest:
 _PLUGIN_UNDER_TEST: PluginUnderTest | None = None
 
 
+def strip_build_from_src() -> bytes:
+    """Build strip di src/ ottenuta con bin/build.php in un processo figlio (scrive in una cartella temporanea).
+
+    Stesso meccanismo del bootstrap di PHPUnit (tests/bootstrap.php): il file distribuito deve essere ESATTAMENTE
+    il risultato della build di src/, altrimenti un mu-plugins/ vecchio darebbe un falso verde.
+    """
+    php = shutil.which("php")
+    if php is None:
+        raise SystemExit("ERRORE: 'php' non e' nel PATH: serve per confrontare mu-plugins/wp-health-check.php con la build di src/")
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "wp-health-check.php"
+        done = subprocess.run(
+            [php, "-d", "memory_limit=512M", str(PROJECT_DIR / "bin" / "build.php"), "--strip", "--output", str(out)],
+            capture_output=True,
+        )
+        if done.returncode != 0 or not out.is_file():
+            raise SystemExit(f"ERRORE: build strip di src/ non riuscita (exit {done.returncode}): {done.stdout.decode(errors='replace')} {done.stderr.decode(errors='replace')}")
+        return out.read_bytes()
+
+
+def repo_plugin_bytes() -> bytes:
+    """Contenuto di mu-plugins/wp-health-check.php (SOLA LETTURA), verificato uguale alla build strip di src/.
+
+    Gli a capo CRLF di una copia di lavoro Windows con core.autocrlf si normalizzano a LF in memoria (nell'indice
+    il file e' LF): il file reale non viene mai scritto. Se differisce dalla build il test si ferma: va rigenerato
+    con `composer run build`.
+    """
+    raw = REPO_PLUGIN.read_bytes().replace(b"\r\n", b"\n")
+    built = strip_build_from_src()
+    if raw != built:
+        raise SystemExit(
+            f"ERRORE: {REPO_PLUGIN} (sha256 {hashlib.sha256(raw).hexdigest()}) non coincide con la build strip di src/ "
+            f"(sha256 {hashlib.sha256(built).hexdigest()}): eseguire `composer run build` e rilanciare i test."
+        )
+    return raw
+
+
 def plugin_under_test_info() -> PluginUnderTest:
-    """Il plugin sotto test: WPHC_CANDIDATE_FILE se impostata, altrimenti la baseline (1.38.1 da git).
+    """Il plugin sotto test: WPHC_CANDIDATE_FILE se impostata, altrimenti mu-plugins/wp-health-check.php del repo.
+
+    Il file del repo e' letto (mai scritto) e verificato uguale alla build strip di src/. La baseline 1.38.1 da git
+    NON e' il plugin sotto test: e' lo stato di partenza dell'upgrade (baseline_bytes). Con WPHC_CANDIDATE_FILE
+    valgono le regole di sempre (file esterno, nessun confronto con src/).
 
     E' l'UNICO punto in cui gli e2e decidono quale file installare: hub_contract, wpcli_test e
-    upgrade_test (scenario candidate-self-update e fasi dei controlli) passano da qui.
+    upgrade_test (candidato dell'upgrade, scenario candidate-self-update e fasi dei controlli) passano da qui.
     """
     global _PLUGIN_UNDER_TEST
     if _PLUGIN_UNDER_TEST is None:
@@ -227,7 +269,7 @@ def plugin_under_test_info() -> PluginUnderTest:
                 raise SystemExit(f"{CANDIDATE_ENV}={path}: il file non esiste")
             _PLUGIN_UNDER_TEST = PluginUnderTest(file.read_bytes(), str(file.resolve()), True)
         else:
-            _PLUGIN_UNDER_TEST = PluginUnderTest(baseline_bytes(), f"baseline git {BASELINE_REF}:mu-plugins/wp-health-check.php", False)
+            _PLUGIN_UNDER_TEST = PluginUnderTest(repo_plugin_bytes(), f"{REPO_PLUGIN} (file del repo, uguale alla build strip di src/)", False)
     return _PLUGIN_UNDER_TEST
 
 

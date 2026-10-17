@@ -8,18 +8,15 @@
  * distribuito (asset delle release, firmato k2).
  *
  * Uso:
- *     php bin/build.php --no-strip          build di sviluppo/debug (nessuno strip), scrive mu-plugins/ ("composer run build:dev")
- *     php bin/build.php --output <path>     build con strip dei commenti, scritta in <path>
- *     php bin/build.php                     come sopra (strip) ma SENZA --output: rifiutato, vedi sotto
- *     php bin/build.php --check             confronta il risultato col file committato, exit 1 se differisce
+ *     php bin/build.php                     build con strip dei commenti, scrive mu-plugins/wp-health-check.php ("composer run build")
+ *     php bin/build.php --output <path>     come sopra, ma scritta in <path> (misure e prove); la cartella si crea se manca
+ *     php bin/build.php --no-strip --output <path>   build di sviluppo/debug (nessuno strip) in <path> ("composer run build:dev")
+ *     php bin/build.php --check             confronta il risultato col file committato, exit 1 se differisce ("composer run build:check")
  *     php bin/build.php --src <dir>         usa un altro albero sorgente (prove della build stessa)
  *
- * Scrittura dello strip in mu-plugins/ (finche' dura il refactoring):
- *     il file committato in mu-plugins/ e' la build DEV (e' quella che confrontano "build:check", "tests/build/run.php"
- *     e il bootstrap di PHPUnit) e il suo push supera il limite di 128 KiB: la build strip, che lo rispetta, non deve
- *     finirci per sbaglio. Per questo "php bin/build.php" (strip, anche con --strip esplicito, quindi anche
- *     "composer run build") senza --output esce con codice 2 e non scrive nulla, a meno che sia impostata la
- *     variabile d'ambiente WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 (il passaggio finale del refactoring).
+ * La build dev non si scrive mai su mu-plugins/:
+ *     il file committato in mu-plugins/ e' la build STRIP (e' quella che si firma e si pubblica; la dev ha il marcatore
+ *     e il suo push supera il limite di 128 KiB), quindi "--no-strip" senza --output esce con codice 2 e non scrive nulla.
  *
  * Marcatore della build dev:
  *     la build --no-strip aggiunge in coda al file, dopo l'ultima riga di codice e senza a capo finale, il commento
@@ -28,7 +25,7 @@
  *
  * Modo della build quando non e' indicato (--strip / --no-strip):
  *     - senza --check: strip;
- *     - con --check: variabile d'ambiente WPHC_BUILD_MODE (dev | strip), default dev.
+ *     - con --check: variabile d'ambiente WPHC_BUILD_MODE (dev | strip), default strip.
  *
  * Compatibile PHP 7.4+: gira anche nel container di test 7.4.
  *
@@ -252,6 +249,10 @@ function wphc_build_read_sources( $src_dir ) {
 		wphc_build_check_no_file_constants( $file, $content, 'constants' === $role );
 		if ( 'class' === $role ) {
 			wphc_build_check_class_file( $file, $content );
+			wphc_build_check_boot_method( $file, $content );
+		}
+		if ( 'boot' === $role ) {
+			wphc_build_check_boot_file( $file, $content );
 		}
 		if ( 'cli' === $role ) {
 			wphc_build_check_cli_file( $file, $content );
@@ -498,6 +499,97 @@ function wphc_build_check_cli_file( $file, $content ) {
 	$expected = array( 'WP_CLI', '::', 'add_command', '(', "'health-check'", ',', "'" . WPHC_BUILD_KEEP_DOCS_CLASS . "'", ')', ';' );
 	if ( $reg !== $expected ) {
 		throw new RuntimeException( $file . ': la registrazione deve essere esattamente WP_CLI::add_command( \'health-check\', \'' . WPHC_BUILD_KEEP_DOCS_CLASS . '\' ); senza altri argomenti (trovato: ' . implode( ' ', $reg ) . ')' );
+	}
+}
+
+/**
+ * Gate (b3): un file con ruolo boot contiene SOLO l'istruzione WPHC_Plugin::boot();.
+ *
+ * Nella 1.38.1 gli hook si registravano all'inclusione del file (prima di muplugins_loaded): il boot deve girare nello
+ * stesso istante, quindi l'unica istruzione ammessa al livello del file e' la chiamata diretta. Il confronto e' sulla
+ * sequenza di token significativi (spazi, commenti e tag di apertura esclusi): "WPHC_Plugin :: boot ( ) ;". Una
+ * chiamata dentro add_action( 'muplugins_loaded', ... ), un'istruzione in piu' o un nome diverso fanno fallire la build.
+ *
+ * @param string $file    Nome del file (per i messaggi).
+ * @param string $content Contenuto del file.
+ * @return void
+ * @throws RuntimeException Se il file contiene altro oltre alla chiamata di boot.
+ */
+function wphc_build_check_boot_file( $file, $content ) {
+	$sig = array();
+	foreach ( wphc_build_tokenize( $content, $file ) as $tok ) {
+		if ( wphc_build_is_trivia( $tok ) || T_OPEN_TAG === $tok['id'] ) {
+			continue;
+		}
+		$sig[] = $tok['text'];
+	}
+	// Un tag di chiusura finale e' ammesso, come negli altri ruoli.
+	if ( array() !== $sig && '?>' === trim( $sig[ count( $sig ) - 1 ] ) ) {
+		array_pop( $sig );
+	}
+	$expected = array( 'WPHC_Plugin', '::', 'boot', '(', ')', ';' );
+	if ( $sig !== $expected ) {
+		throw new RuntimeException( $file . ': un file con ruolo boot deve contenere ESATTAMENTE l\'istruzione WPHC_Plugin::boot(); al livello del file, eseguita all\'inclusione e senza ritardi (trovato: ' . implode( ' ', $sig ) . ')' );
+	}
+}
+
+/**
+ * Gate (b4): WPHC_Plugin::boot() non si registra su un hook che ritarda il boot.
+ *
+ * Se il file dichiara la classe WPHC_Plugin, il corpo del suo metodo boot() non puo' contenere come stringa i nomi
+ * muplugins_loaded, plugins_loaded e after_setup_theme: registrare il boot (o i suoi hook) su uno di questi cambierebbe
+ * l'ordine relativo dei callback rispetto agli altri plugin e il momento della registrazione, rispetto alla 1.38.1 in
+ * cui gli hook si registravano all'inclusione del file. I commenti non contano (sono token a parte).
+ *
+ * @param string $file    Nome del file (per i messaggi).
+ * @param string $content Contenuto del file.
+ * @return void
+ * @throws RuntimeException Se boot() cita uno degli hook di ritardo.
+ */
+function wphc_build_check_boot_method( $file, $content ) {
+	$tokens = wphc_build_tokenize( $content, $file );
+	$n      = count( $tokens );
+	$banned = array( 'muplugins_loaded', 'plugins_loaded', 'after_setup_theme' );
+
+	// 1. La classe WPHC_Plugin: se questo file non la dichiara non c'e' nulla da controllare.
+	$in_class = false;
+	for ( $i = 0; $i < $n; $i++ ) {
+		if ( T_CLASS === $tokens[ $i ]['id'] ) {
+			$name     = wphc_build_next_sig( $tokens, $i );
+			$in_class = null !== $name && 'WPHC_Plugin' === $tokens[ $name ]['text'];
+			break;
+		}
+	}
+	if ( ! $in_class ) {
+		return;
+	}
+
+	// 2. Il metodo boot(): dalla graffa che segue la firma a quella che la chiude, si guardano le sole stringhe.
+	for ( $i = 0; $i < $n; $i++ ) {
+		if ( T_FUNCTION !== $tokens[ $i ]['id'] ) {
+			continue;
+		}
+		$name = wphc_build_next_sig( $tokens, $i );
+		if ( null === $name || 'boot' !== $tokens[ $name ]['text'] ) {
+			continue;
+		}
+		$depth = 0;
+		$open  = false;
+		for ( $k = $name; $k < $n; $k++ ) {
+			if ( wphc_build_opens_brace( $tokens[ $k ] ) ) {
+				++$depth;
+				$open = true;
+			} elseif ( '}' === $tokens[ $k ]['id'] ) {
+				--$depth;
+			}
+			if ( $open && T_CONSTANT_ENCAPSED_STRING === $tokens[ $k ]['id'] && in_array( substr( $tokens[ $k ]['text'], 1, -1 ), $banned, true ) ) {
+				throw new RuntimeException( $file . ': WPHC_Plugin::boot() cita ' . $tokens[ $k ]['text'] . ' (riga ' . $tokens[ $k ]['line'] . '): il boot deve girare all\'inclusione del file, non su un hook che lo ritarda' );
+			}
+			if ( $open && 0 === $depth ) {
+				break;
+			}
+		}
+		return;
 	}
 }
 
@@ -1084,7 +1176,7 @@ function wphc_build( $src_dir, $strip ) {
  * Entry point CLI.
  *
  * @param string[] $argv Argomenti da riga di comando (il primo e' lo script).
- * @return int Codice di uscita: 0 ok, 1 build fallita o differenza in --check, 2 uso errato o scrittura dello strip su mu-plugins/ rifiutata.
+ * @return int Codice di uscita: 0 ok, 1 build fallita o differenza in --check, 2 uso errato o scrittura della build dev su mu-plugins/ rifiutata.
  */
 function wphc_build_main( array $argv ) {
 	$root   = dirname( __DIR__ );
@@ -1124,11 +1216,11 @@ function wphc_build_main( array $argv ) {
 		}
 	}
 
-	// 2. Modo: flag esplicito, altrimenti (solo con --check) WPHC_BUILD_MODE, default dev.
+	// 2. Modo: flag esplicito, altrimenti (solo con --check) WPHC_BUILD_MODE, default strip.
 	if ( null === $strip ) {
 		if ( $check ) {
 			$mode = getenv( 'WPHC_BUILD_MODE' );
-			$mode = false === $mode || '' === $mode ? 'dev' : $mode;
+			$mode = false === $mode || '' === $mode ? 'strip' : $mode;
 			if ( ! in_array( $mode, array( 'dev', 'strip' ), true ) ) {
 				fwrite( STDERR, 'WPHC_BUILD_MODE non valido: ' . $mode . " (ammessi: dev, strip)\n" );
 				return 2;
@@ -1140,12 +1232,11 @@ function wphc_build_main( array $argv ) {
 	}
 	$target = null === $output ? $root . '/mu-plugins/wp-health-check.php' : $output;
 
-	// 2b. Lo strip non si scrive di default su mu-plugins/ (vedi l'intestazione del file): serve --output oppure
-	// il consenso esplicito WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1. Il controllo precede la build: nessun lavoro inutile.
-	if ( $strip && ! $check && null === $output && '1' !== getenv( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' ) ) {
-		fwrite( STDERR, "RIFIUTATO: la build strip non si scrive direttamente su mu-plugins/wp-health-check.php (il file committato e' la build dev).\n" );
-		fwrite( STDERR, "Usare \"composer run build:dev\" per aggiornare mu-plugins/, oppure --output <path> per la build strip, oppure\n" );
-		fwrite( STDERR, "WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 per la pubblicazione finale del refactoring.\n" );
+	// 2b. La build dev non si scrive su mu-plugins/ (vedi l'intestazione del file): il file committato e' lo strip, che
+	// e' quello che si firma e si pubblica. Serve --output. Il controllo precede la build: nessun lavoro inutile.
+	if ( ! $strip && ! $check && null === $output ) {
+		fwrite( STDERR, "RIFIUTATO: la build dev (--no-strip) non si scrive su mu-plugins/wp-health-check.php (il file committato e' la build strip, quella distribuibile).\n" );
+		fwrite( STDERR, "Usare \"composer run build:dev\" oppure --output <path>.\n" );
 		return 2;
 	}
 
@@ -1201,7 +1292,12 @@ function wphc_build_main( array $argv ) {
 		return 1;
 	}
 
-	// 5. Scrittura. Solo se tutti i gate sono passati; poi si rilegge il file per sicurezza.
+	// 5. Scrittura. Solo se tutti i gate sono passati; la cartella di destinazione si crea se manca (per esempio
+	// build/dev/ di "composer run build:dev" in un checkout nuovo); poi si rilegge il file per sicurezza.
+	if ( ! is_dir( dirname( $target ) ) && ! mkdir( dirname( $target ), 0777, true ) && ! is_dir( dirname( $target ) ) ) {
+		fwrite( STDERR, 'BUILD FALLITA: impossibile creare la cartella di ' . $target . "\n" );
+		return 1;
+	}
 	if ( false === file_put_contents( $target, $code ) || hash_file( 'sha256', $target ) !== hash( 'sha256', $code ) ) {
 		fwrite( STDERR, 'BUILD FALLITA: scrittura non riuscita in ' . $target . "\n" );
 		return 1;

@@ -39,3 +39,6 @@ Thumbs.db
 # Cache di Python generata dagli script di test
 __pycache__/
 *.pyc
+
+# Build di sviluppo (composer run build:dev): NON distribuibile, ha il marcatore WPHC-BUILD
+/build/

@@ -33,7 +33,7 @@
         "lint:fix": "phpcbf",
         "analyse": "phpstan analyse --memory-limit=4G",
         "build": "@php bin/build.php --strip",
-        "build:dev": "@php bin/build.php --no-strip",
+        "build:dev": "@php bin/build.php --no-strip --output build/dev/wp-health-check.php",
         "build:check": "@php bin/build.php --check",
         "test:build": "@php tests/build/run.php",
         "test": "npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit",

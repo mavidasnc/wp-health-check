@@ -2,7 +2,7 @@
     "body": {
         "Accept": "application/json",
         "Content-Type": "application/json; charset=utf-8",
-        "User-Agent": "wp-health-check-agent/1.38.1",
+        "User-Agent": "wp-health-check-agent/<AGENT_VERSION>",
         "X-WPHC-Attempt": "1",
         "X-WPHC-Delivery": "job-delivery-1",
         "X-WPHC-Event": "wphc.bulk_update.completed",

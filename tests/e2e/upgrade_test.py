@@ -14,7 +14,8 @@ danno gli STESSI esiti prima e dopo. In piu' ogni scenario controlla esiti attes
 
 Scenari a due fasi (controllo / upgrade): fresh (sito mai enrollato), v1, v2 dentro la finestra
 di grazia, v2 con grazia scaduta, revocato, job bulk in corso (ripreso dal cron), webhook in
-attesa di retry. In questi il push positivo che porta il sito al candidato lo esegue il codice
+attesa di retry, webhook all'ultimo tentativo (esaurimento), elementi bulk orfani (raccolti alla
+lettura del job), cache di /health dopo l'aggiornamento. In questi il push positivo che porta il sito al candidato lo esegue il codice
 della 1.38.1 (e' lei che scrive il file): dimostrano che il CANDIDATO si comporta come la 1.38.1
 sullo stato lasciato dalla 1.38.1.
 
@@ -25,11 +26,12 @@ Due blocchi a se' (senza controllo) provano invece il self-update ESEGUITO DAL C
     backup-failed           con una DIRECTORY al posto del .bak il push si ferma con
                             500 wphc_update_backup_failed e il file resta invariato.
 
-Il file candidato e' parametrizzabile:
-    WPHC_CANDIDATE_FILE=percorso   file da installare (dopo il refactoring: la build vera);
-                                   senza, per gli scenari a due fasi e' una copia della baseline con
-                                   Version 1.99.0 e per i due blocchi e' la baseline stessa.
-    WPHC_BASELINE_REF=commit       baseline letta da git (default 1d6725b = v1.38.1).
+Il file candidato (il plugin sotto test) e' parametrizzabile:
+    WPHC_CANDIDATE_FILE=percorso   file esterno da installare (nessun confronto con src/);
+                                   senza, e' mu-plugins/wp-health-check.php del repo (letto, mai scritto,
+                                   verificato uguale alla build strip di src/): e' il candidato degli scenari
+                                   a due fasi e il plugin installato nei due blocchi.
+    WPHC_BASELINE_REF=commit       baseline (stato di PARTENZA dell'upgrade) letta da git (default 1d6725b = v1.38.1).
 Con un candidato della STESSA versione della baseline il push usa force (reinstallazione).
 
 Uso (con l'ambiente e2e acceso, vedi tests/e2e/README.md):
@@ -418,6 +420,101 @@ def sc_webhook_phase2(x: Ctx):
     x.state_summary("stato finale")
 
 
+def sc_webhook_exhaust_phase1(x: Ctx):
+    """Baseline: il job finisce e il webhook fallisce (500); il retry pendente si porta a attempts = 2, a un passo
+    dall'esaurimento (MAX = 3), come lo lascerebbe un secondo tentativo fallito."""
+    x.note("tick di cron: il job finisce e il webhook fallisce (500)", x.support.cron_run("wphc_bulk_update_tick"))
+    pending = x.support.state()["options"].get("wp_health_check_webhook_pending")
+    if pending:
+        pending["attempts"] = 2
+        x.support.set_options({"wp_health_check_webhook_pending": pending})
+    state = x.support.state()
+    pending = state["options"].get("wp_health_check_webhook_pending")
+    x.note("retry in attesa a un passo dall'esaurimento", {"pending": bool(pending), "attempts": pending.get("attempts") if pending else None,
+                                                           "cron": sorted(e["hook"] for e in state["cron"])})
+    x.note("webhook ricevuti", x.webhook_observation(x.webhook_calls()))
+    x.state_summary("stato dopo fase 1")
+
+
+def sc_webhook_exhaust_phase2(x: Ctx):
+    """Dopo l'upgrade il ricevente risponde ancora 500: il retry e' il TERZO tentativo, l'ultimo. Il pendente viene
+    cancellato, l'esito resta in webhook_last (ok=false), e non si arma nessun altro retry."""
+    x.support.webhook(status=500)
+    x.note("evento di retry eseguito", x.support.cron_run("wphc_webhook_retry"))
+    state = x.support.state()
+    last = state["options"].get("wp_health_check_webhook_last") or {}
+    x.note("pendente dopo l'esaurimento", bool(state["options"].get("wp_health_check_webhook_pending")))
+    x.note("webhook_last", {k: last.get(k) for k in ("ok", "code", "attempt", "error")})
+    x.note("cron dopo l'esaurimento", sorted(e["hook"] for e in state["cron"]))
+    x.note("webhook ricevuti", x.webhook_observation(x.webhook_calls()))
+    x.state_summary("stato finale")
+
+
+def sc_bulk_orphans_phase1(x: Ctx):
+    """Baseline: dopo il primo tick (5 elementi trattati) i due elementi pendenti passano a `running` con claimed_ts di
+    700 secondi fa (oltre il timeout) e attempts 0 e 3: come se il processo che li lavorava fosse morto.
+
+    NON si legge la rotta GET /update/bulk: raccoglierebbe gli orfani gia' in questa fase (sulla baseline) e il
+    controllo non proverebbe piu' nulla sulla raccolta fatta dal candidato."""
+    x.note("tick di cron (pre-upgrade)", x.support.cron_run("wphc_bulk_update_tick"))
+    job = x.support.state()["options"].get("wp_health_check_bulk_job")
+    now = int(time.time())
+    pending = [item for item in job["items"] if item["state"] == "pending"] if job else []
+    for item, attempts in zip(pending, (0, 3)):
+        item.update({"state": "running", "claimed_ts": now - 700, "attempts": attempts})
+    if job:
+        x.support.set_options({"wp_health_check_bulk_job": job})
+    x.note("orfani impostati", [[item["target"], item["state"], item["attempts"]] for item in (job["items"] if job else [])])
+    x.state_summary("stato dopo fase 1")
+
+
+def sc_bulk_orphans_phase2(x: Ctx):
+    """Dopo l'upgrade la lettura del job (GET /update/bulk) raccoglie gli orfani: quello con pochi tentativi torna
+    `pending` (attempts + 1, last_error 'interrupted (timeout/fatal)'), quello oltre il massimo diventa `error/failed`."""
+    x.support.clear_throttle()
+    job = x.hub.request("GET", BULK_ROUTE).json().get("job") or {}
+    x.note("GET bulk (raccolta orfani)", {
+        "status": job.get("status"),
+        "counters": job.get("counters"),
+        "items": [[i["type"], i["target"], i["state"], i["result"], i["attempts"], i.get("last_error")] for i in job.get("items", [])],
+    })
+    x.state_summary("stato finale")
+
+
+def sc_health_cache_build(x: Ctx):
+    x.enroll_and_rotate()
+
+
+def _reported_version(result):
+    """Versione dell'agent in una risposta dell'hub: summary.agent_version (health) o agent_version (ping)."""
+    if not isinstance(result, dict):
+        return None
+    summary = result.get("summary")
+    return summary.get("agent_version") if isinstance(summary, dict) else result.get("agent_version")
+
+
+def sc_health_cache_phase1(x: Ctx):
+    """Baseline: una /health popola la cache (transient wphc_health_cache, 60 s) con la versione della baseline."""
+    x.support.clear_throttle()
+    first = x.hub_call("health (popola la cache)", x.hub.health)
+    x.note("versione riportata: health che popola la cache", _reported_version(first))
+
+
+def sc_health_cache_phase2(x: Ctx):
+    """Subito dopo il push la /health risponde ancora dalla cache (la 1.38.1 non la svuota: comportamento PRESERVATO,
+    finding F3 della review), mentre /health?fresh=1 e /ping riportano la versione nuova."""
+    x.support.clear_throttle()
+    cached = x.hub_call("health subito dopo il push (da cache)", x.hub.health)
+    x.note("versione riportata: health subito dopo il push", _reported_version(cached))
+    x.support.clear_throttle()
+    fresh = x.hub_call("health fresh", lambda: x.hub.health(fresh=True))
+    x.note("versione riportata: health fresh", _reported_version(fresh))
+    x.support.clear_throttle()
+    ping = x.hub_call("ping", x.hub.ping)
+    x.note("versione riportata: ping", _reported_version(ping))
+    x.state_summary("stato finale")
+
+
 # Ogni scenario: (nome, build, fase1, fase2, controlli assoluti sulla trascrizione dell'upgrade)
 def _find(transcript: list, label: str):
     for entry in transcript:
@@ -503,6 +600,57 @@ def expect_webhook(t: list):
     }
 
 
+# Versioni di baseline e candidato (impostate da main(): servono ai controlli assoluti che le confrontano).
+VERSIONS: dict = {}
+
+
+def expect_webhook_exhaust(t: list):
+    pending = _find(t, "retry in attesa a un passo dall'esaurimento")
+    last = _find(t, "webhook_last")
+    calls = [e[1] for e in t if e[0] == "webhook ricevuti"][-1]
+    return {
+        "prima dell'upgrade il retry pendente e' al tentativo 2 e il cron e' armato": pending["pending"] and pending["attempts"] == 2 and "wphc_webhook_retry" in pending["cron"],
+        "retry eseguito dopo l'upgrade": _find(t, "evento di retry eseguito") == 1,
+        "esaurimento: il pendente e' cancellato": _find(t, "pendente dopo l'esaurimento") is False,
+        "webhook_last: ok=false, code=500, attempt=3": last["ok"] is False and last["code"] == 500 and last["attempt"] == 3,
+        "nessun evento wphc_webhook_retry in cron": "wphc_webhook_retry" not in _find(t, "cron dopo l'esaurimento"),
+        "il ricevente ha visto i tentativi 1 e 3, entrambi firmati": [call["attempt"] for call in calls] == ["1", "3"] and all(call["signature_valid"] for call in calls),
+    }
+
+
+def expect_bulk_orphans(t: list):
+    job = _find(t, "GET bulk (raccolta orfani)")
+    items = {i[1]: i for i in job["items"]}  # [tipo, target, stato, esito, tentativi, last_error]
+    light = items.get("e2e-missing-d/d.php", [None] * 6)
+    heavy = items.get("e2e-missing-e/e.php", [None] * 6)
+    counters = job.get("counters") or {}
+    # Snapshot delle option a fine fase 1 (baseline): gli orfani devono essere ancora `running`, cioe' NON raccolti dalla
+    # baseline. Se lo fossero (per esempio da una richiesta REST qualunque) il controllo non proverebbe la raccolta del candidato.
+    before = next((e[1] for e in t if e[0] == "stato dopo fase 1"), {})
+    before_items = ((before.get("options") or {}).get("wp_health_check_bulk_job") or {}).get("items", [])
+    still_running = sorted(i["target"] for i in before_items if i.get("state") == "running")
+    return {
+        "a fine fase 1 gli orfani sono ancora running (non li ha raccolti la baseline)": still_running == ["e2e-missing-d/d.php", "e2e-missing-e/e.php"],
+        "prima dell'upgrade i due elementi sono running con attempts 0 e 3": _find(t, "orfani impostati")[-2:] == [["e2e-missing-d/d.php", "running", 0], ["e2e-missing-e/e.php", "running", 3]],
+        "l'orfano con pochi tentativi torna pending (attempts 1, interrupted)": light[2] == "pending" and light[4] == 1 and light[5] == "interrupted (timeout/fatal)",
+        "l'orfano oltre il massimo e' error/failed (attempts 4)": heavy[2] == "error" and heavy[3] == "failed" and heavy[4] == 4,
+        "contatori: failed=1, pending=1": counters.get("failed") == 1 and counters.get("pending") == 1,
+    }
+
+
+def expect_health_cache(t: list):
+    base, cand = VERSIONS.get("baseline"), VERSIONS.get("candidate")
+    if base == cand:
+        # Stessa versione (reinstallazione forzata): nulla da distinguere fra cache e fresh.
+        return {}
+    return {
+        "la prima /health riporta la versione baseline": _find(t, "versione riportata: health che popola la cache") == base,
+        "subito dopo il push /health riporta ANCORA la baseline (la cache non e' svuotata: comportamento preservato)": _find(t, "versione riportata: health subito dopo il push") == base,
+        "/health?fresh=1 riporta la versione del candidato": _find(t, "versione riportata: health fresh") == cand,
+        "/ping riporta la versione del candidato": _find(t, "versione riportata: ping") == cand,
+    }
+
+
 SCENARIOS = [
     ("fresh", sc_fresh_build, sc_fresh_phase1, sc_fresh_phase2, expect_fresh),
     ("v1", sc_v1_build, sc_v1_probes, sc_v1_probes, expect_v1),
@@ -511,6 +659,9 @@ SCENARIOS = [
     ("revocato", sc_revoked_build, sc_revoked_probes, sc_revoked_probes, expect_revoked),
     ("bulk-in-corso", sc_bulk_build, sc_bulk_phase1, sc_bulk_phase2, expect_bulk),
     ("webhook-retry", sc_webhook_build, sc_webhook_phase1, sc_webhook_phase2, expect_webhook),
+    ("webhook-esaurimento", sc_webhook_build, sc_webhook_exhaust_phase1, sc_webhook_exhaust_phase2, expect_webhook_exhaust),
+    ("bulk-orfani", sc_bulk_build, sc_bulk_orphans_phase1, sc_bulk_orphans_phase2, expect_bulk_orphans),
+    ("health-cache", sc_health_cache_build, sc_health_cache_phase1, sc_health_cache_phase2, expect_health_cache),
 ]
 
 
@@ -525,18 +676,15 @@ def version_tuple(version: str):
 def prepare_candidate(baseline: bytes):
     """Restituisce (contenuto, firma k2 di test, force, versione). Rifiuta candidati incoerenti.
 
-    Il candidato e' WPHC_CANDIDATE_FILE (validato da e2e_common: header Version, costante
-    WP_HEALTH_CHECK_VERSION coerente) oppure, senza, la baseline con Version 1.99.0.
+    Il candidato e' il plugin sotto test (validato da e2e_common: header Version, costante
+    WP_HEALTH_CHECK_VERSION coerente): WPHC_CANDIDATE_FILE se impostata, altrimenti mu-plugins/wp-health-check.php
+    del repo (letto, mai scritto, uguale alla build strip di src/).
     """
     baseline_text = baseline.decode("utf-8")
     baseline_version = c.plugin_version(baseline_text)
     info = c.plugin_under_test_info()
-    if info.from_candidate_file:
-        contents = info.contents
-        version = info.version
-    else:
-        version = "1.99.0"
-        contents = c.make_candidate(baseline_text, version).encode("utf-8")
+    contents = info.contents
+    version = info.version
     if version_tuple(version) < version_tuple(baseline_version):
         raise SystemExit(f"Il candidato ({version}) e' piu' vecchio della baseline ({baseline_version}): il plugin rifiuta i downgrade")
     force = version_tuple(version) == version_tuple(baseline_version)
@@ -690,7 +838,7 @@ def block_candidate_self_update(report: c.Report, hub: c.Hub, support: c.Support
     tutta la pipeline di installazione (integrita', firma, backup, scrittura, sanity, opcache) e'
     quella del candidato.
 
-    Il candidato e' il plugin sotto test (WPHC_CANDIDATE_FILE, oppure la baseline stessa). Sequenza:
+    Il candidato e' il plugin sotto test (WPHC_CANDIDATE_FILE, oppure mu-plugins/ del repo). Sequenza:
       1. baseline in push con force: se il candidato e' PIU' NUOVO della baseline il downgrade e' vietato
          (up_to_date, file invariato); se ha la STESSA versione e' una reinstallazione (updated=true);
          se e' piu' vecchio il passo non ha un'attesa sensata e si salta;
@@ -698,9 +846,9 @@ def block_candidate_self_update(report: c.Report, hub: c.Hub, support: c.Support
          nessun .bak/.tmp, codice caricato dal PHP, versione riportata dal sito;
       3. stessa versione senza force: up_to_date; con force: updated=true (reinstallazione);
       4. downgrade con force (baseline e candidato originale, ora piu' vecchi dell'installato): up_to_date.
-    Se candidato e baseline sono lo stesso file (default, senza WPHC_CANDIDATE_FILE) i passi 2-4 valgono
-    uguale, perche' il bump a X.Y.Z+1 rende "piu' vecchi" sia la baseline sia il candidato originale; il passo 1
-    diventa la reinstallazione forzata alla stessa versione.
+    Se candidato e baseline fossero lo stesso file il passo 1 diventerebbe la reinstallazione forzata alla stessa
+    versione, e i passi 2-4 varrebbero uguale: il bump a X.Y.Z+1 rende "piu' vecchi" sia la baseline sia il
+    candidato originale.
     """
     report.section("Blocco candidate-self-update (il self-update lo esegue il CANDIDATO)")
     under = c.plugin_under_test_info()
@@ -890,8 +1038,9 @@ def main() -> int:
     baseline_version = c.plugin_version(baseline.decode("utf-8"))
     candidate = prepare_candidate(baseline)
     contents, sig, force, version = candidate
+    VERSIONS.update(baseline=baseline_version, candidate=version)
     print(f"Baseline: {baseline_version} (git {c.BASELINE_REF}), candidato degli scenari a due fasi: {version}"
-          + (f" da {os.environ['WPHC_CANDIDATE_FILE']}" if os.environ.get("WPHC_CANDIDATE_FILE") else " (copia della baseline con versione alzata)")
+          + (f" da {os.environ['WPHC_CANDIDATE_FILE']}" if os.environ.get("WPHC_CANDIDATE_FILE") else " (mu-plugins/wp-health-check.php del repo)")
           + (" [force: stessa versione]" if force else ""))
     print(f"Candidato: sha256 {sig['sha256']}  tag {sig['tag']}  firmato con la k2 di test")
 

@@ -279,11 +279,11 @@ $tests['src reale: build dev e strip passano tutti i gate e sono deterministiche
 	t_assert( false === strpos( $strip_a['code'], "\r" ), 'CR nel file strippato' );
 };
 
-$tests['src reale: la build coincide col file committato in mu-plugins (modo da WPHC_BUILD_MODE, default dev; a meno di CRLF)'] = function () use ( $root ) {
-	// Stesso modo di "build:check": dev per default, strip se WPHC_BUILD_MODE=strip.
-	$dev       = wphc_build( $root . '/src', 'strip' === getenv( 'WPHC_BUILD_MODE' ) );
+$tests['src reale: la build coincide col file committato in mu-plugins (modo da WPHC_BUILD_MODE, default strip; a meno di CRLF)'] = function () use ( $root ) {
+	// Stesso modo di "build:check": strip per default, dev se WPHC_BUILD_MODE=dev.
+	$built     = wphc_build( $root . '/src', 'dev' !== getenv( 'WPHC_BUILD_MODE' ) );
 	$committed = str_replace( "\r\n", "\n", file_get_contents( $root . '/mu-plugins/wp-health-check.php' ) );
-	t_assert( $dev['code'] === $committed, 'mu-plugins/wp-health-check.php non e\' allineato a src/ (lanciare composer run build:dev)' );
+	t_assert( $built['code'] === $committed, 'mu-plugins/wp-health-check.php non e\' allineato a src/ (lanciare composer run build)' );
 };
 
 // -----------------------------------------------------------------------------------------------
@@ -596,6 +596,143 @@ $tests['gate (b2): codice non ammesso in un file con ruolo cli'] = function () {
 		},
 		'deve essere l\'ultimo del manifest'
 	);
+};
+
+/**
+ * Sorgenti minimi con un file boot e (facoltativamente) una classe, per le prove del ruolo boot.
+ *
+ * @param string      $boot  Contenuto di boot.php.
+ * @param string|null $class Contenuto di class-wphc-plugin.php (ruolo class), o null per non averla.
+ * @return string Cartella src/ temporanea.
+ */
+function t_boot_src( $boot, $class = null ) {
+	$files    = array(
+		'header.php'    => t_header(),
+		'constants.php' => t_constants(),
+	);
+	$manifest = array(
+		'header.php'    => 'header',
+		'constants.php' => 'constants',
+	);
+	if ( null !== $class ) {
+		$files['class-wphc-plugin.php']    = $class;
+		$manifest['class-wphc-plugin.php'] = 'class';
+	}
+	$files['boot.php']    = $boot;
+	$manifest['boot.php'] = 'boot';
+	return t_make_src( $files, $manifest );
+}
+
+$tests['gate (b3): il file boot contiene SOLO WPHC_Plugin::boot(); (commenti e spazi liberi), ogni altra forma fa fallire la build'] = function () {
+	// Forme ammesse: la chiamata nuda, con docblock di file, con commento in coda, con spazi e con tag di chiusura finale.
+	$ok = array(
+		'chiamata nuda'          => "<?php\nWPHC_Plugin::boot();\n",
+		'con docblock di file'   => "<?php\n/**\n * Avvio.\n */\n\nWPHC_Plugin::boot();\n",
+		'commento in coda'       => "<?php\nWPHC_Plugin::boot(); // avvio\n",
+		'spazi dentro le tonde'  => "<?php\nWPHC_Plugin :: boot( );\n",
+		'tag di chiusura finale' => "<?php\nWPHC_Plugin::boot();\n?>\n",
+	);
+	foreach ( $ok as $label => $content ) {
+		try {
+			wphc_build( t_boot_src( $content ), false );
+		} catch ( RuntimeException $e ) {
+			throw new Build_Test_Failure( $label . ': doveva passare: ' . $e->getMessage() );
+		}
+	}
+
+	// Forme vietate: boot spostato dentro un hook di ritardo (callback array o closure), istruzione in piu' prima o dopo,
+	// nome diverso, nome qualificato, argomento, chiamata doppia, file senza la chiamata.
+	$bad = array(
+		'dentro add_action su muplugins_loaded (array)' => "<?php\nadd_action( 'muplugins_loaded', array( 'WPHC_Plugin', 'boot' ) );\n",
+		'dentro add_action su plugins_loaded (closure)' => "<?php\nadd_action(\n\t'plugins_loaded',\n\tfunction () {\n\t\tWPHC_Plugin::boot();\n\t}\n);\n",
+		'dentro add_action su after_setup_theme'        => "<?php\nadd_action( 'after_setup_theme', 'WPHC_Plugin::boot' );\n",
+		'istruzione extra dopo'                         => "<?php\nWPHC_Plugin::boot();\ndo_something();\n",
+		'istruzione extra prima'                        => "<?php\ndo_something();\nWPHC_Plugin::boot();\n",
+		'chiamata doppia'                               => "<?php\nWPHC_Plugin::boot();\nWPHC_Plugin::boot();\n",
+		'dentro un if'                                  => "<?php\nif ( true ) {\n\tWPHC_Plugin::boot();\n}\n",
+		'nome qualificato'                              => "<?php\n\\WPHC_Plugin::boot();\n",
+		'altro metodo'                                  => "<?php\nWPHC_Plugin::start();\n",
+		'altra classe'                                  => "<?php\nWPHC_Other::boot();\n",
+		'con un argomento'                              => "<?php\nWPHC_Plugin::boot( 1 );\n",
+		'file senza codice'                             => "<?php\n// niente\n",
+	);
+	foreach ( $bad as $label => $content ) {
+		try {
+			t_expect_fail(
+				function () use ( $content ) {
+					wphc_build( t_boot_src( $content ), false );
+				},
+				'ESATTAMENTE l\'istruzione WPHC_Plugin::boot();'
+			);
+		} catch ( Build_Test_Failure $e ) {
+			throw new Build_Test_Failure( $label . ': ' . $e->getMessage() );
+		}
+	}
+};
+
+$tests['gate (b4): WPHC_Plugin::boot() non cita muplugins_loaded, plugins_loaded, after_setup_theme (commenti e altri metodi ammessi)'] = function () {
+	$boot = "<?php\nWPHC_Plugin::boot();\n";
+	$make = function ( $body, $other = '', $name = 'WPHC_Plugin' ) {
+		return "<?php\nfinal class {$name} {\n\t/**\n\t * Avvio: non su muplugins_loaded ne' su plugins_loaded.\n\t */\n\tpublic static function boot() {\n{$body}\t}\n{$other}}\n";
+	};
+
+	// Ammessi: registrazioni normali (init, rest_api_init), hook di ritardo solo in un commento o in un altro metodo, o in
+	// una classe che non e' WPHC_Plugin.
+	$ok = array(
+		'hook normali'                       => $make( "\t\tadd_action( 'init', 'x' );\n" ),
+		'hook di ritardo in un commento'     => $make( "\t\t// non va su plugins_loaded\n\t\tadd_action( 'rest_api_init', 'x' );\n" ),
+		'hook di ritardo in un altro metodo' => $make( '', "\tpublic static function altro() {\n\t\treturn 'plugins_loaded';\n\t}\n" ),
+		'altra classe con il nome del hook'  => $make( "\t\treturn 'muplugins_loaded';\n", '', 'T_Altra' ),
+	);
+	foreach ( $ok as $label => $class ) {
+		try {
+			wphc_build( t_boot_src( $boot, $class ), false );
+		} catch ( RuntimeException $e ) {
+			throw new Build_Test_Failure( $label . ': doveva passare: ' . $e->getMessage() );
+		}
+	}
+
+	// Vietati: ognuno dei tre nomi, fra apici singoli o doppi, dentro boot() di WPHC_Plugin.
+	foreach ( array( 'muplugins_loaded', 'plugins_loaded', 'after_setup_theme' ) as $hook ) {
+		foreach ( array( "'" . $hook . "'", '"' . $hook . '"' ) as $quoted ) {
+			$class = $make( "\t\tadd_action( {$quoted}, 'x' );\n" );
+			try {
+				t_expect_fail(
+					function () use ( $boot, $class ) {
+						wphc_build( t_boot_src( $boot, $class ), false );
+					},
+					'WPHC_Plugin::boot() cita'
+				);
+			} catch ( Build_Test_Failure $e ) {
+				throw new Build_Test_Failure( $quoted . ': ' . $e->getMessage() );
+			}
+		}
+	}
+};
+
+$tests['src reale: boot.php e\' ESATTAMENTE WPHC_Plugin::boot(); e boot() non cita un hook di ritardo (controllo indipendente sui token)'] = function () use ( $root ) {
+	$manifest = include $root . '/src/manifest.php';
+	$boots    = array_keys( $manifest, 'boot', true );
+	t_assert( array( 'boot.php' ) === $boots, 'il manifest deve avere un solo file boot: boot.php' );
+
+	// Sequenza di token significativi del file, letta con token_get_all() direttamente (non con le funzioni della build).
+	$sig = array();
+	foreach ( token_get_all( (string) file_get_contents( $root . '/src/boot.php' ) ) as $tok ) {
+		if ( is_array( $tok ) && in_array( $tok[0], array( T_OPEN_TAG, T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ), true ) ) {
+			continue;
+		}
+		$sig[] = is_array( $tok ) ? $tok[1] : $tok;
+	}
+	t_assert( array( 'WPHC_Plugin', '::', 'boot', '(', ')', ';' ) === $sig, 'boot.php non e\' esattamente WPHC_Plugin::boot();: ' . implode( ' ', $sig ) );
+
+	// class-wphc-plugin.php: nessuna stringa con i tre hook di ritardo (i commenti non sono stringhe).
+	$class = (string) file_get_contents( $root . '/src/class-wphc-plugin.php' );
+	t_assert( 1 === preg_match( '/public static function boot\(\)\s*\{/', $class ), 'WPHC_Plugin::boot() non trovato' );
+	foreach ( token_get_all( $class ) as $tok ) {
+		if ( is_array( $tok ) && T_CONSTANT_ENCAPSED_STRING === $tok[0] ) {
+			t_assert( ! in_array( trim( $tok[1], '\'"' ), array( 'muplugins_loaded', 'plugins_loaded', 'after_setup_theme' ), true ), 'class-wphc-plugin.php cita ' . $tok[1] . ' (riga ' . $tok[2] . ')' );
+		}
+	}
 };
 
 $tests['gate (i): __FILE__ e __DIR__ fuori dal file constants (legacy, class, cli, boot, header) fanno fallire la build'] = function () {
@@ -1118,11 +1255,13 @@ $tests['CLI: --output scrive solo dove richiesto, --check confronta, WPHC_BUILD_
 	$r = t_run_cli( $root, array( '--check', '--no-strip', '--output', $dir . '/crlf.php' ) );
 	t_assert( 0 === $r[0] && false !== strpos( $r[2], 'CRLF' ), '--check con CRLF: exit ' . $r[0] );
 
-	// WPHC_BUILD_MODE: default dev, strip su richiesta, valore non valido -> 2.
+	// WPHC_BUILD_MODE: default strip, dev su richiesta, valore non valido -> 2.
+	$r = t_run_cli( $root, array( '--check', '--output', $strip ), array( 'WPHC_BUILD_MODE' => '' ) );
+	t_assert( 0 === $r[0], '--check senza flag deve confrontare la build strip (default)' );
 	$r = t_run_cli( $root, array( '--check', '--output', $dev ), array( 'WPHC_BUILD_MODE' => '' ) );
-	t_assert( 0 === $r[0], '--check senza flag deve confrontare la build dev (default)' );
-	$r = t_run_cli( $root, array( '--check', '--output', $strip ), array( 'WPHC_BUILD_MODE' => 'strip' ) );
-	t_assert( 0 === $r[0], '--check con WPHC_BUILD_MODE=strip deve confrontare la build strip' );
+	t_assert( 1 === $r[0], '--check senza flag su un file dev doveva fallire (il default e\' strip)' );
+	$r = t_run_cli( $root, array( '--check', '--output', $dev ), array( 'WPHC_BUILD_MODE' => 'dev' ) );
+	t_assert( 0 === $r[0], '--check con WPHC_BUILD_MODE=dev deve confrontare la build dev' );
 	$r = t_run_cli( $root, array( '--check', '--output', $strip ), array( 'WPHC_BUILD_MODE' => 'boh' ) );
 	t_assert( 2 === $r[0], 'WPHC_BUILD_MODE non valido doveva dare exit 2' );
 
@@ -1138,13 +1277,16 @@ $tests['CLI: --output scrive solo dove richiesto, --check confronta, WPHC_BUILD_
 	t_assert( 2 === $r[0], 'argomento sconosciuto doveva dare exit 2' );
 };
 
-$tests['CLI: lo strip non si scrive su mu-plugins/ senza --output, salvo WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 (I-3 del lotto 2)'] = function () use ( $root ) {
+$tests['CLI: la build strip scrive mu-plugins/, la build dev non si scrive li\' senza --output (passaggio finale)'] = function () use ( $root ) {
 	// Albero finto (bin/, src/, mu-plugins/) in una cartella temporanea: build.php risolve mu-plugins/ da dirname(__DIR__),
 	// quindi la prova scrive li' e mai nel mu-plugins/ vero. Le sottocartelle si registrano PRIMA della radice: la
 	// pulizia finale le svuota nell'ordine di registrazione e rmdir() della radice trova la radice vuota.
 	$fake = sys_get_temp_dir() . '/wphc-build-inplace-' . uniqid( '', true );
 	foreach ( array( '/bin', '/src', '/mu-plugins' ) as $sub ) {
 		mkdir( $fake . $sub, 0777, true );
+	}
+	// build/dev non esiste ancora: lo crea la build (cartella di "composer run build:dev"); la pulizia va dal fondo.
+	foreach ( array( '/build/dev', '/build', '/bin', '/src', '/mu-plugins' ) as $sub ) {
 		$GLOBALS['build_test_dirs'][] = $fake . $sub;
 	}
 	$GLOBALS['build_test_dirs'][] = $fake;
@@ -1153,33 +1295,40 @@ $tests['CLI: lo strip non si scrive su mu-plugins/ senza --output, salvo WPHC_BU
 		copy( $file, $fake . '/src/' . basename( $file ) );
 	}
 	$target = $fake . '/mu-plugins/wp-health-check.php';
-	$none   = array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => '' );
 	$dev    = wphc_build( $fake . '/src', false )['code'];
 	$strip  = wphc_build( $fake . '/src', true )['code'];
 
-	// Strip senza --output e senza consenso: default, --strip esplicito (come "composer run build") e consenso diverso da "1".
+	// Build dev senza --output: rifiutata (exit 2), niente scritto, messaggio che rimanda a build:dev e --output.
+	$r = t_run_cli( $fake, array( '--no-strip' ) );
+	t_assert( 2 === $r[0], 'la build dev su mu-plugins senza --output doveva dare exit 2, dato ' . $r[0] );
+	t_assert( false !== strpos( $r[2], 'RIFIUTATO' ) && false !== strpos( $r[2], 'build:dev' ) && false !== strpos( $r[2], '--output' ), 'messaggio di rifiuto poco chiaro: ' . $r[2] );
+	t_assert( ! file_exists( $target ), 'il rifiuto ha scritto comunque mu-plugins/wp-health-check.php' );
+
+	// Lo strip, di default e con --strip esplicito (come "composer run build"), si scrive su mu-plugins/ senza consensi.
 	foreach ( array( array(), array( '--strip' ) ) as $args ) {
-		$r = t_run_cli( $fake, $args, $none );
-		t_assert( 2 === $r[0], 'strip su mu-plugins senza consenso doveva dare exit 2, dato ' . $r[0] . ' (args: ' . implode( ' ', $args ) . ')' );
-		t_assert( false !== strpos( $r[2], 'RIFIUTATO' ) && false !== strpos( $r[2], 'build:dev' ) && false !== strpos( $r[2], '--output' ), 'messaggio di rifiuto poco chiaro: ' . $r[2] );
-		t_assert( ! file_exists( $target ), 'il rifiuto ha scritto comunque mu-plugins/wp-health-check.php' );
+		if ( file_exists( $target ) ) {
+			unlink( $target );
+		}
+		$r = t_run_cli( $fake, $args );
+		t_assert( 0 === $r[0] && $strip === file_get_contents( $target ), 'strip su mu-plugins: exit ' . $r[0] . ' ' . $r[2] . ' (args: ' . implode( ' ', $args ) . ')' );
 	}
-	$r = t_run_cli( $fake, array( '--strip' ), array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => 'yes' ) );
-	t_assert( 2 === $r[0] && ! file_exists( $target ), 'solo il valore "1" deve valere come consenso' );
 
-	// La build dev su mu-plugins/ resta permessa e un successivo rifiuto dello strip non tocca il file.
-	$r = t_run_cli( $fake, array( '--no-strip' ), $none );
-	t_assert( 0 === $r[0] && $dev === file_get_contents( $target ), 'build dev su mu-plugins: exit ' . $r[0] . ' ' . $r[2] );
-	$r = t_run_cli( $fake, array( '--strip' ), $none );
-	t_assert( 2 === $r[0] && $dev === file_get_contents( $target ), 'il rifiuto dello strip ha modificato il file dev' );
+	// Un successivo rifiuto della build dev non tocca il file strip.
+	$r = t_run_cli( $fake, array( '--no-strip' ) );
+	t_assert( 2 === $r[0] && $strip === file_get_contents( $target ), 'il rifiuto della build dev ha modificato mu-plugins/' );
 
-	// --check non scrive: ammesso anche in modo strip senza consenso (confronto: la dev committata differisce dallo strip).
-	$r = t_run_cli( $fake, array( '--check', '--strip' ), $none );
-	t_assert( 1 === $r[0] && false !== strpos( $r[2], 'CHECK FALLITO' ), '--check --strip non doveva essere rifiutato: exit ' . $r[0] );
+	// La build dev con --output in una cartella che non esiste la crea e scrive li', senza toccare mu-plugins/.
+	$dev_out = $fake . '/build/dev/wp-health-check.php';
+	$r       = t_run_cli( $fake, array( '--no-strip', '--output', $dev_out ) );
+	t_assert( 0 === $r[0] && $dev === file_get_contents( $dev_out ), 'build dev con --output in cartella nuova: exit ' . $r[0] . ' ' . $r[2] );
+	t_assert( $strip === file_get_contents( $target ), 'la build dev con --output ha toccato mu-plugins/' );
 
-	// Con il consenso esplicito lo strip viene scritto su mu-plugins/.
-	$r = t_run_cli( $fake, array( '--strip' ), array( 'WPHC_BUILD_ALLOW_STRIP_IN_PLACE' => '1' ) );
-	t_assert( 0 === $r[0] && $strip === file_get_contents( $target ), 'strip con WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1: exit ' . $r[0] . ' ' . $r[2] );
+	// --check non scrive: ammesso anche in modo dev senza --output (il file committato e' lo strip: differisce);
+	// il default (strip) coincide.
+	$r = t_run_cli( $fake, array( '--check', '--no-strip' ) );
+	t_assert( 1 === $r[0] && false !== strpos( $r[2], 'CHECK FALLITO' ), '--check --no-strip non doveva essere rifiutato: exit ' . $r[0] );
+	$r = t_run_cli( $fake, array( '--check' ), array( 'WPHC_BUILD_MODE' => '' ) );
+	t_assert( 0 === $r[0] && false !== strpos( $r[1], 'CHECK OK' ), '--check di default (strip) su mu-plugins strip: exit ' . $r[0] . ' ' . $r[2] );
 };
 
 // -----------------------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 # Suite di caratterizzazione di wp-health-check
 
-Test PHPUnit che fissano il comportamento ESTERNO del mu-plugin (versione 1.38.1) e
-dimostrano la retrocompatibilita' con l'hub durante il refactoring in classi.
+Test PHPUnit che fissano il comportamento ESTERNO del mu-plugin (fissato sulla 1.38.1, conservato dal plugin a
+classi 1.39.0 costruito da `src/`) e dimostrano la retrocompatibilita' con l'hub.
 Girano in WordPress reale (test library di WordPress) dentro i container di `wp-env`; in piu'
 c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Python dell'hub.
 
@@ -9,7 +9,7 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 
 | File | Contenuto |
 |---|---|
-| `bootstrap.php` | carica Composer, la test library e il plugin SOTTO TEST (una copia, vedi "Guardia anti-sovrascrittura"); guardie su costanti, provenienza dei simboli e integrita' dei file |
+| `bootstrap.php` | carica Composer, la test library e il plugin SOTTO TEST (una copia della build strip di `src/`, vedi "Guardia anti-sovrascrittura"); guardie su costanti, provenienza dei simboli e integrita' dei file |
 | `refactor-map.php` | mappa UNICA "funzione 1.38.1 -> metodo del refactoring" (vedi "Convenzione cb() / call() / call_args() e mappa unica") |
 | `class-wphc-test-case.php` | classe base: buste firmate, firma HMAC, `request()`, reset dello stato, `cb()`/`call()`, controllo delle chiamate HTTP non mockate |
 | `class-wphc-golden.php` | confronto con gli snapshot in `fixtures/golden/` |
@@ -31,10 +31,12 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
+| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...): vedi "Matrice PHP" |
+| `build/run.php` | test della build stessa (`composer run test:build`): PHP puro, senza WordPress |
 | `fixtures/contract-vectors.json` | vettori di contratto (GENERATO, versionato) |
 | `fixtures/golden/**.json` | snapshot di risposta e option scritte (GENERATI, versionati) |
 | `php74/` | composer dedicato alla matrice PHP 7.4 |
-| `e2e/` | test end to end con l'hub vero e un sito WordPress vero: vedi `e2e/README.md` (`python -I tests/e2e/run_all.py`) |
+| `e2e/` | test end to end con l'hub vero e un sito WordPress vero: contratto, upgrade 1.38.1 -> file distribuito (10 scenari, fra cui `webhook-esaurimento`, `bulk-orfani` e `health-cache`), self-update, WP-CLI; vedi `e2e/README.md` (`python -I tests/e2e/run_all.py`) |
 
 Le chiavi Ed25519 dei test derivano da seed fissi (k1 = `bytes(range(32))`, k2 =
 `bytes(range(32, 64))`). Le chiavi di produzione non sono mai usate ne' scritte qui:
@@ -47,32 +49,35 @@ alert non sono su dominio `.invalid`.
 Il self-update del plugin (`wphc_install_release`) riscrive `__FILE__` (nel plugin a classi `WP_HEALTH_CHECK_FILE`, che nel file distribuito vale lo stesso `__FILE__`) e crea un `.bak` accanto: con le
 chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
 
-- **Il plugin sotto test e' una COPIA.** Per default il bootstrap carica una copia in
+- **Il plugin sotto test e' una COPIA della build strip di `src/`.** Per default il bootstrap carica una copia in
   `sys_get_temp_dir()/wphc-under-test-<id>/wp-health-check.php` (nel container: `/tmp/wphc-under-test-<id>/`):
   una cartella per run, con un id univoco (`uniqid`), quindi due run non si pestano i piedi e non servono pulizie
   di residui (`.bak`, `.wphc-new-*.tmp`); la cartella e' rimossa a fine run dalla guardia (dopo i suoi controlli) o,
   se il bootstrap esce prima di registrarla, da una funzione di chiusura dedicata. I runner
-  (`C:/tmp/wphc-run-phpunit.sh`, `C:/tmp/wphc-run-phpunit74.sh`) non dipendono dal percorso. Una cartella
-  `wphc-under-test` senza suffisso, se c'e', e' un residuo delle versioni precedenti del bootstrap e si puo'
-  cancellare. `WPHC_PLUGIN_FILE` indica invece un altro file (per esempio la build strip in una cartella scratch):
-  il file del repo in `mu-plugins/` e' sempre rifiutato come valore di `WPHC_PLUGIN_FILE`, e un `.bak`
+  (`tests/tools/run-phpunit-docker.sh`, o gli script locali che fanno `docker exec` nel container `tests-cli`) non dipendono
+  dal percorso. Una cartella `wphc-under-test` senza suffisso, se c'e', e' un residuo delle versioni precedenti del bootstrap
+  e si puo' cancellare. `WPHC_PLUGIN_FILE` indica invece un altro file (per esempio una copia della build in una cartella
+  scratch): il file del repo in `mu-plugins/` e' sempre rifiutato come valore di `WPHC_PLUGIN_FILE`, e un `.bak`
   preesistente accanto a un file esplicito fa fallire l'avvio.
-- **`mu-plugins/` deve coincidere con `src/` (solo in modalita' di default).** Prima di copiare, il bootstrap lancia
-  `bin/build.php --no-strip --output <file temporaneo>` in un processo figlio (non un `require` di `bin/build.php`:
-  le sue funzioni globali `wphc_build_*` potrebbero collidere con quelle del plugin 1.38.1 e andrebbero escluse dal
-  controllo di provenienza dei simboli) e richiede che `mu-plugins/wp-health-check.php`, con gli a capo CRLF
-  normalizzati a LF, sia IDENTICO a quella build. Un `composer run build:dev` dimenticato dopo una modifica a `src/`
-  fa quindi fallire l'avvio (exit 1, con gli SHA-256 dei due testi) invece di dare un falso verde su un
-  `mu-plugins/` vecchio. Il modo e' quello di `build:check`: `WPHC_BUILD_MODE` (`dev` di default, `strip` dopo il
-  passaggio finale). Con `WPHC_PLUGIN_FILE` questo controllo NON si applica: il file indicato (una build strip, per
-  esempio) puo' differire da `src/` dev.
+- **`mu-plugins/` deve coincidere con `src/`, e anche un `WPHC_PLUGIN_FILE`.** Prima di copiare (o di usare il file
+  indicato), il bootstrap lancia `bin/build.php --strip --output <file temporaneo>` in un processo figlio (non un `require`
+  di `bin/build.php`: le sue funzioni globali `wphc_build_*` potrebbero collidere con le funzioni del plugin e andrebbero
+  escluse dal controllo di provenienza dei simboli) e richiede che il file sia IDENTICO a quella build. Per
+  `mu-plugins/wp-health-check.php` gli a capo CRLF si normalizzano a LF (copia di lavoro Windows con `core.autocrlf`); per un
+  `WPHC_PLUGIN_FILE` il confronto e' BYTE PER BYTE, perche' il file si usa cosi' com'e'. Un `composer run build` dimenticato
+  dopo una modifica a `src/`, o un candidato esterno diverso dalla build, fa quindi fallire l'avvio (exit 1, con gli SHA-256
+  dei due testi) invece di dare un falso verde su codice che non e' quello del sorgente. Il modo e' quello di `build:check`:
+  `WPHC_BUILD_MODE` (`strip` di default, `dev` per provare una build dev passata con `WPHC_PLUGIN_FILE`).
+  **`WPHC_ALLOW_FOREIGN_BUILD=1`** (esplicito, solo con `WPHC_PLUGIN_FILE`) salta il confronto: serve a provare di proposito un
+  candidato esterno che NON coincide con `src/` (una build sperimentale, un file di un'altra versione); lo SHA-256 stampato
+  su STDERR lo segnala con «build ESTERNA ammessa». Senza la variabile un file diverso dalla build non parte.
 - **La copia NON usa `copy()`.** In Docker, con il repo montato come bind mount da Windows, la `copy()` di
   PHP 8.1 puo' scrivere una copia con una coda di byte NUL (dopo una rebuild del file: la suite cadrebbe con
   un ParseError che non dipende dal plugin). Il bootstrap scrive la build di riferimento (quella del processo
   figlio, non una rilettura del file del repo) con `file_put_contents()`, RILEGGE la copia da disco e confronta
   lo SHA-256 con quello della build; la copia con byte NUL o diversa si riprova fino a 3 volte, poi il bootstrap si
-  ferma con un messaggio chiaro. Il runner di default (`C:/tmp/wphc-run-phpunit.sh 81`) e' quindi affidabile anche
-  subito dopo `composer run build:dev`, senza dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
+  ferma con un messaggio chiaro. Il runner di default (`tests/tools/run-phpunit-docker.sh 8.1`) e' quindi affidabile anche
+  subito dopo `composer run build`, senza dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
 - **Lo SHA-256 del file sotto test e' su STDERR** (riga `Plugin sotto test: <file> sha256 <hash> (...)`, una
   volta per run: i figli dei test `@runInSeparateProcess` non la ripetono, perche' PHPUnit tratterebbe un loro
   output su STDERR come un errore del test). Serve a sapere nei log quale build e' stata provata.
@@ -180,9 +185,10 @@ trap 'rmdir C:/tmp/wphc-phpunit.lock' EXIT
 # ...qui il comando phpunit (8.1 o 7.4)...
 ```
 
-Lo script `C:/tmp/wphc-run-phpunit.sh <81|74> [argomenti phpunit]` (fuori dal repo) fa esattamente questo
-per il container `tests-cli`; `EXTRA_ENV="-e NOME=valore"` passa variabili d'ambiente al container
-(es. `WPHC_GOLDEN_UPDATE=1`, `WPHC_PLUGIN_FILE=...`).
+Lo script `tests/tools/run-phpunit-docker.sh <versione PHP> [argomenti phpunit]` fa esattamente questo (con la stessa
+cartella di lock) per un container usa-e-getta, vedi "Matrice PHP"; `EXTRA_ENV="-e NOME=valore"` passa variabili d'ambiente
+al container (es. `WPHC_GOLDEN_UPDATE=1`, `WPHC_PLUGIN_FILE=...`). Chi lavora con uno script locale che fa `docker exec` nel
+container `tests-cli` (come `C:/tmp/wphc-run-phpunit.sh`, fuori dal repo) usa lo stesso lock.
 
 ## phpcs e phpstan non coprono `tests/`
 
@@ -194,12 +200,14 @@ prefissi globali, docblock), e phpstan richiederebbe gli stub della test library
 Nota: `composer run analyse` con il `memory_limit` di default dell'host (128M) va in crash
 anche prima di questa suite; funziona con `vendor/bin/phpstan analyse --memory-limit=4G`.
 
-## 3. Matrice PHP 7.4
+## 3. Matrice PHP (7.4, 8.1, 8.3)
 
 WordPress 7.1 richiede PHP 7.4 come minimo, quindi il core fissato in `.wp-env.json`
 resta lo stesso. Il `composer.json` principale richiede PHP 8.1+ (gli strumenti di sviluppo),
 percio' per 7.4 si usa un vendor separato con le sole dipendenze di test, risolto per PHP 7.4.33
-(`tests/php74/`, solo file PHP: si installa dall'host).
+(`tests/php74/`, solo file PHP: si installa dall'host). La suite gira verde su PHP 7.4, 8.1 e 8.3: la 8.3 ha richiesto di
+togliere due forme deprecate dai test (`ReflectionProperty::setValue()` con un solo argomento su una proprieta' statica:
+oggi `setValue( null, valore )`, valido anche su 7.4); `convertDeprecationsToExceptions` le avrebbe trasformate in errori.
 
 ```bash
 composer install --working-dir=tests/php74
@@ -208,11 +216,22 @@ composer run test:check-locks    # phpunit, polyfills e test library devono aver
 
 ### Metodo consigliato: container usa-e-getta (non tocca l'ambiente condiviso, che resta su 8.1)
 
-Un container `wordpress:cli-php7.4` collegato alla rete di wp-env, con lo stesso WordPress di test, lo
-stesso database e la radice del progetto montata; il vendor di test e' quello di `tests/php74/vendor`.
-Il container sparisce a fine run (`--rm`), quindi `/tmp` riparte pulito. Script completo
-(`C:/tmp/wphc-run-phpunit74.sh`, fuori dal repo; i due percorsi e il nome della rete dipendono dalla
-macchina: `<hash>` e' quello della cartella `~/.wp-env/wp-env-wp-health-check-<hash>`):
+```bash
+bash tests/tools/run-phpunit-docker.sh 8.3                       # suite completa su PHP 8.3
+bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # un file su PHP 7.4
+bash tests/tools/run-phpunit-docker.sh 8.1                       # anche 8.1, senza usare il container tests-cli
+EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1 --testsuite hook-registry
+```
+
+Lo script (parametrico sulla versione di PHP, portabile fra macchine) lancia un container `wordpress:cli-php<versione>`
+collegato alla rete di wp-env, con lo stesso WordPress di test, lo stesso database e la radice del progetto montata; la
+cartella di wp-env si trova da sola (`~/.wp-env/wp-env-wp-health-check-<hash8>`, l'unica; `WPHC_WPENV_DIR` per indicarne
+un'altra), il vendor e' `tests/php74/vendor` per la 7.4 e `vendor/` per le altre versioni (il vendor principale, risolto per
+8.1, va bene anche su 8.3), il lock e' lo stesso di sopra e `--do-not-cache-result` evita l'avviso sulla cache dei risultati.
+Il tag `wordpress:cli-php<versione>` e' fissato per versione: il tag `wordpress:cli` senza versione cambia PHP nel tempo. Le
+immagini si scaricano da sole al primo uso (`docker pull wordpress:cli-php8.3`). Il container sparisce a fine run (`--rm`),
+quindi `/tmp` riparte pulito. Per la 7.4 lo script equivale a questo comando manuale (i percorsi e il nome della rete
+dipendono dalla macchina: `<hash>` e' quello della cartella `~/.wp-env/wp-env-wp-health-check-<hash>`):
 
 ```bash
 #!/bin/bash
@@ -233,10 +252,10 @@ MSYS_NO_PATHCONV=1 docker run --rm --network wp-env-wp-health-check-<hash>_defau
   php -d memory_limit=512M tests/php74/vendor/bin/phpunit "$@"
 ```
 
-Si lancia con `bash C:/tmp/wphc-run-phpunit74.sh` (suite completa) o con argomenti di PHPUnit
-(`--testsuite enroll`). Verifica della versione: `docker run --rm wordpress:cli-php7.4 php -v`
-(PHP 7.4.33). Un avviso `file_put_contents(.phpunit.result.cache): Permission denied` e' innocuo (l'utente del
-container non puo' scrivere la cache dei risultati nella cartella montata).
+Lo script stampa su STDERR la versione di PHP del container (prima riga) e, dal bootstrap, lo SHA-256 del file sotto
+test. Verifica della versione a mano: `docker run --rm wordpress:cli-php7.4 php -v` (PHP 7.4.33). Senza lo script, un avviso
+`file_put_contents(.phpunit.result.cache): Permission denied` e' innocuo (l'utente del container non puo' scrivere la cache dei
+risultati nella cartella montata).
 
 ### Metodo alternativo: ambiente wp-env su 7.4
 
@@ -274,7 +293,7 @@ dell'hub (gli hash dei sorgenti sono in `_meta`). Fedelta' ai byte dell'hub:
 PERCHE' il comportamento e' cambiato (servono a dimostrare che il refactoring non lo cambia):
 
 ```bash
-EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash C:/tmp/wphc-run-phpunit.sh 81
+EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1
 # oppure: npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev bash -c 'WPHC_GOLDEN_UPDATE=1 vendor/bin/phpunit'
 git diff tests/fixtures/golden        # controllare cosa e' cambiato
 ```
@@ -290,19 +309,23 @@ con WordPress 7.x `on`/`off` quando il plugin passa il terzo argomento di `updat
 omette). Normalizzazione: interi entro un giorno dall'ora corrente diventano `<TS_INT>` e stringhe numeriche
 (le option lette dal DB) `<TS_STR>` (due segnaposto distinti, cosi' un cambio di tipo non passa inosservato);
 date ISO 8601 `<ISO8601>` SOLO se entro un giorno dall'ora corrente (un "adesso" generato dal plugin; una data lontana e' un valore
-fisso del fixture e resta letterale nel golden); stringhe esadecimali lunghe `<HEX>`; URL del sito `<SITE_URL>`; versione `<AGENT_VERSION>`.
+fisso del fixture e resta letterale nel golden); stringhe esadecimali lunghe `<HEX>`; URL del sito `<SITE_URL>`; versione `<AGENT_VERSION>`, sia come valore intero della stringa sia dentro lo User-Agent del
+webhook (`wp-health-check-agent/<AGENT_VERSION>`): i golden non dipendono dalla versione del plugin e un bump non li tocca
+(`grep -r "1\.39\.0" tests/fixtures/golden` non deve trovare nulla; in `contract-vectors.json` compaiono solo i contenuti fissi
+di prova delle release).
 
-## 5. Provare un altro file di plugin (build del refactoring)
+## 5. Provare un altro file di plugin (candidato esterno)
 
 ```bash
-EXTRA_ENV="-e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/dist/wp-health-check.php" bash C:/tmp/wphc-run-phpunit.sh 81
-# oppure: npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev bash -c \
-#   'WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/dist/wp-health-check.php vendor/bin/phpunit'
+# una copia della build strip (deve coincidere con src/, altrimenti il bootstrap si ferma)
+EXTRA_ENV="-e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/copia.php" bash tests/tools/run-phpunit-docker.sh 8.1
+# un file che NON coincide con src/ (prova di proposito): consenso esplicito
+EXTRA_ENV="-e WPHC_ALLOW_FOREIGN_BUILD=1 -e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/altro.php" bash tests/tools/run-phpunit-docker.sh 8.1
 ```
 
-Il bootstrap verifica la provenienza di TUTTI i simboli (funzioni e classi) e che il plugin del repo non sia
-incluso. Il file indicato e' usato cosi' com'e' (non viene copiato): se la build scrive su `__FILE__`, la guardia
-a fine run se ne accorge.
+Il bootstrap verifica che il file coincida con la build strip di `src/` (salvo `WPHC_ALLOW_FOREIGN_BUILD=1`), la provenienza
+di TUTTI i simboli (funzioni e classi) e che il plugin del repo non sia incluso. Il file indicato e' usato cosi' com'e'
+(non viene copiato): se la build scrive su `__FILE__`, la guardia a fine run se ne accorge.
 
 ### Convenzione cb() / call() / call_args() e mappa unica (API di test da riadattare nel refactoring)
 
@@ -374,7 +397,7 @@ rotte (22 registrazioni su 20 percorsi, `wphc_require_token` su 17 handler). Il 
 'health-check', ... )` non gira in PHPUnit (`WP_CLI` non e' definita): si verifica nel sorgente (anche in
 `test-cli.php`) e con la WP-CLI vera in `tests/e2e/wpcli_test.py`.
 
-Per rigenerare il golden: `EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash C:/tmp/wphc-run-phpunit.sh 81 --testsuite hook-registry`
+Per rigenerare il golden: `EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1 --testsuite hook-registry`
 e controllare il diff: un cambiamento di priorita', di ordine o di `accepted_args` e' un cambiamento di comportamento
 da decidere, non da rigenerare.
 
@@ -414,11 +437,14 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
 
 | Variabile | Effetto |
 |---|---|
-| `WPHC_PLUGIN_FILE` | file del plugin da caricare invece della copia di `mu-plugins/` (mai il file del repo) |
+| `WPHC_PLUGIN_FILE` | file del plugin da caricare invece della copia di `mu-plugins/` (mai il file del repo); deve coincidere con la build strip di `src/` |
+| `WPHC_ALLOW_FOREIGN_BUILD` | `1` = il file di `WPHC_PLUGIN_FILE` puo' NON coincidere con `src/` (candidato esterno provato di proposito) |
+| `WPHC_BUILD_MODE` | `strip` (default) o `dev`: build di `src/` con cui si confronta il file sotto test, come per `build:check` |
 | `WPHC_VENDOR_DIR` | cartella `vendor` da usare (matrice PHP 7.4) |
 | `WPHC_WP_TESTS_DIR` | test library di WordPress (default: wp-phpunit di Composer) |
 | `WP_PHPUNIT__TESTS_CONFIG` | config della test library (default: `$WP_TESTS_DIR/wp-tests-config.php` di wp-env) |
 | `WPHC_GOLDEN_UPDATE=1` | riscrive i golden invece di confrontarli |
+| `EXTRA_ENV`, `EXTRA_MOUNT`, `WPHC_WPENV_DIR`, `WPHC_PHPUNIT_LOCK` | solo per `tests/tools/run-phpunit-docker.sh` (opzioni `-e`, opzioni `-v`, cartella di wp-env, cartella di lock) |
 
 ## Limiti dichiarati
 

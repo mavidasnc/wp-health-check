@@ -4,9 +4,9 @@ Questi test rispondono a tre domande, con un sito WordPress vero che esegue il p
 
 1. **Contratto**: l'hub (codice Python invariato) enrolla, ruota, interroga, aggiorna e revoca il sito
    senza modifiche? (`hub_contract.py`)
-2. **Upgrade**: un sito gia' enrollato con la 1.38.1 continua a funzionare dopo l'aggiornamento al
-   file candidato (senza `WPHC_CANDIDATE_FILE` una copia della 1.38.1 con versione alzata, con la
-   variabile la build del refactoring)? (`upgrade_test.py`, scenari a due fasi)
+2. **Upgrade**: un sito gia' enrollato con la 1.38.1 (la baseline, letta da git) continua a funzionare dopo
+   l'aggiornamento al file sotto test (senza `WPHC_CANDIDATE_FILE` il file distribuito
+   `mu-plugins/wp-health-check.php`, con la variabile un file esterno)? (`upgrade_test.py`, scenari a due fasi)
 3. **Self-update del candidato**: il candidato, una volta installato, sa aggiornare se stesso
    (backup, rename atomico, sanity check, invalidazione di opcache) e rifiuta i downgrade, e quando
    il backup non e' possibile lascia il file intatto? (`upgrade_test.py`, blocchi `candidate-self-update`
@@ -22,7 +22,7 @@ PHPUnit non si puo' fare.
 tests/e2e/
   e2e_common.py        libreria: percorsi, firme di test, "hub in miniatura", client di supporto
   hub_contract.py      enroll v1 -> health -> rotate -> grazia -> health v2 -> detail -> push -> revoke
-  upgrade_test.py      7 scenari, ciascuno eseguito "senza upgrade" e "con upgrade" e confrontato,
+  upgrade_test.py      10 scenari, ciascuno eseguito "senza upgrade" e "con upgrade" e confrontato,
                        piu' i blocchi candidate-self-update e backup-failed
   wpcli_test.py        WP-CLI vera nel container
   run_all.py           lancia i tre in sequenza
@@ -54,12 +54,16 @@ tests/e2e/
   scenario, controlla che accanto al file reale non siano comparsi `.bak` o `.tmp`.
 - **La baseline e' la 1.38.1 vera, letta da git** (`git show 1d6725b:mu-plugins/wp-health-check.php`,
   override con `WPHC_BASELINE_REF`), non dal file di lavoro: cosi' non dipende da modifiche
-  temporanee o da fine riga locali.
-- **Il plugin sotto test** (`e2e_common.plugin_under_test()`) e' il file che gli script installano:
-  `WPHC_CANDIDATE_FILE` se impostata, altrimenti la baseline. `hub_contract.py` e `wpcli_test.py` lo
-  installano e lo provano (versione attesa ricavata dal file installato; il candidato del push di
-  `hub_contract` e' lo stesso file con la versione successiva X.Y.Z+1, quindi il self-update positivo e'
-  eseguito dal plugin sotto test). `upgrade_test.py` lo usa come candidato dell'upgrade dalla 1.38.1 e come
+  temporanee o da fine riga locali. E' lo stato da cui parte l'upgrade (`upgrade_test.py`), non il file sotto test.
+- **Il plugin sotto test** (`e2e_common.plugin_under_test_info()`) e' il file che gli script installano:
+  `WPHC_CANDIDATE_FILE` se impostata (un file esterno, nessun confronto con `src/`), altrimenti
+  `mu-plugins/wp-health-check.php` del repo, **letto e mai scritto**. Nel caso di default la libreria lo confronta con la
+  build strip di `src/` (`php bin/build.php --strip --output <temporaneo>` in un processo figlio, come il bootstrap di
+  PHPUnit; serve `php` nel PATH; CRLF normalizzati a LF in memoria) e si FERMA se differisce: un file distribuito rimasto
+  indietro rispetto a `src/` darebbe un falso verde (si rigenera con `composer run build`).
+  `hub_contract.py` e `wpcli_test.py` lo installano e lo provano (versione attesa ricavata dal file installato; il
+  candidato del push di `hub_contract` e' lo stesso file con la versione successiva X.Y.Z+1, quindi il self-update
+  positivo e' eseguito dal plugin sotto test). `upgrade_test.py` lo usa come candidato dell'upgrade dalla baseline e come
   plugin installato nei due blocchi del punto 3. Ogni script stampa all'avvio
   `[script] plugin sotto test: <percorso> versione <v> sha256 <hash>`. Il file deve dichiarare la stessa
   versione nell'header `Version:` e nella costante `define( 'WP_HEALTH_CHECK_VERSION', 'x.y.z' )`: se manca una
@@ -128,25 +132,27 @@ controlli passano. `upgrade_test.py` si ferma subito, prima di toccare il sito, 
 candidato supera 131072 byte (stampa la misura e la differenza rispetto alla baseline; il budget del
 progetto di 110.000 caratteri gzip+base64 e' stampato solo come informazione: la baseline lo supera gia').
 
-### Provare la build del refactoring
+Senza opzioni gli script provano il file distribuito (`mu-plugins/wp-health-check.php`, la build strip di `src/`), e
+`upgrade_test.py` porta il sito dalla 1.38.1 a quel file (1.39.0): e' il test dell'upgrade vero.
+
+### Provare un file esterno (candidato)
 
 ```bash
-WPHC_CANDIDATE_FILE=dist/wp-health-check.php python -I tests/e2e/run_all.py
+WPHC_CANDIDATE_FILE=build/copia-strip.php python -I tests/e2e/run_all.py
 ```
 
 `WPHC_CANDIDATE_FILE` vale per TUTTI e tre gli script (vedi "Il plugin sotto test" sopra): `hub_contract.py`
-e `wpcli_test.py` installano quel file e lo provano al posto della 1.38.1 (i docblock letti da WP-CLI via
+e `wpcli_test.py` installano quel file e lo provano al posto del file distribuito (i docblock letti da WP-CLI via
 reflection, l'help, i comandi); `upgrade_test.py` lo usa come candidato dell'upgrade dalla 1.38.1 e come plugin
-dei blocchi di self-update. Nel confronto di upgrade, se la versione del candidato e' piu' alta di quella della
-baseline il push e' normale; se e' **uguale** (la build puo' mantenere 1.38.1) il push usa `force`, la
+dei blocchi di self-update. Con la variabile NON c'e' il confronto con `src/` (un candidato esterno puo' essere
+qualunque file: una build sperimentale, una release gia' pubblicata). Nel confronto di upgrade, se la versione del
+candidato e' piu' alta di quella della baseline il push e' normale; se e' **uguale** il push usa `force`, la
 reinstallazione di riparazione che il plugin accetta solo sulla stessa versione; se e' piu' bassa si ferma (il
 plugin rifiuta i downgrade). Il file viene firmato con la k2 di test (`.work/candidates/upgrade/` contiene
 `.php`, `.sha256` e `.sig` generati come farebbe `hub/scripts/sign_release.py`).
 
-Senza la variabile il plugin sotto test e' la baseline: `hub_contract` e `wpcli_test` provano la 1.38.1 (il
-candidato del suo push e' la 1.38.2), `upgrade_test` usa come candidato una copia con `Version 1.99.0` e i due
-blocchi di self-update partono dalla baseline stessa. Se il file indicato e' identico alla baseline gli
-script girano ma NON dimostrano nulla sulla build: serve la build vera.
+Se il file indicato e' identico alla baseline gli script girano ma NON dimostrano nulla sul candidato: serve il
+file vero.
 
 ## Gli scenari di upgrade
 
@@ -165,6 +171,9 @@ assoluto.
 | `revocato` | ruotato e revocato | 403 `wphc_revoked` su ogni rotta e con ogni segreto, anche con Bearer errato; la revoca non conta nel throttle; l'hub non contatta il sito |
 | `bulk-in-corso` | job bulk di 7 plugin, 5 trattati | il cron riprende il job, nessun elemento resta pendente, il webhook di fine job e' firmato |
 | `webhook-retry` | job finito, webhook fallito (500), retry in attesa | il retry pianificato parte con lo stesso corpo, nuova firma e tentativo 2; pendente cancellato |
+| `webhook-esaurimento` | come sopra, ma il retry pendente e' gia' al tentativo 2 (a un passo dal massimo di 3) e il ricevente risponde ancora 500 | il retry dopo l'upgrade e' l'ULTIMO: pendente cancellato, `wp_health_check_webhook_last` con `ok=false`, `code=500`, `attempt=3`, nessun evento `wphc_webhook_retry` in cron, il ricevente ha visto i tentativi 1 e 3 (firmati) |
+| `bulk-orfani` | job bulk con due elementi `running` rimasti orfani (`claimed_ts` di 700 s fa, `attempts` 0 e 3: il processo che li lavorava e' morto) | la lettura del job (`GET /update/bulk`) li raccoglie: uno torna `pending` con `attempts` 1 e `last_error` `interrupted (timeout/fatal)`, l'altro e' `error/failed` con `attempts` 4; contatori `failed=1`, `pending=1` |
+| `health-cache` | enrollato e ruotato, una `/health` ha popolato la cache (60 s) con la versione della baseline | subito dopo il push `/health` riporta ANCORA la versione baseline (la 1.38.1 non svuota `wphc_health_cache`: comportamento preservato, vedi la review) mentre `/health?fresh=1` e `/ping` riportano il candidato; se baseline e candidato hanno la stessa versione il controllo assoluto non si applica |
 
 Cosa si confronta. Le osservazioni di `/health` e `/ping` dell'hub registrano la risposta INTERA (tutto il
 `summary`, `last_access`, l'errore), non solo le chiavi. Sono tolti o mascherati SOLO: `response_time_ms`
@@ -175,8 +184,8 @@ conserva la presenza, e gli identificatori esadecimali lunghi; la versione dell'
 la rete isolata IP pubblico, errore dell'anteprima e transient sono deterministici e si confrontano come sono
 (le vecchie maschere su `wphc_public_ip`, `thumb_at`, `thumb_error` sono state tolte). `server_ip` e'
 l'indirizzo del container: cambia solo se l'ambiente viene ricreato, uguale fra le due esecuzioni. La stabilita'
-del confronto e' dimostrata dal fatto stesso che controllo (1.38.1) e upgrade (copia della 1.38.1 con versione
-alzata) coincidono a ogni esecuzione. Ogni trascrizione include anche la colonna `autoload` GREZZA di tutte le
+del confronto si vede dalle trascrizioni: controllo (sempre 1.38.1) e upgrade (1.38.1 poi il file sotto test) coincidono
+a ogni esecuzione solo se il file sotto test si comporta come la 1.38.1, e le maschere sono le sole differenze ammesse. Ogni trascrizione include anche la colonna `autoload` GREZZA di tutte le
 option `wp_health_check_*` (`on`, `off`, `auto`): un upgrade che la cambiasse altererebbe il carico di ogni
 richiesta del sito.
 
@@ -200,10 +209,10 @@ rifiuta anche `/update`, quindi l'upgrade e' un deploy manuale o dell'installer)
 Prima di tutto, nel blocco `candidate-self-update`, la baseline 1.38.1 viene spinta con `force` sul candidato: se
 il candidato e' piu' nuovo e' un downgrade (`up_to_date`, file invariato); se ha la stessa versione e' una
 reinstallazione (`updated=true`, e se i byte differiscono si riporta il candidato prima di proseguire); se e'
-piu' vecchio il passo si salta. Se candidato e baseline sono lo STESSO file (default, senza
-`WPHC_CANDIDATE_FILE`) il passo e' la reinstallazione forzata alla stessa versione e i passi successivi valgono
-ugualmente, perche' il bump a `X.Y.Z+1` rende "piu' vecchi" sia la baseline sia il candidato originale: le
-asserzioni sul downgrade restano significative e non dipendono dal confronto fra i due file.
+piu' vecchio il passo si salta. Di default il candidato (il file distribuito, 1.39.0) e' piu' nuovo della baseline
+(1.38.1): il passo e' il downgrade vietato (`up_to_date`, file invariato). I passi successivi valgono per qualunque
+candidato, perche' il bump a `X.Y.Z+1` rende "piu' vecchi" sia la baseline sia il candidato originale: le asserzioni
+sul downgrade restano significative anche se candidato e baseline avessero la stessa versione.
 
 ## Comportamenti scoperti durante la scrittura (da preservare o da cambiare con decisione esplicita)
 
@@ -215,7 +224,7 @@ asserzioni sul downgrade restano significative e non dipendono dal confronto fra
   In-process (PHPUnit) non si vede. I test lo fissano (`hub_contract.py`) e azzerano il contatore
   tra una sequenza e l'altra (`Support.clear_throttle`).
 - Dopo un aggiornamento `/health` risponde da cache (60 s) con la vecchia `agent_version`;
-  `?fresh=1` e `/ping` riportano subito la nuova.
+  `?fresh=1` e `/ping` riportano subito la nuova (fissato dallo scenario `health-cache`).
 - Il push firmato col segreto nuovo chiude la grazia del precedente, come qualunque primo uso.
 
 ## Pulizia e rapporti con gli altri servizi docker

@@ -18,7 +18,8 @@
  * - legacy:    (non piu' usato dal lotto 4: src/legacy.php e' stato rimosso) corpo del plugin non ancora spostato in
  *              classi. bin/build.php accetta ancora il ruolo solo perche' le sorgenti sintetiche di tests/build/run.php
  *              lo usano.
- * - boot:      avvio del plugin (src/boot.php: WPHC_Plugin::boot(), che registra tutti gli hook), in coda alle classi.
+ * - boot:      avvio del plugin (src/boot.php: WPHC_Plugin::boot(), che registra tutti gli hook), in coda alle classi. Il file
+ *              contiene SOLO l'istruzione WPHC_Plugin::boot(); (la build lo controlla): il boot gira all'inclusione del file.
  * - cli:        il blocco del comando WP-CLI: un guard "if ( defined( 'WP_CLI' ) && WP_CLI )" con dentro la classe
  *              WPHC_CLI_Command e la chiamata di registrazione, e nient'altro (la build lo controlla). Al massimo
  *              un file, ultimo del manifest come nel file 1.38.1; i suoi docblock sopravvivono allo strip.

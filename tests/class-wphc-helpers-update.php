@@ -176,9 +176,11 @@ abstract class WPHC_Update_Test_Case extends WPHC_Test_Case {
 			unset( $GLOBALS['wphc_api_update_in_progress'], $GLOBALS['wphc_version_snapshots'], $GLOBALS['wphc_deleting_plugins'] );
 			return;
 		}
-		self::update_log_property( 'version_snapshots' )->setValue( array() );
-		self::update_log_property( 'api_update_in_progress' )->setValue( false );
-		self::update_log_property( 'deleting_plugins' )->setValue( array() );
+		// setValue( null, valore ): con una proprieta' statica il primo argomento e' l'oggetto (null); la forma con un solo
+		// argomento e' deprecata da PHP 8.3 e la forma a due argomenti funziona anche con PHP 7.4.
+		self::update_log_property( 'version_snapshots' )->setValue( null, array() );
+		self::update_log_property( 'api_update_in_progress' )->setValue( null, false );
+		self::update_log_property( 'deleting_plugins' )->setValue( null, array() );
 	}
 
 	/**

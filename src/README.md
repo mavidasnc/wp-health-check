@@ -24,7 +24,11 @@ taglio a byte riproducibile.
 
 - `header`: uno solo, il primo del manifest.
 - `class`: la build verifica che il file contenga una sola classe e nessun altro codice al livello del file.
-- `header`, `constants`, `boot`: eccezioni dichiarate, possono avere codice al livello del file.
+- `header`, `constants`: eccezioni dichiarate, possono avere codice al livello del file.
+- `boot`: il file contiene ESATTAMENTE `WPHC_Plugin::boot();` come istruzione al livello del file (la build confronta la sequenza di
+  token: spazi, commenti e docblock sono liberi, ogni altra istruzione o un boot dentro `add_action()` fa fallire la build). Il boot
+  deve girare all'inclusione del file, come gli hook della 1.38.1; per lo stesso motivo il corpo di `WPHC_Plugin::boot()` non puo'
+  contenere come stringa `muplugins_loaded`, `plugins_loaded` o `after_setup_theme` (un hook che ritarderebbe la registrazione).
 - `legacy`: ruolo dei lotti 1-3 (il corpo del file 1.38.1 non ancora spostato in classi). Dal lotto 4 `src/legacy.php` non
   esiste piu' e il manifest non lo usa, ma `bin/build.php` accetta ancora il ruolo (un "file con codice libero")
   perche' le sorgenti sintetiche di `tests/build/run.php` lo usano: toglierlo dalla build significa riscrivere quei
@@ -57,29 +61,27 @@ file 1.38.1 (checkpoint zero) e perche' `Plugin Name:`/`Version:` devono restare
 ## Comandi
 
 ```bash
-composer run build         # build con strip (distribuibile): RIFIUTATA su mu-plugins/ (exit 2) senza WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1, vedi sotto
-composer run build:dev     # build SENZA strip (sviluppo e debug), scrive mu-plugins/wp-health-check.php
-composer run build:check   # confronta la build col file committato in mu-plugins/, exit 1 se differisce
+composer run build         # build con strip (distribuibile): riscrive mu-plugins/wp-health-check.php
+composer run build:dev     # build SENZA strip (sviluppo e debug), scritta in build/dev/wp-health-check.php (cartella ignorata da git)
+composer run build:check   # confronta la build strip col file committato in mu-plugins/, exit 1 se differisce
 composer run test:build    # test della build stessa (PHP puro, senza WordPress)
 composer run lint          # phpcs su src/ e bin/ (il file generato e' escluso)
 composer run analyse       # phpstan su src/ e bin/ (il file generato e' escluso)
 ```
 
-Opzioni di `php bin/build.php`: `--no-strip`, `--strip`, `--output <path>` (scrive altrove: misure e test),
-`--check`, `--src <dir>` (altro albero sorgente, per provare la build).
+Opzioni di `php bin/build.php`: `--no-strip`, `--strip`, `--output <path>` (scrive altrove, creando la cartella se manca:
+misure e prove), `--check`, `--src <dir>` (altro albero sorgente, per provare la build).
 
-**Lo strip non si scrive su `mu-plugins/` senza consenso (finche' dura il refactoring).** Il file committato e' la
-build dev (e' quella che confrontano `build:check`, `tests/build/run.php` e il bootstrap di PHPUnit) e il suo body di
-push supera i 128 KiB: la build strip, che li rispetta, non deve finirci per sbaglio. Per questo `php bin/build.php`
-senza opzioni, `--strip` o `composer run build` SENZA `--output` escono con codice 2 e un messaggio che rimanda a
-`composer run build:dev` (aggiorna `mu-plugins/`) oppure a `--output <path>` (build strip altrove, per misure e prove).
-Con `WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1` la scrittura e' ammessa: serve solo al passaggio finale (checklist in fondo).
-`--check` non scrive e non e' soggetto al rifiuto.
+**Il file committato in `mu-plugins/` e' la build strip, e la dev non ci si scrive.** E' lo strip quello che si firma e si
+pubblica (e il suo body di push sta sotto i 128 KiB, la dev no: ha anche il marcatore `WPHC-BUILD`). Per questo
+`php bin/build.php` senza opzioni, con `--strip` o `composer run build` scrive `mu-plugins/` senza altri consensi, mentre
+`--no-strip` SENZA `--output` esce con codice 2 e non scrive nulla: la dev si produce solo con `--output <path>`, che e' quello
+che fa `composer run build:dev` (verso `build/dev/`, ignorata da git). `--check` non scrive e non e' soggetto al rifiuto.
 
-`build:check` confronta il modo indicato dalla variabile `WPHC_BUILD_MODE` (`dev` oppure `strip`, default `dev`):
-durante il refactoring il file committato in `mu-plugins/` e' la build `--no-strip`; alla fine del lavoro passera'
-allo strip (si imposta `WPHC_BUILD_MODE=strip`, o si cambia il default in `bin/build.php`). Nel confronto gli a
-capo CRLF della copia di lavoro (`core.autocrlf` su Windows) sono normalizzati a LF: nell'indice il file e' LF.
+`build:check` confronta il modo indicato dalla variabile `WPHC_BUILD_MODE` (`dev` oppure `strip`, default `strip`) con
+`mu-plugins/`; con `WPHC_BUILD_MODE=dev` il confronto ha senso solo insieme a `--output` verso la build dev (il file committato
+e' lo strip). Nel confronto gli a capo CRLF della copia di lavoro (`core.autocrlf` su Windows) sono normalizzati a LF: nell'indice
+il file e' LF.
 
 ### Strip dei commenti
 
@@ -93,7 +95,7 @@ verifica che i token non commento (con la riga) siano identici prima e dopo.
 
 La build non scrive nulla se uno di questi controlli fallisce: parse completo con `token_get_all( ..., TOKEN_PARSE )`
 sul concatenato e sul risultato; file `class` con una sola classe; file `cli` con solo il blocco del comando WP-CLI
-(al massimo uno); nessuna classe che estende una classe piu' avanti; versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`;
+(al massimo uno); file `boot` con la sola istruzione `WPHC_Plugin::boot();` e `WPHC_Plugin::boot()` senza hook di ritardo; nessuna classe che estende una classe piu' avanti; versione dell'header uguale a `WP_HEALTH_CHECK_VERSION`;
 `__FILE__` e `__DIR__` ammessi SOLO nel file con ruolo `constants` (controllo sui token di ogni altro file, quindi non
 scattano per commenti e stringhe: nel file concatenato indicano il mu-plugin, in un file di `src/` indicherebbero il file
 sorgente; il codice che ha bisogno del percorso del plugin usa `WP_HEALTH_CHECK_FILE`, vedi sotto); `__CLASS__`,
@@ -110,14 +112,14 @@ gzip + base64.
 
 ### Marcatore della build dev
 
-La build `--no-strip` (`composer run build:dev`, il file committato in `mu-plugins/` finche' dura il refactoring) aggiunge in
+La build `--no-strip` (`composer run build:dev`, che scrive in `build/dev/`) aggiunge in
 coda al file, DOPO l'ultima riga di codice, il commento `// WPHC-BUILD: dev (non distribuibile)`, senza a capo finale:
 il corpo non cambia di una riga (la dev ha lo stesso numero di righe dello strip e gli stessi token non commento). Lo
 strip NON lo contiene e la build fallisce se lo trova (anche in una stringa); i sorgenti di `src/` non possono contenere
 la parola `WPHC-BUILD`, cosi' il marcatore e' l'unica occorrenza.
 
 **Un file con il marcatore NON va mai firmato ne' pubblicato.** `sign_release.py` sta nel repository dell'hub e non si
-tocca da qui: la protezione e' la checklist del passaggio finale (punto 8), che richiede `grep -L WPHC-BUILD <file>` PRIMA
+tocca da qui: la protezione e' il flusso descritto in «Passaggio finale eseguito» (punto 3), che richiede `grep -L WPHC-BUILD <file>` PRIMA
 della firma. Attenzione al senso del comando: `grep -L` stampa il nome dei file che NON contengono la parola, quindi
 l'output vuoto significa che il marcatore e' presente (file dev, da non firmare) e l'output uguale al nome del file
 significa che il marcatore e' assente (file strip, firmabile).
@@ -226,32 +228,45 @@ vale `true` (ogni classe sta in `class-<nome>.php`).
   perche' il progetto ha `failOnSkipped="true"` e un test saltato in silenzio non proverebbe piu' nulla. Nessuna
   configurazione utile esegue quel test sulla 1.38.1 (la suite gira sempre sul file costruito da `src/`).
 
-## Checklist del passaggio finale alla build strip (da fare nel commit che porta lo strip in `mu-plugins/`)
+## Passaggio finale eseguito (1.39.0): build strip in `mu-plugins/`
 
-Oggi il file committato in `mu-plugins/` e' la build `--no-strip` e `build:check` confronta in modo `dev` per
-default. Nel commit che lo sostituisce con la build strip (non prima) vanno cambiati INSIEME:
+Il passaggio e' stato fatto insieme al bump a 1.39.0: il file committato in `mu-plugins/` e' la build STRIP di `src/`
+(stesso numero di righe della dev, nessun marcatore, body di push circa 60,7 KB contro il limite di 128 KiB), e tutto
+cio' che lo confronta o lo scrive e' coerente con questo. Cosa e' cambiato, per chi cerca il perche':
 
-1. `bin/build.php`, `wphc_build_main()`, ramo `$check`: default `strip` invece di `dev` (e il commento d'uso in testa
-   al file, che descrive il modo "con --check").
-2. `tests/build/run.php` (righe 282-287 circa): la prova «la build coincide col file committato» sceglie il modo con
-   `'strip' === getenv( 'WPHC_BUILD_MODE' )` (dev salvo `strip`); va invertita in `'dev' !== getenv( 'WPHC_BUILD_MODE' )`
-   (strip salvo `dev`), e il messaggio di errore («lanciare composer run build:dev») diventa «composer run build».
-3. Questo README: la frase di `build:check` ("durante il refactoring il file committato e' la build `--no-strip`") e la
-   tabella dei comandi (`composer run build` / `build:dev`).
-4. `composer.json` e README di progetto: `composer run build` come comando che rigenera il file distribuito, e
-   `wp-health-check/CLAUDE.md` (vincolo "single self-contained file": sorgente in `src/`, file distribuito generato).
-5. Rigenerare `mu-plugins/wp-health-check.php` con `WPHC_BUILD_ALLOW_STRIP_IN_PLACE=1 composer run build` (senza la
-   variabile la build strip su `mu-plugins/` e' rifiutata), controllare `build:check`, `test:build`, la
-   suite PHPUnit e gli e2e con quel file come candidato.
-6. `tests/bootstrap.php` (blocco 3a, variabile `$wphc_mode`): il modo di default del confronto fra `mu-plugins/` e la
-   build di `src/` e' `dev` come quello di `build:check`; va invertito in `strip` insieme ai punti 1 e 2 (e il testo di
-   `tests/README.md`, sezione «Guardia anti-sovrascrittura del plugin»).
-7. `bin/build.php`, `wphc_build_main()`, passo 2b e relativo commento d'uso in testa al file: il rifiuto dello strip su
-   `mu-plugins/` e la variabile `WPHC_BUILD_ALLOW_STRIP_IN_PLACE` vanno RIMOSSI (dopo il passaggio il file committato e'
-   lo strip e `composer run build` deve scriverlo senza consenso), insieme alla prova «lo strip non si scrive su
-   mu-plugins/ senza --output» di `tests/build/run.php`.
-8. **Prima di firmare o pubblicare QUALUNQUE file**, verificare che non sia la build dev: `grep -L WPHC-BUILD
-   mu-plugins/wp-health-check.php` deve STAMPARE il nome del file (`-L` elenca i file che NON contengono la parola: il
-   marcatore `// WPHC-BUILD: dev (non distribuibile)` e' assente). Output vuoto = marcatore presente = file dev: NON
-   firmarlo e NON pubblicarlo. `sign_release.py` (repo dell'hub) non fa questo controllo e non si modifica da qui, quindi
-   la verifica sta in questa checklist; controllare anche che `build:check` con `WPHC_BUILD_MODE=strip` dia `CHECK OK`.
+1. `bin/build.php`: il default di `--check` e' `strip`; la scrittura dello strip su `mu-plugins/` non richiede consensi
+   (la variabile `WPHC_BUILD_ALLOW_STRIP_IN_PLACE` non esiste piu'); in cambio e' rifiutata (exit 2) la build dev su
+   `mu-plugins/` senza `--output`, perche' la dev ha il marcatore e non va mai firmata.
+2. `composer.json`: `build` scrive lo strip in `mu-plugins/`, `build:dev` scrive la dev in `build/dev/`, `build:check`
+   confronta con lo strip.
+3. `tests/build/run.php`: la prova «la build coincide col file committato» e il test della CLI seguono il nuovo default
+   (strip salvo `WPHC_BUILD_MODE=dev`); la prova «lo strip non si scrive su mu-plugins/ senza consenso» e' sostituita da
+   quella opposta (lo strip si scrive, la dev no senza `--output`); ci sono i test dei gate sul ruolo `boot`.
+4. `tests/bootstrap.php`: `mu-plugins/` deve coincidere con la build strip di `src/`; anche un `WPHC_PLUGIN_FILE` deve
+   coincidere, salvo `WPHC_ALLOW_FOREIGN_BUILD=1` (candidati esterni di proposito). Vedi `tests/README.md`.
+5. e2e (`tests/e2e/`): il file sotto test di default e' `mu-plugins/` del repo (letto, mai scritto, verificato uguale
+   allo strip di `src/`); la baseline 1.38.1 da git resta lo stato di partenza dell'upgrade.
+
+Flusso di lavoro attuale:
+
+```bash
+# 1. modificare src/ (e, se serve, tests/), poi rigenerare il file distribuito
+composer run build            # riscrive mu-plugins/wp-health-check.php (strip)
+composer run build:check      # CHECK OK: il file committato coincide con la build
+composer run test:build       # test della build (PHP puro, anche con PHP 7.4)
+composer run lint && composer run analyse
+
+# 2. suite PHPUnit (8.1 nell'ambiente wp-env; 7.4 e 8.3 in container usa-e-getta) ed e2e: vedi tests/README.md e tests/e2e/README.md
+bash tests/tools/run-phpunit-docker.sh 8.3
+python -I tests/e2e/run_all.py
+
+# 3. PRIMA di firmare o pubblicare QUALUNQUE file
+grep -L WPHC-BUILD mu-plugins/wp-health-check.php   # deve STAMPARE il nome del file
+```
+
+**Un file con il marcatore NON va mai firmato ne' pubblicato** (vedi «Marcatore della build dev»). Il controllo del punto 3
+sta qui perche' `sign_release.py` (repo dell'hub) non lo fa e non si modifica da questo repository: `grep -L` elenca i file che
+NON contengono la parola, quindi un output vuoto significa marcatore presente (file dev, da non firmare) e il nome del file
+significa marcatore assente (strip, firmabile). Per una release: versione in `src/header.php` e `src/constants.php` (la
+build fallisce se non coincidono), `composer run build`, `build:check` con `CHECK OK`, suite e e2e verdi, `grep -L` come sopra,
+e solo allora firma e pubblicazione.

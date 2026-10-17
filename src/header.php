@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.38.1
+ * Version:     1.39.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
