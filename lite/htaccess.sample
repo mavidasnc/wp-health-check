@@ -1,0 +1,27 @@
+# WPHC Lite: regole da aggiungere a public/.htaccess del sito, PRIMA di qualunque altra regola di rewrite
+# (Astro o altro), altrimenti queste rotte non vengono mai raggiunte.
+
+<IfModule mod_rewrite.c>
+	RewriteEngine On
+
+	# Passa l'header Authorization a PHP (FastCGI e LiteSpeed spesso lo scartano).
+	RewriteCond %{HTTP:Authorization} .
+	RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+	# Nessun accesso diretto alla configurazione (regola portabile, vale anche dove Require non basta).
+	RewriteRule ^wphc-lite/config\.php$ - [F,L]
+
+	# /wp-json/health-check/v1/<rotta> -> wphc-lite/index.php?route=<rotta>
+	RewriteRule ^wp-json/health-check/v1/(.*)$ wphc-lite/index.php?route=$1 [QSA,L]
+</IfModule>
+
+# Seconda barriera sulla configurazione.
+<FilesMatch "^config\.php$">
+	<IfModule mod_authz_core.c>
+		Require all denied
+	</IfModule>
+	<IfModule !mod_authz_core.c>
+		Order allow,deny
+		Deny from all
+	</IfModule>
+</FilesMatch>

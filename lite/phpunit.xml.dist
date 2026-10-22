@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<!--
+    Suite di WPHC Lite: nessun WordPress, solo PHP con ext-sodium.
+    Da lanciare dalla radice del repo (vedi lite/README.md):
+      PHP 8.x: vendor/bin/phpunit -c lite/phpunit.xml.dist
+      PHP 7.4: tests/php74/vendor/bin/phpunit -c lite/phpunit.xml.dist (il vendor principale richiede PHP 8.1)
+-->
+<phpunit
+    bootstrap="tests/bootstrap.php"
+    colors="true"
+    cacheResult="false"
+    convertErrorsToExceptions="true"
+    convertNoticesToExceptions="true"
+    convertWarningsToExceptions="true"
+    convertDeprecationsToExceptions="true"
+    beStrictAboutTestsThatDoNotTestAnything="true"
+    failOnRisky="true"
+    failOnWarning="true"
+    failOnSkipped="true"
+>
+    <testsuites>
+        <testsuite name="wphc-lite">
+            <directory suffix="Test.php">./tests</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

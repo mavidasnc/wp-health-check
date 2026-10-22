@@ -7,6 +7,14 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [lite 1.0.0] - 2026-10-22 (non ancora rilasciata)
+
+L'agent lite ha una versione propria, indipendente da quella del plugin.
+
+### Added
+
+- **Agent lite 1.0.0 (`lite/`, versione propria `WPHC_LITE_VERSION`, `agent_version` `lite-1.0.0`).** Un solo file PHP (`lite/wphc-lite.php`, PHP 7.4+, `ext-sodium`, nessun WordPress) per i siti non WordPress, per esempio Astro su Apache o LiteSpeed, da pubblicare come `public/wphc-lite/index.php`. Risponde con lo stesso contratto del plugin per `POST /enroll`, `/rotate`, `/revoke` e `GET /ping`, `/health`, `/detail/server` (le altre rotte `404 rest_no_route`): firme Ed25519 `k1` delle buste v1 e v2, finestra di 300 s, nonce conservati 600 s come `sha256`, `409 wphc_enroll_downgrade`, `403 wphc_enroll_url_mismatch` con `expected` e `received`, Bearer con `hash_equals`, finestra di grazia di 900 s dopo la rotazione chiusa al primo uso del nuovo token, firma HMAC v2 delle richieste, `403 wphc_revoked`, rate limit di 10 fallimenti per IP in 300 s con `Retry-After`, HTTPS obbligatorio (`X-Forwarded-Proto` solo con `trust_proxy`). `/health` ha un sommario ridotto (versione e memoria di PHP, IP del server, IP pubblico) con cache di 60 s, `/detail/server` cache di 12 ore. Lo stato sta in file JSON con `flock` e permessi `0600` in una cartella dati fuori dalla web root; `503 wphc_lite_sodium_missing` senza sodium e `503 wphc_lite_storage` se la cartella dati non e' disponibile. A differenza del plugin l'autenticazione si valuta una volta sola per richiesta: una richiesta valida non conta mai come fallimento (vedi `finding-throttle-doppia-valutazione.md`). Include `config.sample.php`, `htaccess.sample`, `README.md` con l'installazione e una suite PHPUnit separata (`lite/phpunit.xml.dist`, senza WordPress) con i vettori di contratto dell'hub, verde su PHP 7.4 e 8.3. Nessuna modifica al plugin, a `src/`, alla build e ai golden: la versione del plugin resta la 1.39.0.
+
 ## [1.39.0] - 2026-10-17 (non ancora rilasciata)
 
 Release di SOLA organizzazione interna del codice: nessun cambio di protocollo e nessun cambio di comportamento osservabile. Rotte, corpi di risposta, codici d'errore, option, transient, cron, user meta, tabella `wphc_update_log`, ordine degli hook e HTML della tab Site Health sono quelli della 1.38.1; i bug noti sono stati preservati di proposito e si correggono in release separate (vedi "Problemi noti preservati"). Il motivo è poter intervenire in sicurezza su un file di quasi 9.000 righe a funzioni globali: il codice sta ora in classi, con una suite di test che ne fissa il comportamento. Sarà firmata con la chiave `k2`, come le release dalla 1.36.0. Le misure di dimensione qui sotto sono quelle della build con strip della 1.39.0 (`composer run build`) e vanno rimisurate se il sorgente cambia prima del rilascio.
