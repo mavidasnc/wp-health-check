@@ -75,7 +75,7 @@ final class ContractVectorsTest extends LiteTestCase {
 		$response = $lite->handle( 'POST', 'enroll', array(), (string) json_encode( $body ), $this->server(), array() );
 
 		$this->assertSame( 200, $response[0] );
-		$this->assertSame( array( 'enrolled' => true, 'site' => $vector['site_url'], 'agent_version' => 'lite-1.0.0' ), $response[2] );
+		$this->assertSame( array( 'enrolled' => true, 'site' => $vector['site_url'], 'agent_version' => 'lite-1.1.0' ), $response[2] );
 	}
 
 	/**

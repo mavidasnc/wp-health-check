@@ -10,17 +10,31 @@ Agent minimale per i siti **non WordPress** (per esempio Astro serviti da Apache
 | `ping` | GET | heartbeat, senza cache e senza traccia dell'accesso |
 | `health` | GET | sommario ridotto (PHP, IP, versione), cache 60 s, `?fresh=1` |
 | `detail/server` | GET | dati del server, cache 12 ore, `?fresh=1` |
+| `thumbnail` | GET | stato dell'anteprima: `{thumbnail, generated_at, error}`, nessuna chiamata remota |
+| `thumbnail` | POST | rigenera l'anteprima (ignora il blocco di un giorno): `{thumbnail, error}`, sempre `200` |
 
-Ogni altra rotta risponde `404 rest_no_route`. Non ci sono update, plugin, tema, utenti, autologin, miniatura, webhook e CORS: l'hub chiama l'agent da server a server.
+Ogni altra rotta risponde `404 rest_no_route`. Non ci sono update, plugin, tema, utenti, autologin, webhook e CORS: l'hub chiama l'agent da server a server.
 
 Il contratto (firme, finestre, nonce, codici d'errore, forma delle risposte) e' quello del plugin ed e' provato con i vettori di `tests/fixtures/contract-vectors.json`. Un solo punto differisce di proposito: il rate limit valuta l'autenticazione **una volta sola** per richiesta, quindi una richiesta valida non conta mai come fallimento (il plugin ha il difetto descritto in `../__docs/wp-health-check/finding-throttle-doppia-valutazione.md`).
 
-`agent_version`, `fleet_agent_version` e `plugin_version` valgono `lite-1.0.0` (costante `WPHC_LITE_VERSION`).
+`agent_version`, `fleet_agent_version` e `plugin_version` valgono `lite-1.1.0` (costante `WPHC_LITE_VERSION`).
+
+## Anteprima del sito (dalla 1.1.0)
+
+Come il plugin, l'agent genera la miniatura del sito mostrata da fleet. Scarica uno screenshot PNG largo 400 px da `https://image.thum.io/get/noanimate/png/width/400/<site_url>` (thum.io, senza chiave) e lo salva come `site-thumb.png` **nella cartella dell'agent** (`public/wphc-lite/`), da dove Apache lo serve direttamente all'URL pubblico `<site_url>/wphc-lite/site-thumb.png` (GET senza token, stesso host del sito, `image/png`, come richiede l'hub).
+
+- **Quando si genera.** La prima `GET /health` senza anteprima la crea (download con timeout di 10 s); `POST /thumbnail` la rigenera (timeout di 25 s, sotto i 30 s dell'hub) cancellando la precedente. Dopo un tentativo il blocco di 1 giorno impedisce che un servizio che fallisce trasformi ogni `/health` in un nuovo download (`POST` lo ignora, ma lo imposta a sua volta). `summary.thumbnail` e `summary.thumbnail_error` (solo il codice) di `/health` si calcolano a ogni richiesta, anche quando il resto arriva dalla cache di 60 s.
+- **La cartella dell'agent deve essere scrivibile da PHP.** Se non lo e' l'anteprima non si genera e l'errore e' `wphc_thumb_not_writable` (visibile in `GET /thumbnail` e come codice in `/health`); il resto dell'agent funziona. Il file e' scritto in modo atomico con permessi `0644` (leggibile da Apache), a differenza dei file dati (`0600`).
+- **Il file non e' tracciato da git.** `site-thumb.png` non fa parte del repo del sito: un deploy con `git checkout -f` non lo cancella, uno con rsync `--delete` si (in quel caso viene rigenerato alla `/health` successiva). Se vuoi essere sicuro, aggiungi `public/wphc-lite/site-thumb.*` a `.gitignore` e alle esclusioni del deploy, come per `config.php`.
+- **Estensione.** Il tipo si rileva dal contenuto (`getimagesizefromstring`, non serve `ext-gd`): se non fosse PNG il file prende l'estensione reale e l'URL salvato la segue. I GIF si scartano (`wphc_thumb_animated_gif`).
+- **Codici d'errore** (in `thumb.json`, come `{at, code, message, provider}`): `wphc_thumb_download_failed` (rete o HTTP diverso da 200), `wphc_thumb_not_an_image`, `wphc_thumb_animated_gif`, `wphc_thumb_not_writable`.
+- **Config opzionale.** `thumb_dir` (default la cartella di `index.php`) e `thumb_url` (default `site_url + /wphc-lite/site-thumb.png`) servono solo per installazioni con un'altra struttura (vedi `config.sample.php`).
 
 ## Requisiti
 
 - PHP 7.4 o superiore, con `ext-sodium` (obbligatoria: senza, ogni rotta nota risponde `503 wphc_lite_sodium_missing`).
-- `ext-curl` oppure `allow_url_fopen` per risolvere l'IP pubblico (solo se `SERVER_ADDR` e' privato o assente; senza, `public_ip` resta `null`).
+- `ext-curl` oppure `allow_url_fopen` per risolvere l'IP pubblico (solo se `SERVER_ADDR` e' privato o assente; senza, `public_ip` resta `null`) e per scaricare l'anteprima da thum.io (senza, l'anteprima non si genera e l'errore e' `wphc_thumb_download_failed`).
+- La cartella dell'agent (`public/wphc-lite/`) scrivibile dall'utente PHP, per `site-thumb.png`.
 - Una cartella dati scrivibile **fuori dalla web root**.
 - HTTPS (il Bearer non deve viaggiare in chiaro).
 
@@ -37,7 +51,7 @@ Il contratto (firme, finestre, nonce, codici d'errore, forma delle risposte) e' 
 
 ### Cosa contiene la cartella dati
 
-`state.json` (token, token precedente e `token_rotated_at`, protocollo, kid, `enrolled_at`, `revoked_at`, ultimo accesso), `nonces.json` (nonce come `sha256`, TTL 600 s), `rate.json` (fallimenti per IP, hash `sha1`), `health.json`, `detail-server.json`, `public-ip.json`, `lock`. Tutti i file hanno permessi `0600`; ogni richiesta tiene un `flock` esclusivo su `lock`, quindi le scritture non si sovrappongono.
+`state.json` (token, token precedente e `token_rotated_at`, protocollo, kid, `enrolled_at`, `revoked_at`, ultimo accesso), `nonces.json` (nonce come `sha256`, TTL 600 s), `rate.json` (fallimenti per IP, hash `sha1`), `health.json`, `detail-server.json`, `public-ip.json`, `thumb.json` (anteprima: `url`, `file`, `at`, ultimo `error`, `lock_until`), `lock`. Tutti i file hanno permessi `0600`; ogni richiesta tiene un `flock` esclusivo su `lock`, quindi le scritture non si sovrappongono.
 
 ### Reset manuale dopo una revoca
 
@@ -72,4 +86,4 @@ docker run --rm -v "$PWD:/app" -w /app php:8.3-cli vendor/bin/phpunit -c lite/ph
 docker run --rm -v "$PWD:/app" -w /app php:7.4-cli tests/php74/vendor/bin/phpunit -c lite/phpunit.xml.dist
 ```
 
-Da Git Bash su Windows prefissa `MSYS_NO_PATHCONV=1` (o usa PowerShell con `${PWD}`), altrimenti i percorsi dei volumi vengono riscritti. I test iniettano l'ora (i vettori hanno `issued_at` fisso `1700000000`), la chiave pubblica (derivata dal seed di test `k1` dei vettori) e il resolver dell'IP pubblico, e usano una cartella dati temporanea per test.
+Da Git Bash su Windows prefissa `MSYS_NO_PATHCONV=1` (o usa PowerShell con `${PWD}`), altrimenti i percorsi dei volumi vengono riscritti. I test iniettano l'ora (i vettori hanno `issued_at` fisso `1700000000`), la chiave pubblica (derivata dal seed di test `k1` dei vettori), il resolver dell'IP pubblico e il download dell'anteprima (seam `http_download`: nessuna chiamata a thum.io), e usano una cartella dati e una cartella dell'anteprima temporanee per test.

@@ -3,11 +3,15 @@
  * WPHC Lite: agent minimale per i siti NON WordPress (es. Astro serviti da Apache/LiteSpeed con PHP).
  *
  * Risponde con lo stesso contratto del mu-plugin wp-health-check (src/) per le sole rotte
- * POST enroll, rotate, revoke e GET ping, health, detail/server del namespace /health-check/v1/.
- * Tutte le altre rotte rispondono 404 rest_no_route.
+ * POST enroll, rotate, revoke, GET ping, health, detail/server e GET|POST thumbnail del namespace
+ * /health-check/v1/. Tutte le altre rotte rispondono 404 rest_no_route.
+ *
+ * Dalla 1.1.0 l'agent genera anche l'anteprima del sito (screenshot da thum.io, come il plugin) e la
+ * salva come site-thumb.png nella propria cartella (servita direttamente dal web server).
  *
  * Requisiti: PHP 7.4+, ext-sodium, nessuna dipendenza. Nessun WordPress: lo stato sta in file JSON
  * dentro la cartella dati (fuori dalla web root), con permessi 0600 e un flock esclusivo per tutta la richiesta.
+ * L'unico file pubblico e' l'anteprima (0644), nella cartella dell'agent, che deve essere scrivibile da PHP.
  *
  * Nel sito il file si pubblica come public/wphc-lite/index.php (vedi README.md).
  *
@@ -16,7 +20,7 @@
 
 // Versione dell'agent lite: l'agent_version restituito all'hub e' "lite-" + questa costante.
 if ( ! defined( 'WPHC_LITE_VERSION' ) ) {
-	define( 'WPHC_LITE_VERSION', '1.0.0' );
+	define( 'WPHC_LITE_VERSION', '1.1.0' );
 }
 
 /**
@@ -62,7 +66,17 @@ final class WPHC_Lite {
 	/** Prefisso REST delle rotte, usato nella stringa canonica della firma delle richieste. */
 	const ROUTE_PREFIX = '/health-check/v1/';
 
-	/** @var array Configurazione (site_urls, data_dir, trust_proxy, e per i test now, http_get, sodium). */
+	/** Servizio di screenshot (stesso del plugin, WP_HEALTH_CHECK_THUMB_SERVICE): PNG largo 400, niente GIF animato. */
+	const THUMB_SERVICE = 'https://image.thum.io/get/noanimate/png/width/400/';
+
+	/** Blocco dei ritentativi dopo un tentativo di generazione dell'anteprima (1 giorno). */
+	const THUMB_RETRY_TTL = 86400;
+
+	/** Timeout del download (secondi): breve nel percorso lazy di /health, piu' lungo su POST /thumbnail (l'hub aspetta 30 s). */
+	const THUMB_TIMEOUT_LAZY  = 10;
+	const THUMB_TIMEOUT_FORCE = 25;
+
+	/** @var array Configurazione (site_urls, data_dir, trust_proxy, thumb_dir, thumb_url, e per i test now, http_get, http_download, sodium). */
 	private $config;
 
 	/** @var string Chiave pubblica k1 in base64. */
@@ -90,8 +104,11 @@ final class WPHC_Lite {
 
 	/**
 	 * @param array  $config    site_urls (array di URL ammessi), data_dir (cartella dati), trust_proxy (bool);
+	 *                          opzionali: thumb_dir (dove scrivere l'anteprima, default la cartella di questo file)
+	 *                          e thumb_url (URL pubblico dell'anteprima, default site_url + /wphc-lite/site-thumb.png);
 	 *                          solo per i test: now (callable che restituisce il timestamp), http_get (callable
-	 *                          che riceve un URL e restituisce il corpo o null), sodium (bool).
+	 *                          che riceve un URL e restituisce il corpo o null), http_download (callable che riceve
+	 *                          URL e timeout e restituisce status, body, error), sodium (bool).
 	 * @param string $pubkey_k1 Chiave pubblica k1 in base64, sovrascrivibile dai test.
 	 * @throws InvalidArgumentException Se site_urls o data_dir mancano.
 	 */
@@ -102,6 +119,11 @@ final class WPHC_Lite {
 		}
 		if ( ! isset( $config['data_dir'] ) || ! is_string( $config['data_dir'] ) || '' === $config['data_dir'] ) {
 			throw new InvalidArgumentException( 'data_dir mancante in config.php' );
+		}
+
+		// Cartella dell'anteprima: di default quella del file in esecuzione (public/wphc-lite/), servita da Apache.
+		if ( ! isset( $config['thumb_dir'] ) || ! is_string( $config['thumb_dir'] ) || '' === $config['thumb_dir'] ) {
+			$config['thumb_dir'] = __DIR__;
 		}
 
 		$this->config    = $config;
@@ -131,7 +153,7 @@ final class WPHC_Lite {
 		$this->server  = $server;
 		$this->query   = $query;
 
-		// 1. Rotta e metodo: solo le sei rotte note, il resto e' 404 come in WordPress.
+		// 1. Rotta e metodo: solo le otto rotte note, il resto e' 404 come in WordPress.
 		$handlers = array(
 			'POST enroll'        => 'route_enroll',
 			'POST rotate'        => 'route_rotate',
@@ -139,6 +161,8 @@ final class WPHC_Lite {
 			'GET ping'           => 'route_ping',
 			'GET health'         => 'route_health',
 			'GET detail/server'  => 'route_detail_server',
+			'GET thumbnail'      => 'route_thumbnail_status',
+			'POST thumbnail'     => 'route_thumbnail_regenerate',
 		);
 		$key = $this->method . ' ' . $this->route;
 		if ( ! isset( $handlers[ $key ] ) ) {
@@ -590,9 +614,15 @@ final class WPHC_Lite {
 		// L'accesso si traccia sempre, anche se la risposta arriva dalla cache.
 		$previous = $this->record_access();
 
+		// L'anteprima si legge (e, se manca, si genera) a OGNI richiesta, fuori dalla cache di 60 s: la cache
+		// non deve congelare un'anteprima assente per un minuto. Costo O(1) se l'immagine esiste gia'.
+		$thumb_fields = $this->thumbnail_summary();
+
 		if ( ! $this->wants_fresh() ) {
 			$cached = $this->read( 'health' );
 			if ( isset( $cached['payload'], $cached['expires'] ) && $cached['expires'] > $this->now() ) {
+				$cached['payload']['summary'] = array_merge( $cached['payload']['summary'], $thumb_fields );
+
 				return array( 200, array(), $cached['payload'] );
 			}
 		}
@@ -622,7 +652,10 @@ final class WPHC_Lite {
 			),
 		);
 
+		// Nella cache va il payload SENZA anteprima (si ricalcola a ogni richiesta, vedi sopra).
 		$this->write( 'health', array( 'expires' => $this->now() + self::HEALTH_TTL, 'payload' => $payload ) );
+
+		$payload['summary'] = array_merge( $payload['summary'], $thumb_fields );
 
 		return array( 200, array(), $payload );
 	}
@@ -677,6 +710,242 @@ final class WPHC_Lite {
 		$this->write( 'detail-server', array( 'expires' => $this->now() + self::DETAIL_TTL, 'payload' => $payload ) );
 
 		return array( 200, array(), $payload );
+	}
+
+	/**
+	 * GET /thumbnail: stato dell'anteprima (URL, data dell'ultima generazione, ultimo errore completo).
+	 * Nessuna chiamata remota, come nel plugin (WPHC_Thumbnail::route_status). Sempre 200.
+	 */
+	private function route_thumbnail_status(): array {
+		$error = $this->require_token();
+		if ( null !== $error ) {
+			return $error;
+		}
+
+		$this->record_access();
+
+		$state   = $this->thumb_state();
+		$current = $this->thumb_current( $state );
+
+		return array(
+			200,
+			array(),
+			array(
+				'thumbnail'    => null !== $current ? $current['url'] : null,
+				'generated_at' => ( null !== $current && ! empty( $current['at'] ) ) ? gmdate( 'c', (int) $current['at'] ) : null,
+				'error'        => ( isset( $state['error'] ) && is_array( $state['error'] ) ) ? $state['error'] : null,
+			),
+		);
+	}
+
+	/**
+	 * POST /thumbnail: rigenera l'anteprima ignorando il blocco di un giorno (come WPHC_Thumbnail::route_regenerate).
+	 * Sempre 200: un fallimento e' un errore strutturato nel corpo, non un errore della rotta.
+	 */
+	private function route_thumbnail_regenerate(): array {
+		$error = $this->require_token();
+		if ( null !== $error ) {
+			return $error;
+		}
+
+		$this->record_access();
+
+		$thumbnail = $this->maybe_generate( true, self::THUMB_TIMEOUT_FORCE );
+		$state     = $this->thumb_state();
+
+		return array(
+			200,
+			array(),
+			array(
+				'thumbnail' => $thumbnail,
+				'error'     => ( null === $thumbnail && isset( $state['error'] ) && is_array( $state['error'] ) ) ? $state['error'] : null,
+			),
+		);
+	}
+
+	// -----------------------------------------------------------------------
+	// ANTEPRIMA DEL SITO (thum.io)
+	// -----------------------------------------------------------------------
+
+	/**
+	 * Campi dell'anteprima per il summary di /health: thumbnail (URL o null) e thumbnail_error (solo il codice,
+	 * e solo se non c'e' un'immagine, come il plugin). Puo' avviare la generazione lazy (timeout breve).
+	 *
+	 * @return array{thumbnail: string|null, thumbnail_error: string|null}
+	 */
+	private function thumbnail_summary(): array {
+		$thumbnail = $this->maybe_generate( false, self::THUMB_TIMEOUT_LAZY );
+		$state     = $this->thumb_state();
+		$code      = ( null === $thumbnail && isset( $state['error']['code'] ) ) ? (string) $state['error']['code'] : null;
+
+		return array(
+			'thumbnail'       => $thumbnail,
+			'thumbnail_error' => $code,
+		);
+	}
+
+	/**
+	 * Restituisce l'URL dell'anteprima, generandola se manca (stessa semantica di WPHC_Thumbnail::maybe_generate).
+	 * Senza $force: l'immagine esistente, oppure null se il blocco di un giorno e' ancora attivo. Con $force:
+	 * ignora blocco e immagine esistente (che viene cancellata). Il blocco si imposta PRIMA del tentativo,
+	 * anche con $force, cosi' un servizio che fallisce non causa ritentativi ravvicinati.
+	 *
+	 * @param bool $force   Se true, rigenera comunque.
+	 * @param int  $timeout Timeout del download in secondi.
+	 * @return string|null URL pubblico dell'anteprima, o null se non disponibile.
+	 */
+	private function maybe_generate( bool $force, int $timeout ): ?string {
+		$state = $this->thumb_state();
+
+		if ( ! $force ) {
+			$current = $this->thumb_current( $state );
+			if ( null !== $current ) {
+				return $current['url'];
+			}
+			if ( isset( $state['lock_until'] ) && $state['lock_until'] > $this->now() ) {
+				return null;
+			}
+		}
+
+		// Blocco impostato prima del tentativo (anche con $force).
+		$state['lock_until'] = $this->now() + self::THUMB_RETRY_TTL;
+
+		if ( $force ) {
+			// Rigenerazione esplicita: via il file e lo stato della precedente anteprima.
+			if ( ! empty( $state['file'] ) ) {
+				@unlink( $this->thumb_path( (string) $state['file'] ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			}
+			unset( $state['url'], $state['file'], $state['at'] );
+		}
+		$this->write( 'thumb', $state );
+
+		$result = $this->thumb_generate( $timeout );
+
+		if ( null !== $result['error'] ) {
+			$state['error'] = array(
+				'at'       => $this->iso(),
+				'code'     => $result['error']['code'],
+				'message'  => $result['error']['message'],
+				'provider' => self::THUMB_SERVICE,
+			);
+			$this->write( 'thumb', $state );
+
+			return null;
+		}
+
+		// Successo: nuovo stato, senza errore e senza blocco.
+		$this->write(
+			'thumb',
+			array(
+				'url'  => $result['url'],
+				'file' => $result['file'],
+				'at'   => $this->now(),
+			)
+		);
+
+		return $result['url'];
+	}
+
+	/**
+	 * Scarica lo screenshot e lo scrive come file pubblico. Operazione remota e lenta: va chiamata solo da
+	 * maybe_generate(), mai direttamente.
+	 *
+	 * @param int $timeout Timeout del download in secondi.
+	 * @return array{url: string|null, file: string|null, error: array{code: string, message: string}|null}
+	 */
+	private function thumb_generate( int $timeout ): array {
+		$fail = static function ( string $code, string $message ): array {
+			return array( 'url' => null, 'file' => null, 'error' => array( 'code' => $code, 'message' => $message ) );
+		};
+
+		// Preflight sulla scrivibilita' della cartella: evita un download inutile e distingue la causa piu'
+		// frequente di fallimento da un errore di rete.
+		$dir = rtrim( $this->config['thumb_dir'], '/\\' );
+		if ( ! is_dir( $dir ) || ! is_writable( $dir ) ) {
+			return $fail( 'wphc_thumb_not_writable', 'La cartella dell\'agent non e\' scrivibile da PHP: impossibile salvare l\'anteprima.' );
+		}
+
+		// Come il plugin: noanimate + png, altrimenti thum.io risponde con un GIF animato.
+		$download = call_user_func( $this->config['http_download'] ?? array( $this, 'http_download' ), self::THUMB_SERVICE . $this->site_url(), $timeout );
+		$status   = isset( $download['status'] ) ? (int) $download['status'] : 0;
+		$body     = ( isset( $download['body'] ) && is_string( $download['body'] ) ) ? $download['body'] : null;
+		if ( ! empty( $download['error'] ) || 200 !== $status || null === $body ) {
+			return $fail( 'wphc_thumb_download_failed', ! empty( $download['error'] ) ? self::str( $download['error'] ) : 'HTTP ' . $status );
+		}
+
+		// Il tipo reale si rileva dal contenuto: thum.io non garantisce il Content-Type. getimagesizefromstring
+		// non richiede ext-gd.
+		$info = @getimagesizefromstring( $body ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		if ( false === $info ) {
+			return $fail( 'wphc_thumb_not_an_image', 'La risposta del servizio di screenshot non e\' un\'immagine valida.' );
+		}
+		if ( IMAGETYPE_GIF === $info[2] ) {
+			// Un GIF qui significa che noanimate/png non hanno avuto effetto: si scarta, il blocco gestisce il retry.
+			return $fail( 'wphc_thumb_animated_gif', 'Il servizio ha risposto con un GIF animato invece del PNG atteso.' );
+		}
+
+		// Nome file e URL restano coerenti con thumb_url; se il tipo reale non e' PNG cambia l'estensione di entrambi.
+		$url       = $this->thumb_base_url();
+		$name      = basename( $url );
+		$extension = image_type_to_extension( $info[2] );
+		if ( false === $extension ) {
+			$extension = '.png';
+		}
+		if ( strtolower( (string) pathinfo( $name, PATHINFO_EXTENSION ) ) !== ltrim( $extension, '.' ) ) {
+			$new_name = pathinfo( $name, PATHINFO_FILENAME ) . $extension;
+			$url      = substr( $url, 0, strlen( $url ) - strlen( $name ) ) . $new_name;
+			$name     = $new_name;
+		}
+
+		// Scrittura atomica (tmp + rename). L'umask della richiesta e' 0077: il chmod esplicito a 0644 rende il
+		// file leggibile da Apache, a differenza dei file dati (0600).
+		$path = $this->thumb_path( $name );
+		$tmp  = $path . '.tmp';
+		if ( false === @file_put_contents( $tmp, $body ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			return $fail( 'wphc_thumb_not_writable', 'Scrittura dell\'anteprima non riuscita nella cartella dell\'agent.' );
+		}
+		@chmod( $tmp, 0644 ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		if ( ! @rename( $tmp, $path ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors
+			@unlink( $tmp ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+
+			return $fail( 'wphc_thumb_not_writable', 'Scrittura dell\'anteprima non riuscita nella cartella dell\'agent.' );
+		}
+
+		return array( 'url' => $url, 'file' => $name, 'error' => null );
+	}
+
+	/** Contenuto di thumb.json (url, file, at, error, lock_until); assente e' un array vuoto. */
+	private function thumb_state(): array {
+		return $this->read( 'thumb' );
+	}
+
+	/**
+	 * Anteprima attuale: lo stato la registra E il file esiste ancora (un deploy con cancellazione puo'
+	 * averlo tolto: in quel caso si tratta come assente e si rigenera).
+	 *
+	 * @param array $state Contenuto di thumb.json.
+	 * @return array|null Stato (url, file, at) o null.
+	 */
+	private function thumb_current( array $state ): ?array {
+		if ( empty( $state['url'] ) || empty( $state['file'] ) || ! is_file( $this->thumb_path( (string) $state['file'] ) ) ) {
+			return null;
+		}
+
+		return $state;
+	}
+
+	/** Percorso assoluto di un file dell'anteprima dentro thumb_dir. */
+	private function thumb_path( string $name ): string {
+		return rtrim( $this->config['thumb_dir'], '/\\' ) . '/' . $name;
+	}
+
+	/** URL pubblico dell'anteprima: thumb_url, oppure site_url + /wphc-lite/site-thumb.png. */
+	private function thumb_base_url(): string {
+		if ( isset( $this->config['thumb_url'] ) && is_string( $this->config['thumb_url'] ) && '' !== $this->config['thumb_url'] ) {
+			return $this->config['thumb_url'];
+		}
+
+		return $this->site_url() . '/wphc-lite/site-thumb.png';
 	}
 
 	// -----------------------------------------------------------------------
@@ -1000,6 +1269,56 @@ final class WPHC_Lite {
 		$response = @file_get_contents( $url, false, stream_context_create( array( 'http' => array( 'timeout' => 5 ) ) ) );
 
 		return false !== $response ? $response : null;
+	}
+
+	/**
+	 * Download con timeout parametrico (curl, altrimenti stream). A differenza di http_get restituisce anche
+	 * lo status e il motivo dell'errore, per distinguere un errore di rete da un HTTP != 200.
+	 *
+	 * @param string $url     URL da scaricare.
+	 * @param int    $timeout Timeout in secondi.
+	 * @return array{status: int|null, body: string|null, error: string|null}
+	 */
+	private function http_download( string $url, int $timeout ): array {
+		if ( function_exists( 'curl_init' ) ) {
+			$ch = curl_init( $url );
+			curl_setopt_array(
+				$ch,
+				array(
+					CURLOPT_RETURNTRANSFER => true,
+					CURLOPT_TIMEOUT        => $timeout,
+					CURLOPT_CONNECTTIMEOUT => min( 5, $timeout ),
+					CURLOPT_FOLLOWLOCATION => true,
+					CURLOPT_MAXREDIRS      => 5,
+				)
+			);
+			$response = curl_exec( $ch );
+			$status   = (int) curl_getinfo( $ch, CURLINFO_RESPONSE_CODE );
+			$error    = curl_error( $ch );
+			curl_close( $ch );
+
+			if ( false === $response ) {
+				return array( 'status' => $status > 0 ? $status : null, 'body' => null, 'error' => '' !== $error ? $error : 'download non riuscito' );
+			}
+
+			return array( 'status' => $status, 'body' => (string) $response, 'error' => null );
+		}
+
+		// Senza curl: stream, con ignore_errors per ottenere lo status anche quando non e' 200.
+		$response = @file_get_contents( $url, false, stream_context_create( array( 'http' => array( 'timeout' => $timeout, 'ignore_errors' => true ) ) ) ); // phpcs:ignore WordPress.PHP.NoSilencedErrors
+		if ( false === $response ) {
+			return array( 'status' => null, 'body' => null, 'error' => 'download non riuscito' );
+		}
+		// $http_response_header lo crea PHP nello scope locale: con i redirect contiene piu' righe "HTTP/1.1 200 OK",
+		// vale l'ultima.
+		$status = null;
+		foreach ( (array) ( $http_response_header ?? array() ) as $line ) {
+			if ( preg_match( '#^HTTP/\S+\s+(\d{3})#', (string) $line, $m ) ) {
+				$status = (int) $m[1];
+			}
+		}
+
+		return array( 'status' => $status, 'body' => $response, 'error' => null );
 	}
 
 	/** URL normalizzato del sito: il primo di site_urls (mai dedotto da Host). */

@@ -28,6 +28,15 @@ abstract class LiteTestCase extends TestCase {
 	/** @var string|null Risposta del resolver dell'IP pubblico. */
 	protected $http_answer = null;
 
+	/** @var string Cartella dell'anteprima temporanea del test (mai la cartella del sorgente). */
+	protected $thumb_dir;
+
+	/** @var array[] Chiamate al seam http_download: ogni voce e' array( url, timeout ). */
+	protected $download_calls = array();
+
+	/** @var array|null Risposta del seam http_download (status, body, error); null = download riuscito con un PNG. */
+	protected $download_answer = null;
+
 	/** @var int Contatore per nonce sempre diversi. */
 	private $nonce_counter = 0;
 
@@ -36,6 +45,11 @@ abstract class LiteTestCase extends TestCase {
 
 	/** @var string Chiave pubblica k1 di test in base64. */
 	private $public_b64;
+
+	/** PNG 1x1 valido (getimagesizefromstring lo riconosce senza ext-gd). */
+	protected static function png(): string {
+		return (string) base64_decode( 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' );
+	}
 
 	/**
 	 * Vettori di contratto generati dal codice dell'hub.
@@ -59,11 +73,16 @@ abstract class LiteTestCase extends TestCase {
 		// Cartella dati nuova per ogni test, nella tmp del sistema (non sul bind mount).
 		$this->data_dir = sys_get_temp_dir() . '/wphc-lite-test-' . bin2hex( random_bytes( 6 ) );
 
+		// Cartella dell'anteprima separata e gia' esistente, come public/wphc-lite/ in produzione.
+		$this->thumb_dir = sys_get_temp_dir() . '/wphc-lite-thumb-' . bin2hex( random_bytes( 6 ) );
+		mkdir( $this->thumb_dir, 0755 );
+
 		$this->lite = $this->make_lite();
 	}
 
 	protected function tearDown(): void {
 		$this->remove_dir( $this->data_dir );
+		$this->remove_dir( $this->thumb_dir );
 		parent::tearDown();
 	}
 
@@ -78,7 +97,8 @@ abstract class LiteTestCase extends TestCase {
 				'site_urls'   => array( self::SITE ),
 				'data_dir'    => $this->data_dir,
 				'trust_proxy' => false,
-				// Ora e rete iniettate: nessun time() e nessuna chiamata a ipify nei test.
+				'thumb_dir'   => $this->thumb_dir,
+				// Ora e rete iniettate: nessun time(), nessuna chiamata a ipify e nessun download da thum.io nei test.
 				'now'         => function () {
 					return $this->now;
 				},
@@ -86,6 +106,11 @@ abstract class LiteTestCase extends TestCase {
 					++$this->http_calls;
 
 					return $this->http_answer;
+				},
+				'http_download' => function ( $url, $timeout ) {
+					$this->download_calls[] = array( $url, $timeout );
+
+					return $this->download_answer ?? array( 'status' => 200, 'body' => self::png(), 'error' => null );
 				},
 			),
 			$overrides

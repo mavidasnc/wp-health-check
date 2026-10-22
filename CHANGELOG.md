@@ -7,6 +7,12 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [lite 1.1.0] - 2026-10-22 (non ancora rilasciata)
+
+### Added
+
+- **Anteprima del sito dall'agent lite (`agent_version` `lite-1.1.0`).** Stesso comportamento del plugin (`WPHC_Thumbnail`) adattato a un sito statico: screenshot PNG largo 400 px da `https://image.thum.io/get/noanimate/png/width/400/<site_url>` (senza chiave), salvato come `site-thumb.png` nella cartella dell'agent (`public/wphc-lite/`, servita direttamente dal web server) con scrittura atomica (tmp + rename) e permessi `0644`, all'URL pubblico `<site_url>/wphc-lite/site-thumb.png`. Config opzionali `thumb_dir` (default la cartella di `index.php`) e `thumb_url`. Nuove rotte `GET /thumbnail` (`{thumbnail, generated_at, error}`) e `POST /thumbnail` (rigenera, `{thumbnail, error}`), protette dal Bearer e dalla firma come le altre e sempre `200`; prima rispondevano `404 rest_no_route`. `GET /health` aggiunge `summary.thumbnail` e `summary.thumbnail_error` (solo il codice, solo senza immagine), calcolati a ogni richiesta anche quando il resto arriva dalla cache di 60 s; la generazione lazy avviene li' (timeout 10 s, `POST /thumbnail` 25 s). Senza force si restituisce l'immagine esistente oppure si rispetta il blocco di riprova di 1 giorno, impostato prima del tentativo; con force la precedente si cancella. Errori `{at, code, message, provider}` in `thumb.json` nella cartella dati: `wphc_thumb_download_failed`, `wphc_thumb_not_an_image`, `wphc_thumb_animated_gif` e `wphc_thumb_not_writable` (al posto di `wphc_thumb_uploads_not_writable` del plugin). Nuovo seam di test `http_download` (stato, corpo, errore). La cartella dell'agent deve essere scrivibile da PHP; il file non e' tracciato da git. Test in `lite/tests/ThumbnailTest.php`, con confronto di forma con i golden `read/thumbnail-*.json` e `read/health-first-call.json`. Nessuna modifica al plugin, a `src/`, alla build e ai golden: la versione del plugin resta la 1.39.0.
+
 ## [lite 1.0.0] - 2026-10-22 (non ancora rilasciata)
 
 L'agent lite ha una versione propria, indipendente da quella del plugin.

@@ -14,7 +14,7 @@ final class LiteTest extends LiteTestCase {
 	public function test_enroll_v1_success_keeps_protocol_1(): void {
 		$response = $this->enroll_ok( 1, 'tok-v1' );
 
-		$this->assertSame( array( 'enrolled' => true, 'site' => self::SITE, 'agent_version' => 'lite-1.0.0' ), $response[2] );
+		$this->assertSame( array( 'enrolled' => true, 'site' => self::SITE, 'agent_version' => 'lite-1.1.0' ), $response[2] );
 
 		// Protocollo 1: il Bearer basta, la firma delle richieste non e' richiesta.
 		$this->assertSame( 200, $this->get( 'ping', 'tok-v1' )[0] );
@@ -514,7 +514,7 @@ final class LiteTest extends LiteTestCase {
 		$response = $this->get( 'ping', 'tok' );
 
 		$this->assertSame(
-			array( 'status' => 'ok', 'site' => self::SITE, 'agent_version' => 'lite-1.0.0', 'generated_at' => gmdate( 'c', $this->now ) ),
+			array( 'status' => 'ok', 'site' => self::SITE, 'agent_version' => 'lite-1.1.0', 'generated_at' => gmdate( 'c', $this->now ) ),
 			$response[2]
 		);
 
@@ -528,16 +528,16 @@ final class LiteTest extends LiteTestCase {
 
 		$this->assertSame( 200, $first[0] );
 		$this->assertSame( array( 'site', 'generated_at', 'fleet_agent_version', 'summary', 'last_access', 'detail_routes' ), array_keys( $first[2] ) );
-		$this->assertSame( 'lite-1.0.0', $first[2]['fleet_agent_version'] );
+		$this->assertSame( 'lite-1.1.0', $first[2]['fleet_agent_version'] );
 		$this->assertSame(
-			array( 'php_version', 'php_memory_limit', 'server_ip', 'server_ip_is_private', 'public_ip', 'plugin_version' ),
+			array( 'php_version', 'php_memory_limit', 'server_ip', 'server_ip_is_private', 'public_ip', 'plugin_version', 'thumbnail', 'thumbnail_error' ),
 			array_keys( $first[2]['summary'] )
 		);
 		$this->assertSame( PHP_VERSION, $first[2]['summary']['php_version'] );
 		$this->assertSame( '151.101.1.69', $first[2]['summary']['server_ip'] );
 		$this->assertFalse( $first[2]['summary']['server_ip_is_private'] );
 		$this->assertSame( '151.101.1.69', $first[2]['summary']['public_ip'] );
-		$this->assertSame( 'lite-1.0.0', $first[2]['summary']['plugin_version'] );
+		$this->assertSame( 'lite-1.1.0', $first[2]['summary']['plugin_version'] );
 		$this->assertSame( array( 'at' => null, 'ip' => null, 'enrolled_at' => gmdate( 'c', $this->now ) ), $first[2]['last_access'] );
 		$this->assertSame( array( 'server' => self::SITE . '/wp-json/health-check/v1/detail/server' ), $first[2]['detail_routes'] );
 		$this->assertArrayNotHasKey( 'last_status', $first[2]['summary'] );
@@ -667,7 +667,7 @@ final class LiteTest extends LiteTestCase {
 
 	public function test_default_public_key_is_the_production_k1(): void {
 		$this->assertSame( 'uXzoP9VTpihQ1ipNUMCwITN9wKmJV/VFuYxms5Tt0CE=', WPHC_Lite::DEFAULT_PUBKEY_K1 );
-		$this->assertSame( '1.0.0', WPHC_LITE_VERSION );
+		$this->assertSame( '1.1.0', WPHC_LITE_VERSION );
 
 		// Con la chiave di produzione una busta firmata con la chiave di test non passa.
 		$lite     = new WPHC_Lite( array( 'site_urls' => array( self::SITE ), 'data_dir' => $this->data_dir, 'now' => function () {

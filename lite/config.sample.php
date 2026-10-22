@@ -21,4 +21,11 @@ return array(
 	// true solo se davanti a PHP c'e' un proxy fidato che imposta X-Forwarded-For e X-Forwarded-Proto
 	// (valgono il valore piu' a destra). Con false si usano REMOTE_ADDR e HTTPS.
 	'trust_proxy' => false,
+
+	// OPZIONALI, per l'anteprima del sito (screenshot da thum.io, file site-thumb.png). Di norma NON servono.
+	// thumb_dir: cartella dove PHP scrive l'immagine, di default quella di index.php (public/wphc-lite/).
+	// thumb_url: URL pubblico dell'immagine, di default <primo site_urls>/wphc-lite/site-thumb.png.
+	// Vanno impostati solo se l'agent sta in una sottocartella diversa da /wphc-lite/ o dietro un altro host.
+	// 'thumb_dir' => __DIR__,
+	// 'thumb_url' => 'https://www.esempio.com/wphc-lite/site-thumb.png',
 );
