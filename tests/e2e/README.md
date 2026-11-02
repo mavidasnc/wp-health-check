@@ -216,12 +216,12 @@ sul downgrade restano significative anche se candidato e baseline avessero la st
 
 ## Comportamenti scoperti durante la scrittura (da preservare o da cambiare con decisione esplicita)
 
-- **Il throttle conta le richieste valide.** Su richieste HTTP reali la callback di permesso gira due
-  volte (la seconda dentro `rest_send_allow_header()` del core, che ne scarta l'esito) e la seconda
-  vede il nonce gia' usato: ogni richiesta firmata (protocollo 2) VALIDA aggiunge 1 al contatore dei
-  fallimenti e ogni richiesta con Bearer errato ne aggiunge 2. Con la soglia di 10 per IP in 5 minuti
-  (la finestra si rinnova a ogni incremento), una decina di richieste valide basta a ricevere 429.
-  In-process (PHPUnit) non si vede. I test lo fissano (`hub_contract.py`) e azzerano il contatore
+- **Il throttle contava le richieste valide (corretto nella 1.40.0).** Su richieste HTTP reali la callback
+  di permesso gira due volte (la seconda dentro `rest_send_allow_header()` del core, che ne scarta l'esito).
+  Fino alla 1.39.0 la seconda vedeva il nonce gia' usato: ogni richiesta firmata (protocollo 2) VALIDA
+  aggiungeva 1 al contatore dei fallimenti e ogni Bearer errato 2, e una decina di richieste valide
+  bastava a ricevere 429. Dalla 1.40.0 l'esito si calcola una volta per richiesta: `hub_contract.py`
+  fissa +0 e +1 e una raffica di 15 richieste valide senza 429; i test azzerano comunque il contatore
   tra una sequenza e l'altra (`Support.clear_throttle`).
 - Dopo un aggiornamento `/health` risponde da cache (60 s) con la vecchia `agent_version`;
   `?fresh=1` e `/ping` riportano subito la nuova (fissato dallo scenario `health-cache`).

@@ -631,7 +631,7 @@ class Hub:
     fetch_site_health, fetch_site_detail, ...) gira SENZA modifiche. Cio' che e' sostituito:
       - il client Supabase (hub_db._supabase_client) con FakeSupabase;
       - get_fleet_site / get_fleet_site_by_url (letture di anagrafica) con versioni in memoria;
-      - requests.post e enroll.http_get: riscrivono https://localhost:8890 in http://localhost:8890
+      - enroll._site_post e enroll._site_get: riscrivono https://localhost:8890 in http://localhost:8890
         (il container serve HTTP; l'HTTPS lo dichiara il mu-plugin di supporto) e nient'altro.
     """
 
@@ -682,10 +682,11 @@ class Hub:
         def to_http(url: str) -> str:
             return url.replace(SITE_URL, BASE_URL, 1) if url.startswith(SITE_URL) else url
 
-        original_post = requests.post
-        original_get = hub_enroll.http_get
-        requests.post = lambda url, **kw: original_post(to_http(url), **kw)
-        hub_enroll.http_get = lambda url, **kw: original_get(to_http(url), **kw)
+        # Dal resync del vendor del 26/10 (hub-cli 0.8.2) tutto il traffico verso i siti passa da
+        # enroll._site_get/_site_post, che fissano il DNS e rifiutano gli host non pubblici
+        # (localhost compreso): qui si sostituiscono con requests diretto, solo trasporto.
+        hub_enroll._site_post = lambda url, **kw: requests.post(to_http(url), **kw)
+        hub_enroll._site_get = lambda url, **kw: requests.get(to_http(url), **kw)
 
     # -- operazioni dell'hub ------------------------------------------------------------
     def enroll(self) -> dict:

@@ -237,7 +237,10 @@ def sc_v1_probes(x: Ctx):
     x.raw("bearer v1 + firma sbagliata: 401", token, hmac_secret=token, bad_signature=True)
     x.raw("senza Authorization: 401", None)
     x.hub_call("detail server", lambda: x.hub.detail("server"))
-    x.note("fallimenti nel throttle", x.support.throttle_failures())
+    # Dalla 1.40.0 il numero esatto cambia per scelta (la 1.38.1 conta anche la rivalutazione del permission_callback:
+    # 7 qui, la 1.40.0 un fallimento per tentativo sbagliato: 3), quindi nel confronto baseline/candidato entra solo
+    # il fatto che i tentativi sbagliati siano contati. I valori esatti li fissano hub_contract.py e PHPUnit.
+    x.note("il throttle registra i tentativi sbagliati", x.support.throttle_failures() > 0)
     x.state_summary("stato")
 
 

@@ -457,14 +457,15 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
   esercitato davvero da `test-contract-vectors.php::test_release_message_builder_accepts_the_hub_signature`: una
   DIRECTORY al posto del `.bak` fa fallire il backup subito dopo la verifica della firma, quindi il vettore firmato
   dall'hub supera integrita' e firma e la pipeline si ferma con `wphc_update_backup_failed` senza scrivere nulla.
-- Su richieste HTTP reali il `permission_callback` `wphc_require_token` gira piu' volte per richiesta (la prima nel
-  dispatch, le altre dentro `rest_send_allow_header()`), e la rivalutazione di una richiesta firmata fallisce sul
-  nonce gia' usato: vedi `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`. Con `rest_do_request()` il
-  fenomeno non si vede, ma `test-throttle-double-dispatch.php` lo riproduce chiamando
-  `apply_filters( 'rest_post_dispatch', ... )` con lo stesso oggetto richiesta e FISSA i delta del contatore
-  (PRESERVATO: bug noto): GET `/ping` valido v2 +1, GET `/update/bulk` valido v2 +2 (due handler), Bearer errato +2 su
-  `/ping` e +3 su `/update/bulk`, OPTIONS 0, protocollo 1 valido 0. Se il bug verra' corretto questi test vanno
-  invertiti con decisione esplicita (stessi numeri misurati su HTTP vero in `tests/e2e/hub_contract.py`).
+- Su richieste HTTP reali il `permission_callback` `WPHC_Auth::require_token()` gira piu' volte per richiesta (la
+  prima nel dispatch, le altre dentro `rest_send_allow_header()`): fino alla 1.39.0 la rivalutazione di una richiesta
+  firmata falliva sul nonce gia' usato e contava come fallimento del throttle (vedi
+  `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`). Dalla 1.40.0 l'esito si calcola una sola volta per
+  richiesta. Con `rest_do_request()` la seconda fase non c'e', quindi `test-throttle-double-dispatch.php` la riproduce
+  chiamando `apply_filters( 'rest_post_dispatch', ... )` con lo stesso oggetto richiesta e fissa i delta del contatore:
+  richiesta valida v2 +0 (anche su `/update/bulk`, due handler), Bearer errato +1 su `/ping` e su `/update/bulk`,
+  OPTIONS 0, protocollo 1 valido 0, 15 richieste valide di fila mai 429, 10 Bearer errati ancora 429 (stessi numeri
+  misurati su HTTP vero in `tests/e2e/hub_contract.py`).
 
 ## Comportamenti "scomodi" fissati dai test (da preservare o cambiare con decisione esplicita)
 

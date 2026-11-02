@@ -172,17 +172,21 @@ def main() -> int:
     support.clear_throttle()
     report.check("/ping con segreto v2 firmato", hub.ping()["status"] == "ok")
 
-    # COMPORTAMENTO SCOMODO da preservare (o cambiare con decisione esplicita): su richieste HTTP
-    # reali la callback di permesso gira DUE volte (la seconda in rest_send_allow_header() del
-    # core, che ne scarta l'esito) e la seconda vede il nonce gia' usato, quindi ogni richiesta
-    # firmata VALIDA aggiunge 1 al contatore dei fallimenti; una non valida ne aggiunge 2.
-    # In-process (rest_do_request, suite PHPUnit) il fenomeno non si vede.
+    # Su richieste HTTP reali la callback di permesso gira DUE volte (la seconda in
+    # rest_send_allow_header() del core). Fino alla 1.39.0 la seconda vedeva il nonce gia' usato e
+    # ogni richiesta firmata VALIDA aggiungeva 1 al contatore dei fallimenti (2 una non valida);
+    # dalla 1.40.0 require_token() e' idempotente per richiesta: +0 e +1.
     support.clear_throttle()
     hub.ping()
-    report.check("ogni richiesta v2 valida incrementa di 1 il contatore dei fallimenti", support.throttle_failures() == 1, str(support.throttle_failures()))
+    report.check("una richiesta v2 valida non incrementa il contatore dei fallimenti", support.throttle_failures() == 0, str(support.throttle_failures()))
     support.clear_throttle()
     c.raw_request("GET", "/health-check/v1/ping", "token-sbagliato")
-    report.check("ogni richiesta con Bearer errato lo incrementa di 2", support.throttle_failures() == 2, str(support.throttle_failures()))
+    report.check("una richiesta con Bearer errato lo incrementa di 1", support.throttle_failures() == 1, str(support.throttle_failures()))
+    support.clear_throttle()
+    statuses = [hub.request("GET", "/health-check/v1/ping").status_code for _ in range(15)]
+    report.check("15 richieste v2 valide di fila: mai 429, contatore a zero",
+                 statuses == [200] * 15 and support.throttle_failures() == 0,
+                 f"{statuses} fails={support.throttle_failures()}")
     support.clear_throttle()
 
     # ------------------------------------------------------------------ push update

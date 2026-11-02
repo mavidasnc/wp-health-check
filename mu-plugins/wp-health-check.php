@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.39.0
+ * Version:     1.40.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 
 
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.39.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.40.0' );
 }
 
 
@@ -1155,6 +1155,20 @@ final class WPHC_Auth {
 
 
 
+	private static $last_request = null;
+
+	
+
+
+
+
+	private static $last_result = null;
+
+	
+
+
+
+
 
 
 
@@ -1222,7 +1236,32 @@ final class WPHC_Auth {
 
 
 
+
+
+
+
+
+
+
 	public static function require_token( WP_REST_Request $request ) {
+		if ( $request === self::$last_request ) {
+			return self::$last_result;
+		}
+
+		self::$last_result  = self::evaluate_token( $request );
+		self::$last_request = $request;
+
+		return self::$last_result;
+	}
+
+	
+
+
+
+
+
+
+	private static function evaluate_token( WP_REST_Request $request ) {
 		WPHC_Cors::maybe_send_headers();
 
 		

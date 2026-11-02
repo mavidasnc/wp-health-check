@@ -1,6 +1,6 @@
 <?php
 /**
- * PRESERVATO: bug noto, vedi finding (`__docs/wp-health-check/finding-throttle-doppia-valutazione.md`).
+ * CORRETTO nella 1.40.0: bug della 1.38.1/1.39.0, vedi finding (`__docs/wp-health-check/finding-throttle-doppia-valutazione.md`).
  *
  * Su richieste HTTP reali il `permission_callback` `wphc_require_token` gira PIU' di una volta per richiesta:
  * la prima e' quella del dispatch, le altre sono dentro `rest_send_allow_header()` del core (agganciata a
@@ -15,8 +15,9 @@
  * come fa `WP_REST_Server::serve_request()`, e si fissa il delta del contatore. Gli stessi numeri sono misurati su
  * HTTP vero dall'e2e (`tests/e2e/hub_contract.py`).
  *
- * Se il bug verra' corretto (rendere `require_token` idempotente per richiesta, vedi il finding, par. 6) questi
- * test vanno INVERTITI con decisione esplicita: +0 per una richiesta valida, +1 per un Bearer errato.
+ * Dalla 1.40.0 `WPHC_Auth::require_token()` e' idempotente per richiesta (finding, par. 6): la rivalutazione con lo
+ * stesso oggetto restituisce l'esito gia' calcolato. I test sono stati invertiti con decisione esplicita: +0 per una
+ * richiesta valida, +1 per un Bearer errato, qualunque sia il numero di handler della rotta.
  *
  * @package WP_Health_Check
  */
@@ -70,22 +71,22 @@ class WPHC_Test_Throttle_Double_Dispatch extends WPHC_Test_Case {
 	}
 
 	/**
-	 * GET /ping valido (protocollo 2, Bearer e firma giusti): dispatch (riuscito) piu' UNA rivalutazione
-	 * (handler unico, metodo GET) che fallisce sul nonce gia' usato: +1. PRESERVATO: bug noto, vedi finding.
+	 * GET /ping valido (protocollo 2, Bearer e firma giusti): la rivalutazione (handler unico, metodo GET)
+	 * riusa l'esito del dispatch invece di trovare il nonce gia' usato: +0. Fino alla 1.39.0 era +1.
 	 */
-	public function test_valid_v2_single_handler_route_adds_one_failure() {
+	public function test_valid_v2_single_handler_route_adds_nothing() {
 		$this->seed_enrolled( self::SECRET, 2 );
 		$this->assertSame( 0, $this->throttle_failures() );
 
 		$response = $this->dispatch_like_http( 'GET', '/ping', self::SECRET, self::SECRET );
 
 		$this->assertSame( 200, $response->get_status(), 'la richiesta del dispatch e\' valida' );
-		$this->assertSame( 1, $this->throttle_failures() );
+		$this->assertSame( 0, $this->throttle_failures() );
 	}
 
 	/**
-	 * La stessa richiesta senza la fase `rest_post_dispatch` (come in tutta la suite) NON incrementa: e' la
-	 * prova che il +1 viene dalla rivalutazione del core e non dal dispatch.
+	 * La stessa richiesta senza la fase `rest_post_dispatch` (come in tutta la suite) non incrementa: controllo
+	 * di base, il dispatch da solo non ha mai contato.
 	 */
 	public function test_without_the_post_dispatch_phase_a_valid_request_adds_nothing() {
 		$this->seed_enrolled( self::SECRET, 2 );
@@ -98,40 +99,40 @@ class WPHC_Test_Throttle_Double_Dispatch extends WPHC_Test_Case {
 
 	/**
 	 * GET /update/bulk valido: la rotta ha DUE handler (GET e POST registrati separatamente), quindi la fase
-	 * `rest_post_dispatch` rivaluta il permission_callback due volte (una per metodo): +2. PRESERVATO.
+	 * `rest_post_dispatch` rivaluta il permission_callback due volte: entrambe riusano l'esito, +0 (era +2).
 	 */
-	public function test_valid_v2_two_handler_route_adds_two_failures() {
+	public function test_valid_v2_two_handler_route_adds_nothing() {
 		$this->seed_enrolled( self::SECRET, 2 );
 
 		$response = $this->dispatch_like_http( 'GET', '/update/bulk', self::SECRET, self::SECRET );
 
 		$this->assertSame( 200, $response->get_status(), 'la richiesta del dispatch e\' valida' );
-		$this->assertSame( 2, $this->throttle_failures() );
+		$this->assertSame( 0, $this->throttle_failures() );
 	}
 
 	/**
-	 * Bearer errato: il dispatch fallisce (+1) e ogni rivalutazione fallisce di nuovo: +2 su /ping (un handler).
-	 * PRESERVATO: la protezione contro la forza bruta conta di piu', non di meno.
+	 * Bearer errato: il dispatch fallisce (+1) e la rivalutazione ripete l'esito senza contare di nuovo: +1
+	 * su /ping (era +2). Un tentativo sbagliato vale un fallimento.
 	 */
-	public function test_wrong_bearer_adds_two_failures_on_a_single_handler_route() {
+	public function test_wrong_bearer_adds_one_failure_on_a_single_handler_route() {
 		$this->seed_enrolled( self::SECRET, 2 );
 
 		$response = $this->dispatch_like_http( 'GET', '/ping', 'bearer-sbagliato', null );
 
 		$this->assertSame( 401, $response->get_status() );
-		$this->assertSame( 2, $this->throttle_failures() );
+		$this->assertSame( 1, $this->throttle_failures() );
 	}
 
 	/**
-	 * Bearer errato su /update/bulk (due handler): +1 del dispatch e +2 delle rivalutazioni = +3.
+	 * Bearer errato su /update/bulk (due handler): +1 del dispatch, le due rivalutazioni non contano: +1 (era +3).
 	 */
-	public function test_wrong_bearer_adds_three_failures_on_a_two_handler_route() {
+	public function test_wrong_bearer_adds_one_failure_on_a_two_handler_route() {
 		$this->seed_enrolled( self::SECRET, 2 );
 
 		$response = $this->dispatch_like_http( 'GET', '/update/bulk', 'bearer-sbagliato', null );
 
 		$this->assertSame( 401, $response->get_status() );
-		$this->assertSame( 3, $this->throttle_failures() );
+		$this->assertSame( 1, $this->throttle_failures() );
 	}
 
 	/**
@@ -161,16 +162,30 @@ class WPHC_Test_Throttle_Double_Dispatch extends WPHC_Test_Case {
 	}
 
 	/**
-	 * Conseguenza pratica: con la soglia di 10 fallimenti, DIECI richieste firmate valide (una per ogni +1) riempiono
-	 * il contatore e l'undicesima, anche se valida, riceve 429. PRESERVATO: bug noto (auto-blocco del cliente
-	 * legittimo), vedi il finding par. 3 e 5.
+	 * Conseguenza pratica: QUINDICI richieste firmate valide di fila (oltre la soglia di 10) non producono mai 429
+	 * e lasciano il contatore a zero. Fino alla 1.39.0 l'undicesima riceveva 429 (auto-blocco del cliente
+	 * legittimo, finding par. 3 e 5).
 	 */
-	public function test_ten_valid_v2_requests_lock_out_the_eleventh() {
+	public function test_fifteen_valid_v2_requests_never_lock_out() {
+		$this->seed_enrolled( self::SECRET, 2 );
+
+		for ( $i = 1; $i <= 15; $i++ ) {
+			$response = $this->dispatch_like_http( 'GET', '/ping', self::SECRET, self::SECRET );
+			$this->assertSame( 200, $response->get_status(), "richiesta {$i}" );
+		}
+		$this->assertSame( 0, $this->throttle_failures() );
+	}
+
+	/**
+	 * La protezione resta: DIECI richieste con Bearer errato (+1 ciascuna) riempiono il contatore e l'undicesima,
+	 * anche se valida, riceve 429.
+	 */
+	public function test_ten_wrong_bearers_still_lock_out() {
 		$this->seed_enrolled( self::SECRET, 2 );
 
 		for ( $i = 1; $i <= 10; $i++ ) {
-			$response = $this->dispatch_like_http( 'GET', '/ping', self::SECRET, self::SECRET );
-			$this->assertSame( 200, $response->get_status(), "richiesta {$i}" );
+			$response = $this->dispatch_like_http( 'GET', '/ping', 'bearer-sbagliato', null );
+			$this->assertSame( 401, $response->get_status(), "richiesta {$i}" );
 		}
 		$this->assertSame( WP_HEALTH_CHECK_RATE_MAX_FAILS, $this->throttle_failures() );
 
