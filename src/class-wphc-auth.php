@@ -17,6 +17,20 @@
 final class WPHC_Auth {
 
 	/**
+	 * Ultima richiesta valutata da require_token() e il suo esito (dalla 1.40.0, vedi require_token()).
+	 *
+	 * @var WP_REST_Request|null
+	 */
+	private static $last_request = null;
+
+	/**
+	 * Esito di require_token() per WPHC_Auth::$last_request.
+	 *
+	 * @var true|WP_Error|null
+	 */
+	private static $last_result = null;
+
+	/**
 	 * Registra l'accesso corrente autenticato e restituisce il valore
 	 * PRECEDENTE (prima della sovrascrittura). L'ordine e' importante: va
 	 * letto il vecchio valore prima di aggiornarlo, cosi' /health puo'
@@ -85,10 +99,35 @@ final class WPHC_Auth {
 	 *   centro aggiornato puo' iniziare a firmare prima che il sito completi la
 	 *   rotazione a protocollo 2).
 	 *
+	 * Dalla 1.40.0 l'esito si calcola UNA sola volta per richiesta: WordPress richiama il permission_callback
+	 * con lo stesso oggetto richiesta anche dentro rest_send_allow_header() (rest_post_dispatch), e la
+	 * rivalutazione di una richiesta firmata trovava il nonce appena registrato e contava un fallimento del
+	 * throttle per ogni richiesta valida. Vedi __docs/wp-health-check/finding-throttle-doppia-valutazione.md.
+	 * Si tiene il riferimento all'oggetto (non solo spl_object_id()) perche' un id puo' essere riusato da una
+	 * richiesta successiva dopo la distruzione della precedente.
+	 *
 	 * @param WP_REST_Request $request Richiesta REST corrente.
 	 * @return true|WP_Error True se autorizzato, altrimenti WP_Error con lo status corretto.
 	 */
 	public static function require_token( WP_REST_Request $request ) {
+		if ( $request === self::$last_request ) {
+			return self::$last_result;
+		}
+
+		self::$last_result  = self::evaluate_token( $request );
+		self::$last_request = $request;
+
+		return self::$last_result;
+	}
+
+	/**
+	 * Controlli di require_token() su una richiesta non ancora valutata: https, enroll, revoca, throttle,
+	 * Bearer, finestra di grazia, firma v2, con i relativi effetti collaterali.
+	 *
+	 * @param WP_REST_Request $request Richiesta REST corrente.
+	 * @return true|WP_Error True se autorizzato, altrimenti WP_Error con lo status corretto.
+	 */
+	private static function evaluate_token( WP_REST_Request $request ) {
 		WPHC_Cors::maybe_send_headers();
 
 		// Dalla 1.34.0 (A-10): il Bearer non deve mai viaggiare in chiaro.

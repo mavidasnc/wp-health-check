@@ -7,6 +7,18 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-02
+
+Prima release funzionale dopo la riorganizzazione in classi: contiene la 1.39.0 (mai distribuita da sola, nessun cambio di comportamento) piu' una sola correzione.
+
+### Fixed
+
+- **Throttle: le richieste valide non contano piu' come fallimenti.** Su richieste HTTP reali WordPress valuta il `permission_callback` anche dentro `rest_send_allow_header()` (filtro `rest_post_dispatch`) con lo stesso oggetto richiesta; per una richiesta firmata (protocollo 2) la rivalutazione trovava il nonce appena registrato e chiamava `WPHC_Guard::throttle_register_failure()`. Ogni richiesta valida aggiungeva 1 al contatore (2 sulle rotte con due handler) e dopo una decina di operazioni ravvicinate dell'hub sullo stesso sito il sito rispondeva `429 wphc_rate_limited` ("Troppi tentativi falliti"), anche all'enroll. Osservato in produzione su idea3architetti.com, perizieforensitorino.it, www.mavida.com, elisabettaruffino.com e altri durante gli aggiornamenti dalla dashboard. Ora `WPHC_Auth::require_token()` calcola l'esito una sola volta per richiesta e lo restituisce identico alle rivalutazioni: +0 per una richiesta valida, +1 per un tentativo sbagliato, qualunque sia il numero di handler. Soglia (10) e finestra (300 s) invariate. Analisi in `__docs/wp-health-check/finding-throttle-doppia-valutazione.md`.
+
+### Changed
+
+- Test: `test-throttle-double-dispatch.php` e i controlli del contatore in `tests/e2e/hub_contract.py` invertiti con i nuovi valori (piu' una raffica di 15 richieste valide che non deve mai ricevere 429 e una di 10 Bearer errati che deve ancora bloccare); nello scenario `v1` di `upgrade_test.py` il confronto baseline/candidato usa "il throttle registra i tentativi sbagliati" invece del numero esatto, che cambia per scelta. Lo harness e2e sostituisce `enroll._site_get`/`_site_post` (il vendor dell'hub in `hub-cli` non ha piu' `http_get` dal resync del 26/10).
+
 ## [lite 1.1.0] - 2026-10-22 (non ancora rilasciata)
 
 ### Added

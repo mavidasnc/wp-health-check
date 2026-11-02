@@ -2072,11 +2072,12 @@ rotazione elimina questo fatto, lo mitiga.
 single-use): una richiesta intercettata smette di essere una credenziale valida
 per sempre e diventa un artefatto monouso valido pochi minuti. Un rate limit sui
 tentativi falliti (10 in 300s, per IP) risponde `429` prima che un attacco a forza
-bruta sul bearer diventi pratico. Limite noto: su richieste HTTP reali la
-`permission_callback` delle rotte viene valutata più volte per richiesta e la
-rivalutazione di una richiesta firmata valida conta come fallimento, quindi una
-richiesta v2 valida incrementa il contatore di 1 (di 2 sulle rotte con due handler). È
-un difetto preservato dalla 1.39.0 e da correggere in una release separata (analisi in
+bruta sul bearer diventi pratico. Su richieste HTTP reali la `permission_callback`
+delle rotte viene valutata più volte per richiesta (anche dentro `rest_send_allow_header()`
+del core): fino alla 1.39.0 la rivalutazione di una richiesta firmata valida contava come
+fallimento, dalla 1.40.0 `WPHC_Auth::require_token()` calcola l'esito una sola volta per
+richiesta, quindi una richiesta valida non incrementa il contatore e un tentativo sbagliato
+lo incrementa di 1 (analisi in
 [finding-throttle-doppia-valutazione.md](../__docs/wp-health-check/finding-throttle-doppia-valutazione.md)). `/enroll`, `/rotate`, `/revoke` e, dalla 1.34.0,
 tutte le rotte dati e `/autologin/token` richiedono inoltre HTTPS (dietro un
 reverse proxy fidato vale `X-Forwarded-Proto: https`, vedi [Tracciamento
