@@ -7,6 +7,24 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-04
+
+Un update sincrono dall'hub (`POST /update/plugin`) non lascia piu' spento un plugin. Caso reale: il 03/11 su www.codiceedizioni.it ACF PRO e' rimasto disattivato dopo l'update delle 12:54 e il tema, che lo usa nell'header, andava in fatale con HTTP 200. Dal log del sito: transient con 6.8.10, ACF Connect ha installato la 6.8.11, l'agent ha registrato `failed` e non ha riattivato il plugin, che il core aveva disattivato prima dell'install.
+
+### Fixed
+
+- **Versione installata piu' recente di quella annunciata = update riuscito**: se e' maggiore di quella di partenza e almeno pari a quella annunciata l'esito e' `updated` (`to` = versione reale, messaggio nel log); prima `failed`.
+- **Riattivazione in ogni esito**: prima dell'update si fotografano i plugin attivi (anche di rete); dopo, anche su `rolled_back` e `failed`, si riattivano quelli spenti che hanno ancora il file, con righe di log `reactivated`/`reactivation_failed` (testo dell'errore). Prima solo il plugin aggiornato e solo su `completed`.
+- **Il retry non cancella la prova**: un plugin spento, ancora candidato di `/update/reactivate` e la cui ultima riga di log e' un fallimento (`failed`, `rolled_back`, `reactivation_failed`) conta come attivo per un nuovo tentativo, che lo riattiva invece di registrare `active=0`.
+
+### Changed
+
+- **Nessuna disattivazione durante l'update sincrono di un plugin**: `upgrade()` gira con `wp_doing_cron` vero, come nel drain bulk, quindi `Plugin_Upgrader::deactivate_plugin_before_upgrade()` non spegne il plugin; il core mette il sito in manutenzione per i secondi dell'install e un `.maintenance` lasciato da un install fallito viene tolto subito se non c'era prima.
+- **Purge della cache di pagina** dopo un update riuscito (plugin, tema, core) se LiteSpeed Cache e' attivo (`litespeed_purge_all`).
+- Risposta di `/update/{plugin,theme,core}`: campi opzionali `reactivated`, `reactivation_errors`, `cache_purged`, presenti solo quando valorizzati.
+- **`POST /update/reactivate` accetta `{"plugins": [...]}`** per riattivare solo quei plugin: l'hub (>= 0.273.0) riattiva cosi' solo i plugin toccati dall'update che ha appena verificato, non i candidati di vecchia data.
+- Test: `test_plugin_updated_active_stays_active` diventa `test_plugin_updated_active_is_never_deactivated`; `test_plugin_updated_but_reactivation_failed` simula lo spegnimento con un hook esterno e il golden `update/item/plugin-reactivation-failed` ha `reactivation_errors` (cambio voluto); nuovi test per versione piu' recente o piu' vecchia, riattivazione nel ramo `failed`, altro plugin spento, retry con candidato, candidato senza fallimento che resta spento, purge LiteSpeed, filtro `plugins` di `/update/reactivate`.
+
 ## [1.40.0] - 2026-11-02
 
 Prima release funzionale dopo la riorganizzazione in classi: contiene la 1.39.0 (mai distribuita da sola, nessun cambio di comportamento) piu' una sola correzione.

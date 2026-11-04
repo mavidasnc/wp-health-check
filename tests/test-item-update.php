@@ -573,15 +573,25 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 	}
 
 	/**
-	 * Plugin attivo: Plugin_Upgrader lo disattiva durante l'update e la rete di sicurezza dell'agent lo riattiva
-	 * (messaggio sulla riga 'completed'); lo stato attivo e' registrato in entrambe le righe.
+	 * Plugin attivo (1.41.0): l'update via REST gira come se fosse in WP-Cron, quindi
+	 * Plugin_Upgrader::deactivate_plugin_before_upgrade() non lo disattiva piu'. Il plugin resta attivo anche
+	 * DURANTE l'install, nessuna riattivazione da segnalare, nessun .maintenance lasciato.
 	 */
-	public function test_plugin_updated_active_stays_active() {
+	public function test_plugin_updated_active_is_never_deactivated() {
 		$this->install_fixture_plugin( '1.0.0' );
 		$this->assertNull( activate_plugin( self::FIXTURE_FILE ) );
 		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
 		$this->mock_wporg_api();
 		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$active_during = null;
+		add_filter(
+			'upgrader_post_install',
+			static function ( $response ) use ( &$active_during ) {
+				$active_during = is_plugin_active( WPHC_Update_Test_Case::FIXTURE_FILE );
+				return $response;
+			},
+			1
+		);
 
 		$before   = $this->plugin_options();
 		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
@@ -589,20 +599,24 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$data = $response->get_data();
 		$this->assertTrue( $data['updated'] );
 		$this->assertArrayNotHasKey( 'result', $data, 'Esito pieno: nessun result.' );
+		$this->assertArrayNotHasKey( 'reactivated', $data );
+		$this->assertTrue( $active_during, 'Il core non deve disattivare il plugin durante l\'install.' );
+		$this->assertFalse( wp_doing_cron(), 'Il filtro wp_doing_cron va tolto dopo l\'update.' );
+		$this->assertFileDoesNotExist( ABSPATH . '.maintenance' );
 		$rows = $this->log_rows();
 		$this->assertSame( array( 'requested', 'completed' ), array_column( $rows, 'phase' ) );
 		$this->assertSame( '1', $rows[0]['active'] );
 		$this->assertSame( '1', $rows[1]['active'] );
+		$this->assertNull( $rows[1]['message'] );
 		$this->assertTrue( is_plugin_active( self::FIXTURE_FILE ) );
-		// Plugin_Upgrader disattiva il plugin prima dell'update e la rete di sicurezza dell'agent lo riattiva.
-		$this->assertSame( "Plugin disattivato dall'update e riattivato automaticamente.", $rows[1]['message'] );
 		$this->assert_update_golden( 'update/item/plugin-updated-reactivated', $response, $before );
 		$this->assert_lock_released();
 	}
 
 	/**
-	 * Plugin che non si riattiva dopo l'update (la nuova versione produce output in attivazione): l'update
-	 * e' riuscito (updated:true) ma l'esito e' 'reactivation_failed' con il dettaglio.
+	 * Plugin disattivato durante l'update da un processo esterno (qui un hook su upgrader_post_install) e la
+	 * cui nuova versione non si riattiva (produce output in attivazione): l'update e' riuscito
+	 * (updated:true) ma l'esito e' 'reactivation_failed' con il dettaglio e una riga di log dedicata.
 	 */
 	public function test_plugin_updated_but_reactivation_failed() {
 		$this->install_fixture_plugin( '1.0.0', self::FIXTURE_B_DIR );
@@ -614,6 +628,7 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		// La nuova versione stampa dell'output quando il file viene incluso: activate_plugin() la rifiuta
 		// (unexpected_output), quindi la riattivazione automatica dell'agent fallisce.
 		$this->serve_package_from( $this->build_fixture_zip( '2.0.0', "echo 'output inatteso';", '', self::FIXTURE_B_DIR ) );
+		$this->deactivate_during_install( self::FIXTURE_B_FILE );
 
 		$before   = $this->plugin_options();
 		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_B_FILE ) );
@@ -623,18 +638,190 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$this->assertSame( 'reactivation_failed', $data['result'] );
 		$this->assertStringStartsWith( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: ', $data['detail'] );
 		$this->assertSame(
-			array( 'updated', 'result', 'type', 'target', 'name', 'from', 'to', 'log_id', 'detail' ),
+			array( 'updated', 'result', 'type', 'target', 'name', 'from', 'to', 'log_id', 'detail', 'reactivation_errors' ),
 			array_keys( $data )
 		);
+		$this->assertArrayHasKey( self::FIXTURE_B_FILE, $data['reactivation_errors'] );
+		$rows = $this->log_rows();
+		$this->assertSame( array( 'requested', 'reactivation_failed', 'completed' ), array_column( $rows, 'phase' ) );
+		$this->assertNull( $rows[1]['active'], 'reactivation_failed lascia il candidato per /update/reactivate.' );
+		$this->assertSame( $data['detail'], $rows[2]['message'] );
+		$this->assertSame( '0', $rows[2]['active'] );
+		$this->assert_update_golden( 'update/item/plugin-reactivation-failed', $response, $before );
+	}
+
+	/**
+	 * Regressione codiceedizioni.it (03/11/2026): il pacchetto installa una versione PIU' RECENTE di quella
+	 * annunciata dal transient (ACF PRO: 6.8.10 annunciata, 6.8.11 installata). Prima era 'failed' e il
+	 * plugin, disattivato dal core, restava spento: ora e' un update riuscito, con il plugin attivo.
+	 */
+	public function test_plugin_newer_than_announced_is_updated_and_stays_active() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->assertNull( activate_plugin( self::FIXTURE_FILE ) );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.1' ) );
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$data = $response->get_data();
+		$this->assertTrue( $data['updated'] );
+		$this->assertArrayNotHasKey( 'result', $data );
+		$this->assertSame( '2.0.1', $data['to'] );
+		$this->assertTrue( is_plugin_active( self::FIXTURE_FILE ) );
 		$rows = $this->log_rows();
 		$this->assertSame( array( 'requested', 'completed' ), array_column( $rows, 'phase' ) );
-		$this->assertSame( $data['detail'], $rows[1]['message'] );
-		// Comportamento sorprendente preservato: activate_plugin() scrive l'option active_plugins PRIMA di
-		// accorgersi dell'output inatteso, quindi per WordPress il plugin risulta attivo, mentre la riga di
-		// log (stato letto prima della riattivazione) dice active=0 e la risposta dice reactivation_failed.
-		$this->assertTrue( is_plugin_active( self::FIXTURE_B_FILE ) );
-		$this->assertSame( '0', $rows[1]['active'] );
-		$this->assert_update_golden( 'update/item/plugin-reactivation-failed', $response, $before );
+		$this->assertSame( '2.0.0', $rows[0]['version_to'] );
+		$this->assertSame( '2.0.1', $rows[1]['version_to'] );
+		$this->assertSame( 'Installata la versione 2.0.1 invece della 2.0.0 annunciata.', $rows[1]['message'] );
+		$this->assertArrayNotHasKey( self::FIXTURE_FILE, get_site_transient( 'update_plugins' )->response );
+		$this->assert_lock_released();
+	}
+
+	/**
+	 * Una versione diversa ma NON piu' recente di quella annunciata resta un fallimento.
+	 */
+	public function test_plugin_older_than_announced_is_failed() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '1.5.0' ) );
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$this->assertSame( 'failed', $response->get_data()['result'] );
+		$this->assertSame( array( 'requested', 'failed' ), $this->log_phases() );
+	}
+
+	/**
+	 * Regressione codiceedizioni.it, ramo di errore: un plugin attivo spento durante l'update che poi fallisce
+	 * la verifica viene riattivato anche se l'esito e' 'failed' (prima restava spento), con la riga di log
+	 * 'reactivated' e il campo 'reactivated' nella risposta.
+	 */
+	public function test_plugin_failed_update_reactivates_plugin() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->assertNull( activate_plugin( self::FIXTURE_FILE ) );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '1.5.0' ) );
+		$this->deactivate_during_install( self::FIXTURE_FILE );
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$data = $response->get_data();
+		$this->assertSame( 'failed', $data['result'] );
+		$this->assertSame( array( self::FIXTURE_FILE ), $data['reactivated'] );
+		$this->assertTrue( is_plugin_active( self::FIXTURE_FILE ) );
+		$rows = $this->log_rows();
+		$this->assertSame( array( 'requested', 'reactivated', 'failed' ), array_column( $rows, 'phase' ) );
+		$this->assertSame( '1', $rows[1]['active'] );
+		$this->assertSame( $rows[0]['correlation_id'], $rows[1]['correlation_id'] );
+		$this->assert_lock_released();
+	}
+
+	/**
+	 * Un ALTRO plugin attivo spento durante l'update (plugin di sicurezza, hosting...) viene riattivato.
+	 */
+	public function test_other_plugin_lost_during_update_is_reactivated() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->assertNull( activate_plugin( 'hello.php' ) );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$this->deactivate_during_install( 'hello.php' );
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$data = $response->get_data();
+		$this->assertTrue( $data['updated'] );
+		$this->assertSame( array( 'hello.php' ), $data['reactivated'] );
+		$this->assertTrue( is_plugin_active( 'hello.php' ) );
+		$this->assertFalse( is_plugin_active( self::FIXTURE_FILE ), 'Il plugin aggiornato era inattivo e resta inattivo.' );
+		$this->assertSame( array( 'reactivated' ), $this->log_phases( "target = 'hello.php'" ) );
+	}
+
+	/**
+	 * Retry dopo un tentativo che ha lasciato il plugin spento: il log lo aspetta ancora attivo
+	 * (candidato di /update/reactivate), quindi il nuovo tentativo registra active=1 e lo riattiva,
+	 * invece di cancellare la prova con active=0.
+	 */
+	public function test_retry_uses_reactivation_candidate() {
+		$this->install_fixture_plugin( '1.0.0' );
+		// Stato lasciato dalla 1.40.0 sul sito: requested active=1, failed active=NULL, plugin spento.
+		WPHC_Update_Log::log_row( 'aaaaaaaaaaaaaaaa', 'plugin', self::FIXTURE_FILE, 'WPHC Fixture', '1.0.0', '2.0.0', 'requested', null, true, 'api' );
+		WPHC_Update_Log::log_row( 'aaaaaaaaaaaaaaaa', 'plugin', self::FIXTURE_FILE, 'WPHC Fixture', '1.0.0', '2.0.0', 'failed', 'x', null, 'api' );
+		$this->assertFalse( is_plugin_active( self::FIXTURE_FILE ) );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$first = $this->max_log_id();
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$this->assertTrue( $response->get_data()['updated'] );
+		$this->assertTrue( is_plugin_active( self::FIXTURE_FILE ) );
+		$rows = $this->log_rows( 'id > ' . (int) $first );
+		$this->assertSame( array( 'requested', 'reactivated', 'completed' ), array_column( $rows, 'phase' ) );
+		$this->assertSame( '1', $rows[0]['active'] );
+		$this->assertSame( '1', $rows[2]['active'] );
+	}
+
+	/**
+	 * Un plugin spento senza un tentativo fallito alle spalle (ultima riga 'completed' active=1, poi
+	 * spento da codice senza hook) resta spento dopo l'update: il candidato conta solo dopo un fallimento.
+	 */
+	public function test_candidate_without_failed_attempt_stays_inactive() {
+		$this->install_fixture_plugin( '1.0.0' );
+		WPHC_Update_Log::log_row( 'bbbbbbbbbbbbbbbb', 'plugin', self::FIXTURE_FILE, 'WPHC Fixture', '0.9.0', '1.0.0', 'completed', null, true, 'api' );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$first = $this->max_log_id();
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$this->assertTrue( $response->get_data()['updated'] );
+		$this->assertFalse( is_plugin_active( self::FIXTURE_FILE ) );
+		$this->assertSame( array( 'requested', 'completed' ), array_column( $this->log_rows( 'id > ' . (int) $first ), 'phase' ) );
+	}
+
+	/**
+	 * Con LiteSpeed Cache attivo (azione litespeed_purge_all registrata) la cache di pagina si svuota dopo
+	 * un update riuscito.
+	 */
+	public function test_update_purges_litespeed_cache() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$purged = 0;
+		add_action(
+			'litespeed_purge_all',
+			static function () use ( &$purged ) {
+				++$purged;
+			}
+		);
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$this->assertTrue( $response->get_data()['cache_purged'] );
+		$this->assertSame( 1, $purged );
+	}
+
+	/**
+	 * Simula un processo esterno che spegne in silenzio un plugin durante l'install.
+	 *
+	 * @param string $file Plugin file.
+	 */
+	private function deactivate_during_install( $file ) {
+		add_filter(
+			'upgrader_post_install',
+			static function ( $response ) use ( $file ) {
+				deactivate_plugins( $file, true );
+				return $response;
+			},
+			1
+		);
 	}
 
 	// -----------------------------------------------------------------------

@@ -269,4 +269,20 @@ final class WPHC_Util {
 	public static function generate_correlation_id() {
 		return bin2hex( random_bytes( 8 ) );
 	}
+
+	/**
+	 * Svuota la cache di pagina dopo un update, cosi' la verifica del front-end dell'hub (e i
+	 * visitatori) non vedono una pagina generata durante l'update. Oggi solo LiteSpeed Cache,
+	 * che registra l'azione litespeed_purge_all quando e' attivo.
+	 *
+	 * @return bool True se una cache e' stata svuotata.
+	 */
+	public static function purge_page_cache() {
+		if ( ! has_action( 'litespeed_purge_all' ) ) {
+			return false;
+		}
+		do_action( 'litespeed_purge_all' ); // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- azione pubblica di LiteSpeed Cache.
+
+		return true;
+	}
 }

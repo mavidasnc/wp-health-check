@@ -568,6 +568,24 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	}
 
 	/**
+	 * 1.41.0: con "plugins" nel body si riattivano solo i plugin indicati (l'hub passa quelli toccati
+	 * dall'update appena verificato); gli altri candidati restano spenti e candidati.
+	 */
+	public function test_reactivate_only_listed_plugins() {
+		$this->install_fixture_plugin( '1.0.0', self::FIXTURE_C_DIR );
+		$this->insert_log( array( 'target' => self::FIXTURE_C_FILE, 'name' => 'WPHC Fixture', 'active' => 1 ) );
+		$this->insert_log( array( 'target' => 'hello.php', 'name' => 'Hello Dolly', 'active' => 1 ) );
+
+		$data = $this->upd( 'POST', '/update/reactivate', array( 'plugins' => array( self::FIXTURE_C_FILE ) ) )->get_data();
+
+		$this->assertSame( 1, $data['discrepancies'] );
+		$this->assertSame( self::FIXTURE_C_FILE, $data['results'][0]['target'] );
+		$this->assertTrue( is_plugin_active( self::FIXTURE_C_FILE ) );
+		$this->assertFalse( is_plugin_active( 'hello.php' ) );
+		$this->assertContains( 'hello.php', array_column( WPHC_Update_Log::get_reactivation_candidates(), 'target' ) );
+	}
+
+	/**
 	 * Riattivazione reale: il plugin torna attivo, riga 'reactivated' (active=1), lock rilasciato.
 	 */
 	public function test_reactivate_success() {

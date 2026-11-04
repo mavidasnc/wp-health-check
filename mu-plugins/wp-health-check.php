@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.40.0
+ * Version:     1.41.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 
 
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.40.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.41.0' );
 }
 
 
@@ -666,6 +666,22 @@ final class WPHC_Util {
 
 	public static function generate_correlation_id() {
 		return bin2hex( random_bytes( 8 ) );
+	}
+
+	
+
+
+
+
+
+
+	public static function purge_page_cache() {
+		if ( ! has_action( 'litespeed_purge_all' ) ) {
+			return false;
+		}
+		do_action( 'litespeed_purge_all' ); 
+
+		return true;
 	}
 }
 
@@ -1917,6 +1933,22 @@ final class WPHC_Update_Log {
 		}
 
 		return $candidates;
+	}
+
+	
+
+
+
+
+
+	public static function last_plugin_phase( $target ) {
+		global $wpdb;
+		$table = self::table();
+
+		
+		$phase = $wpdb->get_var( $wpdb->prepare( "SELECT phase FROM {$table} WHERE type = %s AND target = %s ORDER BY id DESC LIMIT 1", 'plugin', $target ) );
+
+		return null === $phase ? null : (string) $phase;
 	}
 
 	
@@ -5635,6 +5667,7 @@ final class WPHC_Item_Updater {
 		
 		$was_active         = null;
 		$was_network_active = false;
+		$active_before      = array();
 
 		if ( 'plugin' === $type ) {
 			require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
@@ -5652,6 +5685,21 @@ final class WPHC_Item_Updater {
 
 			$was_network_active = is_multisite() && is_plugin_active_for_network( $target );
 			$was_active         = $was_network_active || is_plugin_active( $target );
+
+			
+			
+			
+			
+			
+			if ( ! $was_active
+				&& in_array( WPHC_Update_Log::last_plugin_phase( $target ), array( 'failed', 'rolled_back', 'reactivation_failed' ), true )
+				&& in_array( $target, array_column( WPHC_Update_Log::get_reactivation_candidates(), 'target' ), true ) ) {
+				$was_active = true;
+			}
+			$active_before = self::active_plugin_snapshot();
+			if ( $was_active && ! isset( $active_before[ $target ] ) ) {
+				$active_before[ $target ] = $was_network_active;
+			}
 
 			wp_clean_plugins_cache( false );
 			$muted     = WPHC_Util::mute_update_shortcircuit();
@@ -5732,9 +5780,27 @@ final class WPHC_Item_Updater {
 		
 		
 		
+		
+		
+		
+		
+		
+		$as_cron              = ( 'plugin' === $type && ! wp_doing_cron() );
+		$had_maintenance_file = file_exists( self::maintenance_file_path() );
+		if ( $as_cron ) {
+			add_filter( 'wp_doing_cron', '__return_true' );
+		}
+
 		WPHC_Update_Log::begin_api_update();
 		$result = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
 		WPHC_Update_Log::end_api_update();
+
+		if ( $as_cron ) {
+			remove_filter( 'wp_doing_cron', '__return_true' );
+			if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
+				wp_delete_file( self::maintenance_file_path() );
+			}
+		}
 
 		$exists         = false;
 		$actual_version = null;
@@ -5765,6 +5831,34 @@ final class WPHC_Item_Updater {
 		delete_transient( WPHC_Options::TRANSIENT_DETAIL_PLUGINS_CACHE );
 		delete_transient( WPHC_Options::TRANSIENT_DETAIL_THEME_CACHE );
 
+		
+		
+		
+		$version_note = null;
+		if ( ! is_wp_error( $result ) && $exists && $actual_version !== $version_to
+			&& version_compare( (string) $actual_version, $version_from, '>' ) && version_compare( (string) $actual_version, $version_to, '>=' ) ) {
+			$version_note = sprintf(
+				
+				__( 'Installata la versione %1$s invece della %2$s annunciata.', 'wp-health-check' ),
+				$actual_version,
+				$version_to
+			);
+			$version_to = (string) $actual_version;
+		}
+
+		
+		
+		
+		
+		
+		$restored = self::restore_active_plugins( $active_before, $correlation_id, $source );
+		$extra    = array_filter(
+			array(
+				'reactivated'         => $restored['reactivated'],
+				'reactivation_errors' => $restored['errors'],
+			)
+		);
+
 		if ( is_wp_error( $result ) || $actual_version !== $version_to ) {
 			$message = is_wp_error( $result ) ? $result->get_error_message() : __( 'Verifica post-aggiornamento fallita.', 'wp-health-check' );
 
@@ -5784,47 +5878,42 @@ final class WPHC_Item_Updater {
 				'detail' => $message,
 				'log_id' => $log_id,
 				'http'   => 200,
-			);
+			) + $extra;
 		}
 
 		self::patch_update_transient_after_success( $type, $target, $version_to );
 
-		
-		
-		
-		
-		
-		
-		
 		$active_after       = null;
-		$log_message        = null;
+		$log_message        = $version_note;
 		$reactivation_error = null;
 		if ( 'plugin' === $type ) {
 			$active_after = $was_network_active
 				? is_plugin_active_for_network( $target )
 				: is_plugin_active( $target );
 
-			if ( $was_active && ! $active_after ) {
-				$reactivated = activate_plugin( $target, '', $was_network_active );
-				if ( is_wp_error( $reactivated ) ) {
-					$reactivation_error = $reactivated->get_error_message();
-					$log_message        = sprintf(
-						
-						__( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: %s', 'wp-health-check' ),
-						$reactivation_error
-					);
-				} else {
-					$active_after = $was_network_active
-						? is_plugin_active_for_network( $target )
-						: is_plugin_active( $target );
-					$log_message  = __( 'Plugin disattivato dall\'update e riattivato automaticamente.', 'wp-health-check' );
-				}
+			if ( isset( $restored['errors'][ $target ] ) ) {
+				$reactivation_error = $restored['errors'][ $target ];
+				$log_message        = sprintf(
+					
+					__( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: %s', 'wp-health-check' ),
+					$reactivation_error
+				);
+				
+				
+				$active_after = false;
+			} elseif ( in_array( $target, $restored['reactivated'], true ) ) {
+				$log_message = __( 'Plugin disattivato dall\'update e riattivato automaticamente.', 'wp-health-check' );
 			}
 		}
 
 		$log_id = WPHC_Update_Log::log_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', $log_message, $active_after, $source );
 		WPHC_Update_Log::record_last_update( $type, $target, 'completed', $source );
 		self::release_update_lock();
+
+		
+		if ( WPHC_Util::purge_page_cache() ) {
+			$extra['cache_purged'] = true;
+		}
 
 		if ( null !== $reactivation_error ) {
 			return array(
@@ -5837,7 +5926,7 @@ final class WPHC_Item_Updater {
 				'log_id' => $log_id,
 				'detail' => $log_message,
 				'http'   => 200,
-			);
+			) + $extra;
 		}
 
 		return array(
@@ -5849,7 +5938,84 @@ final class WPHC_Item_Updater {
 			'to'     => $version_to,
 			'log_id' => $log_id,
 			'http'   => 200,
+		) + $extra;
+	}
+
+	
+
+
+
+
+	private static function active_plugin_snapshot() {
+		$active = array_fill_keys( (array) get_option( 'active_plugins', array() ), false );
+		if ( is_multisite() ) {
+			foreach ( array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) ) as $file ) {
+				$active[ $file ] = true;
+			}
+		}
+
+		return $active;
+	}
+
+	
+
+
+
+
+
+
+
+
+	private static function is_active_in_scope( $file, $network ) {
+		$active = self::active_plugin_snapshot();
+
+		return isset( $active[ $file ] ) && ( ! $network || $active[ $file ] );
+	}
+
+	
+
+
+
+
+
+
+
+
+
+	private static function restore_active_plugins( array $expected, $correlation_id, $source ) {
+		$out = array(
+			'reactivated' => array(),
+			'errors'      => array(),
 		);
+		if ( ! $expected ) {
+			return $out;
+		}
+
+		$installed = get_plugins();
+		foreach ( $expected as $file => $network ) {
+			if ( ! isset( $installed[ $file ] ) || self::is_active_in_scope( $file, $network ) ) {
+				continue;
+			}
+
+			$activation = activate_plugin( $file, '', $network );
+			$now_active = self::is_active_in_scope( $file, $network );
+			$name       = $installed[ $file ]['Name'];
+			$version    = $installed[ $file ]['Version'];
+
+			if ( is_wp_error( $activation ) || ! $now_active ) {
+				$message                = is_wp_error( $activation )
+					? $activation->get_error_message()
+					: __( 'activate_plugin() non ha segnalato errori ma il plugin risulta ancora inattivo.', 'wp-health-check' );
+				$out['errors'][ $file ] = $message;
+				WPHC_Update_Log::log_row( $correlation_id, 'plugin', $file, $name, $version, null, 'reactivation_failed', $message, null, $source );
+				continue;
+			}
+
+			$out['reactivated'][] = $file;
+			WPHC_Update_Log::log_row( $correlation_id, 'plugin', $file, $name, $version, null, 'reactivated', null, true, $source );
+		}
+
+		return $out;
 	}
 
 	
@@ -5993,6 +6159,7 @@ final class WPHC_Item_Updater {
 		
 		wp_version_check( array(), true );
 		delete_transient( WPHC_Options::TRANSIENT_HEALTH_CACHE );
+		WPHC_Util::purge_page_cache();
 
 		$log_id = WPHC_Update_Log::log_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed', null, null, $source );
 		WPHC_Update_Log::record_last_update( 'core', 'core', 'completed', $source );
@@ -6030,10 +6197,22 @@ final class WPHC_Item_Updater {
 
 
 
-	private static function perform_reactivate( $dry_run = false ) {
+
+
+	private static function perform_reactivate( $dry_run = false, array $only = array() ) {
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
-		$candidates  = WPHC_Update_Log::get_reactivation_candidates();
+		$candidates = WPHC_Update_Log::get_reactivation_candidates();
+		if ( $only ) {
+			$candidates = array_values(
+				array_filter(
+					$candidates,
+					static function ( $candidate ) use ( $only ) {
+						return in_array( $candidate['target'], $only, true );
+					}
+				)
+			);
+		}
 		$all_plugins = get_plugins();
 
 		
@@ -6174,6 +6353,9 @@ final class WPHC_Item_Updater {
 			return new WP_Error( 'wphc_update_locked', __( 'Un altro aggiornamento e\' gia\' in corso.', 'wp-health-check' ), array( 'status' => 409 ) );
 		}
 
+		
+		$extra = array_intersect_key( $outcome, array_flip( array( 'reactivated', 'reactivation_errors', 'cache_purged' ) ) );
+
 		if ( 'updated' === $result ) {
 			return rest_ensure_response(
 				array(
@@ -6184,7 +6366,7 @@ final class WPHC_Item_Updater {
 					'from'    => $outcome['from'],
 					'to'      => $outcome['to'],
 					'log_id'  => $outcome['log_id'],
-				)
+				) + $extra
 			);
 		}
 
@@ -6219,7 +6401,7 @@ final class WPHC_Item_Updater {
 					'to'      => $outcome['to'],
 					'log_id'  => $outcome['log_id'],
 					'detail'  => $outcome['detail'],
-				)
+				) + $extra
 			);
 		}
 
@@ -6233,7 +6415,7 @@ final class WPHC_Item_Updater {
 			}
 		}
 
-		return rest_ensure_response( $response );
+		return rest_ensure_response( $response + $extra );
 	}
 
 	
@@ -6301,7 +6483,8 @@ final class WPHC_Item_Updater {
 
 	public static function route_reactivate( WP_REST_Request $request ) {
 		$dry_run = WPHC_Rest::request_wants_check( $request );
-		$outcome = self::perform_reactivate( $dry_run );
+		$only    = array_values( array_filter( (array) $request->get_param( 'plugins' ), 'is_string' ) );
+		$outcome = self::perform_reactivate( $dry_run, $only );
 
 		$http = isset( $outcome['http'] ) ? (int) $outcome['http'] : 200;
 

@@ -243,6 +243,22 @@ final class WPHC_Update_Log {
 	}
 
 	/**
+	 * Fase dell'ultima riga di log di un plugin, o null se mai registrato.
+	 *
+	 * @param string $target Plugin file.
+	 * @return string|null
+	 */
+	public static function last_plugin_phase( $target ) {
+		global $wpdb;
+		$table = self::table();
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- tabella custom non cacheata; $table e' un nome fisso ($wpdb->prefix), non input.
+		$phase = $wpdb->get_var( $wpdb->prepare( "SELECT phase FROM {$table} WHERE type = %s AND target = %s ORDER BY id DESC LIMIT 1", 'plugin', $target ) );
+
+		return null === $phase ? null : (string) $phase;
+	}
+
+	/**
 	 * Prune opportunistico delle righe di log piu' vecchie della retention
 	 * (WP_HEALTH_CHECK_LOG_RETENTION_DAYS), al massimo una volta al giorno
 	 * (gate via transient): evita una crescita illimitata della tabella senza

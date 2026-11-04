@@ -4,6 +4,9 @@
         "from": "1.0.0",
         "log_id": "<LOG_ID>",
         "name": "WPHC Fixture",
+        "reactivation_errors": {
+            "wphc-fixture-b/wphc-fixture-b.php": "The plugin generated unexpected output."
+        },
         "result": "reactivation_failed",
         "target": "wphc-fixture-b/wphc-fixture-b.php",
         "to": "2.0.0",
