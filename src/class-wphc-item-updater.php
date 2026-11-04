@@ -292,6 +292,7 @@ final class WPHC_Item_Updater {
 		// stesso ambito se necessario (vedi sotto).
 		$was_active         = null;
 		$was_network_active = false;
+		$active_before      = array();
 
 		if ( 'plugin' === $type ) {
 			require_once ABSPATH . 'wp-admin/includes/class-plugin-upgrader.php';
@@ -309,6 +310,21 @@ final class WPHC_Item_Updater {
 
 			$was_network_active = is_multisite() && is_plugin_active_for_network( $target );
 			$was_active         = $was_network_active || is_plugin_active( $target );
+
+			// Un tentativo precedente fallito puo' aver lasciato il plugin disattivato (caso
+			// codiceedizioni.it, 1.41.0): se l'ultimo tentativo e' fallito e il log lo aspetta
+			// ancora attivo, un nuovo tentativo non deve registrare active=0 e cancellare cosi'
+			// la prova che va riattivato. Solo dopo un fallimento: un plugin spento in altro modo
+			// resta spento.
+			if ( ! $was_active
+				&& in_array( WPHC_Update_Log::last_plugin_phase( $target ), array( 'failed', 'rolled_back', 'reactivation_failed' ), true )
+				&& in_array( $target, array_column( WPHC_Update_Log::get_reactivation_candidates(), 'target' ), true ) ) {
+				$was_active = true;
+			}
+			$active_before = self::active_plugin_snapshot();
+			if ( $was_active && ! isset( $active_before[ $target ] ) ) {
+				$active_before[ $target ] = $was_network_active;
+			}
 
 			wp_clean_plugins_cache( false );
 			$muted     = WPHC_Util::mute_update_shortcircuit();
@@ -389,9 +405,27 @@ final class WPHC_Item_Updater {
 		// upgrader_process_complete di un update fatto da wp-admin
 		// (WPHC_Update_Log::log_wp_initiated_update()), che altrimenti loggerebbe due volte
 		// lo stesso update.
+		// Fuori da WP-Cron Plugin_Upgrader::deactivate_plugin_before_upgrade() disattiva in silenzio il
+		// plugin prima di installarlo (in wp-admin lo riattiva poi la pagina di update): via REST restava
+		// spento. Come nel drain bulk, si fa vedere l'update come cron: il core non disattiva e mette il
+		// sito in manutenzione per la durata dell'install. Un .maintenance lasciato da un install fallito
+		// (il core lo toglie solo a install riuscito) si rimuove subito se non c'era prima.
+		$as_cron              = ( 'plugin' === $type && ! wp_doing_cron() );
+		$had_maintenance_file = file_exists( self::maintenance_file_path() );
+		if ( $as_cron ) {
+			add_filter( 'wp_doing_cron', '__return_true' );
+		}
+
 		WPHC_Update_Log::begin_api_update();
 		$result = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
 		WPHC_Update_Log::end_api_update();
+
+		if ( $as_cron ) {
+			remove_filter( 'wp_doing_cron', '__return_true' );
+			if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
+				wp_delete_file( self::maintenance_file_path() );
+			}
+		}
 
 		$exists         = false;
 		$actual_version = null;
@@ -422,6 +456,34 @@ final class WPHC_Item_Updater {
 		delete_transient( WPHC_Options::TRANSIENT_DETAIL_PLUGINS_CACHE );
 		delete_transient( WPHC_Options::TRANSIENT_DETAIL_THEME_CACHE );
 
+		// Alcuni pacchetti premium (ACF PRO via ACF Connect) servono l'ultima versione, non quella
+		// annunciata dal transient: una versione piu' recente di entrambe e' un update riuscito, non un
+		// 'failed' (1.41.0, caso codiceedizioni.it: 6.8.10 annunciata, 6.8.11 installata).
+		$version_note = null;
+		if ( ! is_wp_error( $result ) && $exists && $actual_version !== $version_to
+			&& version_compare( (string) $actual_version, $version_from, '>' ) && version_compare( (string) $actual_version, $version_to, '>=' ) ) {
+			$version_note = sprintf(
+				/* translators: 1: versione installata, 2: versione annunciata. */
+				__( 'Installata la versione %1$s invece della %2$s annunciata.', 'wp-health-check' ),
+				$actual_version,
+				$version_to
+			);
+			$version_to = (string) $actual_version;
+		}
+
+		// Ogni plugin attivo prima dell'update (non solo $target) e non piu' attivo ora viene
+		// riattivato nello stesso ambito, in OGNI esito: anche su rolled_back/failed il plugin puo'
+		// essere stato disattivato (plugin di sicurezza/hosting, core fuori da cron). Un plugin
+		// senza file (temp-backup che il core ripristina solo allo shutdown) resta candidato nel log
+		// e lo riprende POST /update/reactivate, che l'hub chiama dopo ogni update.
+		$restored = self::restore_active_plugins( $active_before, $correlation_id, $source );
+		$extra    = array_filter(
+			array(
+				'reactivated'         => $restored['reactivated'],
+				'reactivation_errors' => $restored['errors'],
+			)
+		);
+
 		if ( is_wp_error( $result ) || $actual_version !== $version_to ) {
 			$message = is_wp_error( $result ) ? $result->get_error_message() : __( 'Verifica post-aggiornamento fallita.', 'wp-health-check' );
 
@@ -441,47 +503,42 @@ final class WPHC_Item_Updater {
 				'detail' => $message,
 				'log_id' => $log_id,
 				'http'   => 200,
-			);
+			) + $extra;
 		}
 
 		self::patch_update_transient_after_success( $type, $target, $version_to );
 
-		// Rete di sicurezza: un update non dovrebbe mai disattivare un plugin
-		// gia' attivo (Plugin_Upgrader::upgrade() non tocca active_plugins), ma
-		// puo' succedere per cause esterne (plugin di sicurezza/hosting che
-		// disattivano su modifica file, un main file rinominato dalla nuova
-		// versione...). Se succede, si tenta una riattivazione nello stesso
-		// ambito di prima (rete o singolo sito); se anche questa fallisce, lo
-		// si segnala come esito distinto invece di dichiarare un successo pieno.
 		$active_after       = null;
-		$log_message        = null;
+		$log_message        = $version_note;
 		$reactivation_error = null;
 		if ( 'plugin' === $type ) {
 			$active_after = $was_network_active
 				? is_plugin_active_for_network( $target )
 				: is_plugin_active( $target );
 
-			if ( $was_active && ! $active_after ) {
-				$reactivated = activate_plugin( $target, '', $was_network_active );
-				if ( is_wp_error( $reactivated ) ) {
-					$reactivation_error = $reactivated->get_error_message();
-					$log_message        = sprintf(
-						/* translators: %s: messaggio d'errore restituito da activate_plugin(). */
-						__( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: %s', 'wp-health-check' ),
-						$reactivation_error
-					);
-				} else {
-					$active_after = $was_network_active
-						? is_plugin_active_for_network( $target )
-						: is_plugin_active( $target );
-					$log_message  = __( 'Plugin disattivato dall\'update e riattivato automaticamente.', 'wp-health-check' );
-				}
+			if ( isset( $restored['errors'][ $target ] ) ) {
+				$reactivation_error = $restored['errors'][ $target ];
+				$log_message        = sprintf(
+					/* translators: %s: messaggio d'errore restituito da activate_plugin(). */
+					__( 'Plugin aggiornato correttamente ma la riattivazione automatica e\' fallita: %s', 'wp-health-check' ),
+					$reactivation_error
+				);
+				// Lo stato letto dopo un activate_plugin() fallito puo' dire "attivo" (l'option e'
+				// scritta prima del controllo dell'output): la riga registra il fallimento.
+				$active_after = false;
+			} elseif ( in_array( $target, $restored['reactivated'], true ) ) {
+				$log_message = __( 'Plugin disattivato dall\'update e riattivato automaticamente.', 'wp-health-check' );
 			}
 		}
 
 		$log_id = WPHC_Update_Log::log_row( $correlation_id, $type, $target, $name, $version_from, $version_to, 'completed', $log_message, $active_after, $source );
 		WPHC_Update_Log::record_last_update( $type, $target, 'completed', $source );
 		self::release_update_lock();
+
+		// La pagina in cache puo' essere stata generata durante l'update (manutenzione, plugin spento).
+		if ( WPHC_Util::purge_page_cache() ) {
+			$extra['cache_purged'] = true;
+		}
 
 		if ( null !== $reactivation_error ) {
 			return array(
@@ -494,7 +551,7 @@ final class WPHC_Item_Updater {
 				'log_id' => $log_id,
 				'detail' => $log_message,
 				'http'   => 200,
-			);
+			) + $extra;
 		}
 
 		return array(
@@ -506,7 +563,84 @@ final class WPHC_Item_Updater {
 			'to'     => $version_to,
 			'log_id' => $log_id,
 			'http'   => 200,
+		) + $extra;
+	}
+
+	/**
+	 * Plugin attivi ora, come mappa file => attivo in rete (multisito).
+	 *
+	 * @return array<string, bool>
+	 */
+	private static function active_plugin_snapshot() {
+		$active = array_fill_keys( (array) get_option( 'active_plugins', array() ), false );
+		if ( is_multisite() ) {
+			foreach ( array_keys( (array) get_site_option( 'active_sitewide_plugins', array() ) ) as $file ) {
+				$active[ $file ] = true;
+			}
+		}
+
+		return $active;
+	}
+
+	/**
+	 * Stato attivo di un plugin nell'ambito indicato (rete o singolo sito), riletto dalle option
+	 * a ogni chiamata.
+	 *
+	 * @param string $file    Plugin file.
+	 * @param bool   $network True per l'attivazione di rete.
+	 * @return bool
+	 * @phpstan-impure
+	 */
+	private static function is_active_in_scope( $file, $network ) {
+		$active = self::active_plugin_snapshot();
+
+		return isset( $active[ $file ] ) && ( ! $network || $active[ $file ] );
+	}
+
+	/**
+	 * Riattiva i plugin di $expected non piu' attivi il cui file esiste ancora, registrando per
+	 * ognuno una riga 'reactivated' (active=1) o 'reactivation_failed' (active=NULL: il candidato
+	 * resta per /update/reactivate).
+	 *
+	 * @param array<string, bool> $expected       Plugin attesi attivi (file => in rete).
+	 * @param string              $correlation_id Correlation id dell'update.
+	 * @param string              $source         Origine dell'update.
+	 * @return array{reactivated: string[], errors: array<string, string>}
+	 */
+	private static function restore_active_plugins( array $expected, $correlation_id, $source ) {
+		$out = array(
+			'reactivated' => array(),
+			'errors'      => array(),
 		);
+		if ( ! $expected ) {
+			return $out;
+		}
+
+		$installed = get_plugins();
+		foreach ( $expected as $file => $network ) {
+			if ( ! isset( $installed[ $file ] ) || self::is_active_in_scope( $file, $network ) ) {
+				continue;
+			}
+
+			$activation = activate_plugin( $file, '', $network );
+			$now_active = self::is_active_in_scope( $file, $network );
+			$name       = $installed[ $file ]['Name'];
+			$version    = $installed[ $file ]['Version'];
+
+			if ( is_wp_error( $activation ) || ! $now_active ) {
+				$message                = is_wp_error( $activation )
+					? $activation->get_error_message()
+					: __( 'activate_plugin() non ha segnalato errori ma il plugin risulta ancora inattivo.', 'wp-health-check' );
+				$out['errors'][ $file ] = $message;
+				WPHC_Update_Log::log_row( $correlation_id, 'plugin', $file, $name, $version, null, 'reactivation_failed', $message, null, $source );
+				continue;
+			}
+
+			$out['reactivated'][] = $file;
+			WPHC_Update_Log::log_row( $correlation_id, 'plugin', $file, $name, $version, null, 'reactivated', null, true, $source );
+		}
+
+		return $out;
 	}
 
 	/**
@@ -650,6 +784,7 @@ final class WPHC_Item_Updater {
 		// dover aspettare il prossimo giro di cron.
 		wp_version_check( array(), true );
 		delete_transient( WPHC_Options::TRANSIENT_HEALTH_CACHE );
+		WPHC_Util::purge_page_cache();
 
 		$log_id = WPHC_Update_Log::log_row( $correlation_id, 'core', 'core', 'WordPress', $version_from, $version_to, 'completed', null, null, $source );
 		WPHC_Update_Log::record_last_update( 'core', 'core', 'completed', $source );
@@ -681,16 +816,28 @@ final class WPHC_Item_Updater {
 	 * In dry-run (?check=1) si salta il preflight (kill-switch/lock): e' una
 	 * lettura pura, nessuno stato del sito viene toccato.
 	 *
-	 * @param bool $dry_run True per elencare le discrepanze senza riattivare.
+	 * @param bool     $dry_run True per elencare le discrepanze senza riattivare.
+	 * @param string[] $only    Se non vuoto, solo questi plugin file (1.41.0: l'hub riattiva
+	 *                          solo i plugin toccati dall'update che ha appena verificato).
 	 * @return array<string, mixed> Esito interno. In caso di preflight fallito,
 	 *         le sole chiavi 'result' ('disabled'|'locked') e 'http' (403|409);
 	 *         altrimenti 'result' => 'ok', 'http' => 200, 'discrepancies',
 	 *         'reactivated', 'failed', 'results' (array di dettagli per elemento).
 	 */
-	private static function perform_reactivate( $dry_run = false ) {
+	private static function perform_reactivate( $dry_run = false, array $only = array() ) {
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
-		$candidates  = WPHC_Update_Log::get_reactivation_candidates();
+		$candidates = WPHC_Update_Log::get_reactivation_candidates();
+		if ( $only ) {
+			$candidates = array_values(
+				array_filter(
+					$candidates,
+					static function ( $candidate ) use ( $only ) {
+						return in_array( $candidate['target'], $only, true );
+					}
+				)
+			);
+		}
 		$all_plugins = get_plugins();
 
 		// Discrepanza vera: candidato "atteso attivo" secondo l'ultima riga di
@@ -831,6 +978,9 @@ final class WPHC_Item_Updater {
 			return new WP_Error( 'wphc_update_locked', __( 'Un altro aggiornamento e\' gia\' in corso.', 'wp-health-check' ), array( 'status' => 409 ) );
 		}
 
+		// Campi aggiunti in 1.41.0, presenti solo quando valorizzati (riattivazioni, cache svuotata).
+		$extra = array_intersect_key( $outcome, array_flip( array( 'reactivated', 'reactivation_errors', 'cache_purged' ) ) );
+
 		if ( 'updated' === $result ) {
 			return rest_ensure_response(
 				array(
@@ -841,7 +991,7 @@ final class WPHC_Item_Updater {
 					'from'    => $outcome['from'],
 					'to'      => $outcome['to'],
 					'log_id'  => $outcome['log_id'],
-				)
+				) + $extra
 			);
 		}
 
@@ -876,7 +1026,7 @@ final class WPHC_Item_Updater {
 					'to'      => $outcome['to'],
 					'log_id'  => $outcome['log_id'],
 					'detail'  => $outcome['detail'],
-				)
+				) + $extra
 			);
 		}
 
@@ -890,7 +1040,7 @@ final class WPHC_Item_Updater {
 			}
 		}
 
-		return rest_ensure_response( $response );
+		return rest_ensure_response( $response + $extra );
 	}
 
 	/**
@@ -958,7 +1108,8 @@ final class WPHC_Item_Updater {
 	 */
 	public static function route_reactivate( WP_REST_Request $request ) {
 		$dry_run = WPHC_Rest::request_wants_check( $request );
-		$outcome = self::perform_reactivate( $dry_run );
+		$only    = array_values( array_filter( (array) $request->get_param( 'plugins' ), 'is_string' ) );
+		$outcome = self::perform_reactivate( $dry_run, $only );
 
 		$http = isset( $outcome['http'] ) ? (int) $outcome['http'] : 200;
 

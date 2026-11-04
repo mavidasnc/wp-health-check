@@ -1095,6 +1095,10 @@ Protetta dal token; l'esecuzione reale richiede inoltre il kill-switch e il
 lock anti-concorrenza condivisi con le altre rotte di update. Il dry-run
 (`?check=1`) resta invece sola lettura.
 
+Dalla 1.41.0 il body puo' indicare `{"plugins": ["a/a.php", ...]}`: si
+considerano solo quei candidati, gli altri restano spenti e candidati. L'hub
+(>= 0.273.0) lo usa dopo ogni update per riattivare solo i plugin toccati.
+
 ```bash
 curl -X POST 'https://esempio.com/blog/wp-json/health-check/v1/update/reactivate' \
   -H 'Authorization: Bearer hJf6MAL91ICKb25IcgpQidxHfxYBPOuFwn1rOa3qQLI'
@@ -1518,19 +1522,38 @@ un'opzione per sito anziché un vincolo fisso.
    aggiornato" anche per elementi che hanno ancora un update pendente. Su
    `rolled_back`/`failed` il transient non viene toccato: l'update è ancora
    effettivamente pendente, o lo stato è incerto.
-7. **Solo per i plugin**, sull'esito `completed`: verifica che un plugin
-   già attivo prima dell'update resti attivo dopo
-   (`is_plugin_active()`/`is_plugin_active_for_network()` per il caso
-   multisite). In teoria `Plugin_Upgrader::upgrade()` non tocca mai
-   l'opzione `active_plugins`, ma una disattivazione può comunque avvenire
-   per cause esterne (plugin di sicurezza/hosting che disattivano su
-   modifica file, un main file rinominato dalla nuova versione...). Se il
-   plugin risulta disattivato, si tenta una riattivazione automatica nello
-   stesso ambito di prima (`activate_plugin( $target, '', $was_network_active )`);
-   se anche questa fallisce, la rotta risponde `updated: true` +
-   `result: "reactivation_failed"` + `detail` con il messaggio d'errore
-   (stesso pattern "risultato + dettaglio" di `not_updatable`), invece di
-   dichiarare un successo pieno che nasconderebbe il problema.
+7. **Solo per i plugin, in ogni esito** (dalla 1.41.0; prima solo su
+   `completed`): prima dell'update l'agent fotografa i plugin attivi
+   (`active_plugins` e, in multisito, `active_sitewide_plugins`); dopo,
+   riattiva nello stesso ambito ogni plugin attivo prima e spento ora che ha
+   ancora il file, con una riga di log `reactivated` o `reactivation_failed`
+   (testo dell'errore nel messaggio, `active=NULL` cosi' il candidato resta per
+   `/update/reactivate`). Un plugin senza file (temp-backup che il core
+   ripristina solo allo shutdown) non si tenta: lo riprende `/update/reactivate`,
+   che l'hub chiama dopo ogni update (hub >= 0.273.0). Se fallisce la
+   riattivazione del plugin aggiornato su un update riuscito, la rotta risponde
+   `updated: true` + `result: "reactivation_failed"` + `detail`; la risposta ha
+   anche `reactivated` e `reactivation_errors` quando valorizzati.
+   Perche': fuori da WP-Cron `Plugin_Upgrader::deactivate_plugin_before_upgrade()`
+   disattiva il plugin prima di installarlo (in wp-admin lo riattiva la pagina
+   di update). Dalla 1.41.0 l'update sincrono di un plugin gira come in cron
+   (filtro `wp_doing_cron` attorno a `upgrade()`), quindi il core non lo
+   disattiva e mette il sito in manutenzione per i secondi dell'install; un
+   `.maintenance` lasciato da un install fallito viene tolto subito se non
+   c'era prima. Un plugin spento ma ancora candidato di `/update/reactivate`
+   conta come attivo anche per un nuovo tentativo, che quindi non cancella la
+   prova con `active=0` (caso codiceedizioni.it del 03/11/2026), ma solo se
+   l'ultima riga di log del plugin e' un fallimento (`failed`, `rolled_back`,
+   `reactivation_failed`).
+8. **Versione installata piu' recente di quella annunciata** (dalla 1.41.0):
+   alcuni pacchetti premium (ACF PRO via ACF Connect) servono l'ultima
+   versione, non quella del transient. Se la versione installata e' maggiore
+   di quella di partenza e almeno pari a quella annunciata, l'esito e'
+   `updated` con `to` uguale alla versione reale e un messaggio nel log;
+   prima era `failed`.
+9. **Cache di pagina** (dalla 1.41.0): dopo un update riuscito, se LiteSpeed
+   Cache e' attivo (azione `litespeed_purge_all`), l'agent svuota la cache e
+   la risposta ha `cache_purged: true`.
 
 ### Core: specificità e avvertenze
 
