@@ -1,14 +1,22 @@
 # CLAUDE.md
 
-> **Documentazione spostata**: la cartella `docs/` di questo progetto è stata unificata in `../__docs/wp-health-check/` (riorganizzazione del 2026-10-13). I percorsi qui sotto puntano già alla nuova posizione.
-
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+> **Documentazione spostata**: la cartella `docs/` di questo progetto è stata unificata in `../__docs/wp-health-check/` (riorganizzazione del 2026-10-13). I percorsi qui sotto puntano già alla nuova posizione.
 
 ## What this is
 
 A WordPress must-use plugin fleet agent, distributed to client sites as a single self-contained PHP file (`mu-plugins/wp-health-check.php`, no runtime dependencies) via a public GitHub repo, and capable of self-updating from signed releases. This repository is the source and tooling repo around that one file.
 
 **Since 1.39.0 the source lives in `src/` and the distributed file is GENERATED.** `src/` holds 21 `final` classes with static methods (prefix `WPHC_`) plus `WPHC_CLI_Command`, `header.php`, `constants.php` and `boot.php`; `bin/build.php` concatenates them in the order of `src/manifest.php` and, for the release, strips the comments. `mu-plugins/wp-health-check.php` must never be edited by hand: change `src/` and rebuild. Layout, build gates, strip rules and the release checklist are in [src/README.md](src/README.md) (the authoritative source for the build); the test suite is described in [tests/README.md](tests/README.md). Only the generated `mu-plugins/wp-health-check.php` and `bin/generate-keys.php` are ever deployed anywhere.
+
+Other things in this repo, each with its own README and NOT part of the build:
+
+- `lite/wphc-lite.php` — standalone agent for **non-WordPress** sites (e.g. Astro on Apache/LiteSpeed): answers the same `/wp-json/health-check/v1/` contract for enroll/rotate/revoke/ping/health/detail/server/thumbnail only, file-based state outside the web root, own version `lite-X.Y.Z` (`WPHC_LITE_VERSION`). It deliberately does NOT reproduce the plugin's throttle double-evaluation bug. Tests need `ext-sodium`, no WordPress, run in Docker (see `lite/README.md`).
+- `installer/` — a normal (non-mu) plugin that, on activation, downloads the latest signed release from GitHub, verifies SHA-256 + Ed25519 and installs the mu-plugin; also used to upgrade sites older than 1.35.0, which cannot self-update.
+- `http/wp-health-check.http` — REST Client requests for the routes; real tokens/hosts go only in the git-ignored `http/*.local.http`.
+
+Cross-repo dependencies: the e2e suite imports the hub's vendored Python code from `../hub-cli/_vendor/services/`, and `tests/tools/gen_contract_vectors.py` reads `../hub/` (read-only) to regenerate `tests/fixtures/contract-vectors.json` whenever the hub's `enroll.py`, `fleet/proxy.py`, `fleet/webhook.py` or `scripts/sign_release.py` change. Those vectors also pin `lite/`.
 
 Full architecture, protocol, and security rationale live in [README.md](README.md) — read it before making non-trivial changes, since almost every design decision there (why mu-plugins, why no `wp-config.php` writes, the enroll signature scheme, the token model, the self-update ordering) is deliberate and documented with its trade-offs. Do not treat unfamiliar patterns in the code as accidental; check README.md first. The design of the move to classes (class map, decisions D-1..D-9, preserved bugs) is in `../__docs/wp-health-check/refactoring-classi.md`.
 
@@ -29,7 +37,21 @@ npx @wordpress/env start  # wp-env (tests-cli container); the tests load a COPY 
 python -I tests/e2e/run_all.py   # e2e with a real WordPress and the hub's vendored Python code
 ```
 
-Test commands for single suites, the PHP 7.4 matrix (`tests/php74/`), golden snapshots, contract vectors and the e2e upgrade test from 1.38.1 are in `tests/README.md` and `tests/e2e/README.md`. Always rebuild (`composer run build`) after touching `src/` and commit the regenerated `mu-plugins/wp-health-check.php` together with the source: the PHPUnit bootstrap refuses to start if `mu-plugins/` differs from a fresh strip build.
+Running a subset (one testsuite per test file; `phpunit tests/test-enroll.php` does NOT work because file and class names differ):
+
+```bash
+npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit --testsuite enroll
+npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit --filter test_rotate_grace_window
+bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # throwaway container, PHP 7.4 / 8.1 / 8.3
+EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1   # rewrite goldens (only after deciding the change), then git diff tests/fixtures/golden
+docker run --rm -v "$PWD:/app" -w /app php:8.3-cli vendor/bin/phpunit -c lite/phpunit.xml.dist   # lite suite
+```
+
+The wp-env database is shared: never run two `phpunit` at once. `run-phpunit-docker.sh` serializes runs with the `C:/tmp/wphc-phpunit.lock` directory lock; anything else that runs the suite must take the same lock. On Windows, Git Bash rewrites `/...` arguments (use `MSYS_NO_PATHCONV=1` or PowerShell), host env vars do not reach the container (pass them inside `bash -c '...'` or with `docker exec -e`), and `npx @wordpress/env` silently exits 1 on Node 26 (workaround in `tests/README.md`, section 1).
+
+The PHP 7.4 matrix (`tests/php74/`, `composer run test:check-locks`), golden snapshot normalization, contract vectors and the e2e upgrade test from 1.38.1 are detailed in `tests/README.md` and `tests/e2e/README.md`. Always rebuild (`composer run build`) after touching `src/` and commit the regenerated `mu-plugins/wp-health-check.php` together with the source: the PHPUnit bootstrap refuses to start if `mu-plugins/` differs from a fresh strip build.
+
+A version bump touches TWO lines that the build requires to match: `Version:` in `src/header.php` and `WP_HEALTH_CHECK_VERSION` in `src/constants.php`.
 
 The committed `mu-plugins/wp-health-check.php` is the strip build, the one that is signed and published. Before signing or publishing ANY file, check that it is not the dev build: `grep -L WPHC-BUILD mu-plugins/wp-health-check.php` must PRINT the file name (`-L` lists files that do NOT contain the word). Empty output means the `// WPHC-BUILD: dev` marker is present: do not sign, do not publish.
 

@@ -192,13 +192,14 @@ container `tests-cli` (come `C:/tmp/wphc-run-phpunit.sh`, fuori dal repo) usa lo
 
 ## phpcs e phpstan non coprono `tests/`
 
-`phpcs.xml.dist` e `phpstan.neon.dist` analizzano solo `mu-plugins/` e `bin/` e `tests/` e'
+`phpcs.xml.dist` e `phpstan.neon.dist` analizzano solo `src/` e `bin/` (dalla 1.39.0; il file generato
+`mu-plugins/wp-health-check.php` non si analizza, si analizza il sorgente da cui nasce) e `tests/` e'
 lasciata fuori di proposito: con le regole del plugin (WordPress-Extra + WordPress-Docs +
 PrefixAllGlobals) i file di test darebbero 18 errori e 48 avvisi (nomi file `test-*.php`,
 prefissi globali, docblock), e phpstan richiederebbe gli stub della test library. Con
-`composer run lint` il risultato per `mu-plugins/` e `bin/` non cambia.
-Nota: `composer run analyse` con il `memory_limit` di default dell'host (128M) va in crash
-anche prima di questa suite; funziona con `vendor/bin/phpstan analyse --memory-limit=4G`.
+`composer run lint` il risultato per `src/` e `bin/` non cambia.
+Nota: `composer run analyse` passa gia' `--memory-limit=4G`; un `vendor/bin/phpstan analyse` lanciato a mano
+con il `memory_limit` di default dell'host (128M) va in crash: aggiungere `--memory-limit=4G`.
 
 ## 3. Matrice PHP (7.4, 8.1, 8.3)
 
