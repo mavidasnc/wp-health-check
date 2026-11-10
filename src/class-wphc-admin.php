@@ -51,7 +51,8 @@ final class WPHC_Admin {
 	 * richiesta loopback all'endpoint REST richiesto, aggiungendo il bearer token
 	 * (lato server: non viene mai esposto al browser) e un cache-buster "_cb"
 	 * casuale, e restituisce status/corpo/latenza da mostrare nella modale. Solo
-	 * endpoint GET dati in whitelist: nessun effetto collaterale.
+	 * endpoint GET dati in whitelist: nessun effetto collaterale. Dalla 1.41.1, con
+	 * protocollo >= 2, la richiesta porta anche la firma X-WPHC-* (prima: 401).
 	 */
 	public static function ajax_test_endpoint() {
 		check_ajax_referer( 'wphc_test_endpoint' );
@@ -113,6 +114,18 @@ final class WPHC_Admin {
 		$token   = (string) get_option( WPHC_Options::OPT_TOKEN, '' );
 		if ( '' !== $token ) {
 			$headers['Authorization'] = 'Bearer ' . $token;
+		}
+
+		// Con protocollo >= 2 le rotte dati pretendono anche la firma anti-replay: stessa stringa canonica
+		// di WPHC_Guard::verify_request_signature() (rotta senza query string, quindi _cb e fresh esclusi).
+		if ( '' !== $token && (int) get_option( WPHC_Options::OPT_PROTOCOL, 1 ) >= 2 ) {
+			$timestamp = (string) time();
+			$nonce     = bin2hex( random_bytes( 16 ) );
+			$canonical = "GET\n/health-check/v1/" . $endpoint['path'] . "\n" . hash( 'sha256', '' ) . "\n" . $timestamp . "\n" . $nonce;
+
+			$headers['X-WPHC-Timestamp'] = $timestamp;
+			$headers['X-WPHC-Nonce']     = $nonce;
+			$headers['X-WPHC-Signature'] = WPHC_Crypto::base64url_encode( hash_hmac( 'sha256', $canonical, $token, true ) );
 		}
 
 		$start    = microtime( true );

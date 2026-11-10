@@ -725,9 +725,52 @@ class WPHC_Test_Admin extends WPHC_Admin_Test_Case {
 			$this->assertSame( '1', $query['fresh'] );
 		}
 		$this->assertSame( 'Bearer ' . $token, $sent['args']['headers']['Authorization'] );
+		// Protocollo 1: nessuna firma X-WPHC-*, la richiesta e' quella di sempre.
+		$this->assertSame( array( 'Authorization' ), array_keys( $sent['args']['headers'] ) );
 		$this->assertSame( 20, $sent['args']['timeout'] );
 		// Il campo "url" della risposta e' quello richiesto.
 		$this->assertSame( $sent['url'], $data['url'] );
+	}
+
+	/**
+	 * Dalla 1.41.1, con protocollo 2 la loopback porta anche X-WPHC-Timestamp/Nonce/Signature: prima
+	 * partiva con il solo Bearer e WPHC_Auth::require_token() rispondeva 401, contando un fallimento del
+	 * throttle sull'IP del server. Gli header usciti si riverificano con il controllo vero, non con una
+	 * copia della formula: la richiesta deve passare senza alcun fallimento registrato.
+	 *
+	 * @dataProvider endpoint_provider
+	 *
+	 * @param string $key   Chiave inviata dal browser.
+	 * @param string $path  Percorso REST atteso sotto health-check/v1/.
+	 * @param bool   $fresh Se deve esserci fresh=1 (non entra nella firma).
+	 */
+	public function test_ajax_test_endpoint_signs_in_protocol_v2( $key, $path, $fresh ) {
+		unset( $fresh );
+		$token = 'tok-ajax-v2-secret-0001';
+		$this->seed_enrolled_v2( $token );
+		$this->login_as( 'administrator' );
+		$this->fake_loopback( 200, '{"status":"ok"}' );
+
+		$outcome = $this->run_ajax( 'wphc_test_endpoint', array( 'endpoint' => $key ) );
+
+		$this->assertTrue( $outcome['json']['success'] );
+		$this->assertStringNotContainsString( $token, $outcome['output'] );
+		$this->assertCount( 1, $this->http_requests );
+		$headers = $this->http_requests[0]['args']['headers'];
+		$this->assertSame( array( 'Authorization', 'X-WPHC-Timestamp', 'X-WPHC-Nonce', 'X-WPHC-Signature' ), array_keys( $headers ) );
+		$this->assertSame( 'Bearer ' . $token, $headers['Authorization'] );
+		$this->assertSame(
+			self::hmac_signature( $token, 'GET', self::NS . '/' . $path, '', $headers['X-WPHC-Timestamp'], $headers['X-WPHC-Nonce'] ),
+			$headers['X-WPHC-Signature']
+		);
+
+		// La stessa richiesta, ricevuta dal sito: autorizzata e nessun fallimento contato.
+		$request = new WP_REST_Request( 'GET', self::NS . '/' . $path );
+		foreach ( $headers as $name => $value ) {
+			$request->set_header( $name, $value );
+		}
+		$this->assertTrue( WPHC_Auth::require_token( $request ) );
+		$this->assertSame( 0, $this->throttle_failures() );
 	}
 
 	/**
@@ -745,6 +788,7 @@ class WPHC_Test_Admin extends WPHC_Admin_Test_Case {
 		$this->assertSame( 401, $first['json']['data']['status'] ); // Lo status del sito e' riportato com'e'.
 		$this->assertCount( 2, $this->http_requests );
 		$this->assertArrayNotHasKey( 'Authorization', $this->http_requests[0]['args']['headers'] );
+		$this->assertArrayNotHasKey( 'X-WPHC-Signature', $this->http_requests[0]['args']['headers'] );
 		$this->assertNotSame( $first['json']['data']['url'], $second['json']['data']['url'] );
 	}
 

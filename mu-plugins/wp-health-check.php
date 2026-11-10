@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.41.0
+ * Version:     1.41.1
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 
 
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.41.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.41.1' );
 }
 
 
@@ -8156,6 +8156,7 @@ final class WPHC_Admin {
 
 
 
+
 	public static function ajax_test_endpoint() {
 		check_ajax_referer( 'wphc_test_endpoint' );
 		if ( ! current_user_can( 'manage_options' ) ) {
@@ -8216,6 +8217,18 @@ final class WPHC_Admin {
 		$token   = (string) get_option( WPHC_Options::OPT_TOKEN, '' );
 		if ( '' !== $token ) {
 			$headers['Authorization'] = 'Bearer ' . $token;
+		}
+
+		
+		
+		if ( '' !== $token && (int) get_option( WPHC_Options::OPT_PROTOCOL, 1 ) >= 2 ) {
+			$timestamp = (string) time();
+			$nonce     = bin2hex( random_bytes( 16 ) );
+			$canonical = "GET\n/health-check/v1/" . $endpoint['path'] . "\n" . hash( 'sha256', '' ) . "\n" . $timestamp . "\n" . $nonce;
+
+			$headers['X-WPHC-Timestamp'] = $timestamp;
+			$headers['X-WPHC-Nonce']     = $nonce;
+			$headers['X-WPHC-Signature'] = WPHC_Crypto::base64url_encode( hash_hmac( 'sha256', $canonical, $token, true ) );
 		}
 
 		$start    = microtime( true );
