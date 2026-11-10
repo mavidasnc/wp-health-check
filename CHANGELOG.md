@@ -7,6 +7,16 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.41.1] - 2026-11-10
+
+### Fixed
+
+- **"Test endpoint" nella tab Site Health in protocollo 2**: la loopback di `WPHC_Admin::ajax_test_endpoint()` partiva con il solo `Authorization: Bearer`, quindi su un sito enrollato in protocollo 2 (`wp_health_check_protocol >= 2`) ogni prova rispondeva `401 wphc_unauthorized` e contava un fallimento del throttle sull'IP del server stesso (10 prove in 5 minuti = `429` per quell'IP). Ora, con protocollo >= 2, la richiesta porta anche `X-WPHC-Timestamp`, `X-WPHC-Nonce` e `X-WPHC-Signature`, con la stessa stringa canonica verificata da `WPHC_Guard::verify_request_signature()` (rotta senza query string: `_cb` e `fresh` non entrano nella firma). In protocollo 1 la richiesta resta identica. Il monitoraggio dall'hub non era toccato.
+
+### Changed
+
+- Test: nuovo `test_ajax_test_endpoint_signs_in_protocol_v2` (le otto voci della whitelist: header usciti riverificati con `WPHC_Auth::require_token()`, nessun fallimento del throttle); `test_ajax_test_endpoint_whitelist` fissa che in protocollo 1 parte il solo `Authorization`.
+
 ## [1.41.0] - 2026-11-04
 
 Un update sincrono dall'hub (`POST /update/plugin`) non lascia piu' spento un plugin. Caso reale: il 03/11 su www.codiceedizioni.it ACF PRO e' rimasto disattivato dopo l'update delle 12:54 e il tema, che lo usa nell'header, andava in fatale con HTTP 200. Dal log del sito: transient con 6.8.10, ACF Connect ha installato la 6.8.11, l'agent ha registrato `failed` e non ha riattivato il plugin, che il core aveva disattivato prima dell'install.
