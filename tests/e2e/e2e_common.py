@@ -11,6 +11,8 @@ Che cosa contiene:
     falso database Supabase in memoria al posto di quello vero e un adattatore di trasporto
     che porta le richieste https://localhost:8890 sulla porta HTTP del container;
   - piccoli strumenti: registro dei controlli, confronto di trascrizioni, docker exec per WP-CLI.
+  - la copia nativa del core di WordPress in un volume Docker (ensure_native_core): senza, su Windows ogni
+    richiesta al sito costa un paio di secondi perche' PHP rilegge il core dal disco dell'host.
 
 Gli script si lanciano con `python -I`: la modalita' isolata non aggiunge la cartella dello
 script a sys.path ne' il site-packages dell'utente, quindi qui si aggiungono esplicitamente
@@ -313,8 +315,12 @@ def install_plugin(contents: bytes | str) -> None:
     os.replace(tmp, WORK_PLUGIN)
 
 
-def loaded_code_mismatch(state: dict, contents: bytes) -> list[str]:
-    """Motivi per cui il codice CARICATO dal PHP del sito non e' ancora quello di `contents` (vuoto = coincide)."""
+def loaded_code_mismatch(state: dict, contents: bytes, opcache_timestamp: bool = True) -> list[str]:
+    """Motivi per cui il codice CARICATO dal PHP del sito non e' ancora quello di `contents` (vuoto = coincide).
+
+    Con opcache_timestamp=False non si guarda la data dello script in opcache: restano la versione in memoria, lo
+    sha256 del file incluso e la provenienza dei simboli, cioe' la prova che il PHP esegue GIA' quel codice.
+    """
     reasons = []
     version = plugin_version(contents.decode("utf-8"))
     if state.get("loaded_version") != version:
@@ -325,7 +331,7 @@ def loaded_code_mismatch(state: dict, contents: bytes) -> list[str]:
         reasons.append(f"sha256 del file caricato {state.get('loaded_sha256')} (atteso {sha256_hex(contents)})")
     if state.get("loaded_symbol_matches") is False:
         reasons.append(f"i simboli del plugin sono dichiarati da {state.get('loaded_symbol_file')}, non dal file installato")
-    if (state.get("opcache") or {}).get("fresh") is False:
+    if opcache_timestamp and (state.get("opcache") or {}).get("fresh") is False:
         reasons.append("opcache serve ancora uno script compilato prima dell'ultima modifica del file")
     return reasons
 
@@ -506,7 +512,12 @@ class Support:
         return f"{BASE_URL}/wp-json/wphc-e2e/v1{path}"
 
     def wait_ready(self, timeout: int = 120) -> None:
-        """Attende che l'ambiente risponda (e che il mu-plugin di supporto sia caricato)."""
+        """Attende che l'ambiente risponda (e che il mu-plugin di supporto sia caricato).
+
+        Prima porta il core di WordPress sul filesystem del container (vedi ensure_native_core): e' il punto da cui
+        passano tutti gli script, quindi non serve un passo in piu' da ricordare.
+        """
+        ensure_native_core()
         deadline = time.time() + timeout
         last = ""
         while time.time() < deadline:
@@ -857,14 +868,25 @@ def diff_transcripts(left, right, path: str = "") -> list[str]:
 # 10. WP-CLI nel container
 # ---------------------------------------------------------------------------
 
-def cli_container() -> str:
-    """Nome del container "cli" dell'ambiente e2e (wp-env-wp-health-check-e2e-<hash>-cli-1)."""
+def e2e_container(service: str) -> str:
+    """Nome del container di un servizio dell'ambiente e2e (wp-env-wp-health-check-e2e-<hash>-<servizio>-1)."""
     out = subprocess.run(["docker", "ps", "--format", "{{.Names}}", "--filter", "name=wp-env-wp-health-check-e2e"],
                          capture_output=True, text=True, check=True).stdout.split()
     for name in out:
-        if name.endswith("-cli-1"):
+        if name.endswith(f"-{service}-1"):
             return name
-    raise SystemExit("Container cli dell'ambiente e2e non trovato: l'ambiente e' avviato? (tests/e2e/README.md)")
+    raise SystemExit(f"Container {service} dell'ambiente e2e non trovato: l'ambiente e' avviato? (tests/e2e/README.md)")
+
+
+_CLI_CONTAINER: str | None = None
+
+
+def cli_container() -> str:
+    """Nome del container "cli" dell'ambiente e2e, cercato una volta sola (ogni `docker ps` costa circa un secondo)."""
+    global _CLI_CONTAINER
+    if _CLI_CONTAINER is None:
+        _CLI_CONTAINER = e2e_container("cli")
+    return _CLI_CONTAINER
 
 
 def wp_cli(*args: str, timeout: int = 120) -> tuple[int, str, str]:
@@ -872,3 +894,113 @@ def wp_cli(*args: str, timeout: int = 120) -> tuple[int, str, str]:
     cmd = ["docker", "exec", "-w", "/var/www/html", cli_container(), "wp", *args]
     done = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, encoding="utf-8")
     return done.returncode, done.stdout, done.stderr
+
+
+# ---------------------------------------------------------------------------
+# 11. Core di WordPress sul filesystem del container (copia nativa)
+# ---------------------------------------------------------------------------
+# wp-env monta il core di WordPress dalla cartella ~/.wp-env/<progetto>/WordPress dell'host. Su Windows quel bind mount
+# passa dal protocollo 9p: ogni file PHP letto (o anche solo controllato da opcache, ogni 2 secondi) costa una decina di
+# millisecondi, e WordPress ne usa diverse centinaia a richiesta. Misurato: 2 secondi di mediana per richiesta e circa
+# 10 secondi per ogni comando WP-CLI, cioe' 35 minuti per i tre script (e la cache di 60 secondi di /health che scade a
+# meta' di hub_contract.py, facendolo fallire). Qui il core viene copiato UNA volta in un volume Docker e i container
+# "wordpress" e "cli" vengono ricreati con quel volume al posto del bind mount, usando il docker-compose.yml generato
+# da wp-env piu' un file di override: stesse immagini, stessa configurazione, stesso database. Resta montata dall'host
+# solo la cartella mu-plugins (tests/e2e/.work/mu-plugins), che gli script devono poter riscrivere.
+#
+# Un nuovo `wp-env start` ricrea i container con il bind mount: alla prima esecuzione successiva questa funzione se ne
+# accorge e li riporta sul volume (una decina di secondi). La copia si rifa' da sola quando cambiano il wp-config.php
+# o la versione di WordPress (impronta nel volume). WPHC_E2E_NATIVE=0 la disattiva; WPHC_E2E_NATIVE_REFRESH=1 la rifa'.
+
+NATIVE_STAMP = ".wphc-native-stamp"
+NATIVE_LAYOUT = "1"
+NATIVE_OVERRIDE = WORK_DIR / "native-compose.override.yml"
+
+
+def _docker(*args: str, check: bool = True, cwd: Path | None = None, timeout: int = 900) -> subprocess.CompletedProcess:
+    """Esegue `docker <args>` e restituisce l'esito (stdout e stderr come testo)."""
+    return subprocess.run(["docker", *args], capture_output=True, text=True, encoding="utf-8", check=check, cwd=cwd, timeout=timeout)
+
+
+def _native_key(core_dir: Path) -> str:
+    """Impronta della copia: disposizione + versione di WordPress + wp-config.php, letti dall'host."""
+    digest = hashlib.sha256()
+    for relative in ("wp-includes/version.php", "wp-config.php"):
+        digest.update((core_dir / relative).read_bytes())
+    return f"{NATIVE_LAYOUT} {digest.hexdigest()}"
+
+
+def ensure_native_core() -> None:
+    """Porta il core di WordPress dell'ambiente e2e su un volume Docker, se non lo e' gia' (vedi il commento di sezione).
+
+    Se l'ambiente non e' quello di wp-env o un passo non riesce lo dice e lascia proseguire: gli script girano comunque,
+    solo piu' lentamente. Un ambiente rimasto a meta' (container ricreati ma sito non raggiungibile) lo segnala subito
+    dopo wait_ready(), e si rimette a posto con un nuovo `wp-env start --config=.wp-env.e2e.json`.
+    """
+    if os.environ.get("WPHC_E2E_NATIVE", "1") == "0":
+        return
+    try:
+        wordpress = e2e_container("wordpress")
+        cli = e2e_container("cli")
+        info = json.loads(_docker("inspect", wordpress).stdout)[0]
+        labels = info["Config"]["Labels"]
+        project = labels["com.docker.compose.project"]
+        compose_dir = Path(labels["com.docker.compose.project.working_dir"])
+        base_compose = compose_dir / "docker-compose.yml"
+        core_dir = compose_dir / "WordPress"
+        if not base_compose.is_file() or not (core_dir / "wp-config.php").is_file():
+            print(f"[e2e] copia nativa saltata: {compose_dir} non e' una cartella di wp-env", flush=True)
+            return
+        volume = "wphc-native-" + re.sub(r"[^a-zA-Z0-9_.-]", "-", project.removeprefix("wp-env-")) + "-wp"
+        key = _native_key(core_dir)
+        refresh = os.environ.get("WPHC_E2E_NATIVE_REFRESH") == "1"
+        mount = next((m for m in info["Mounts"] if m["Destination"] == "/var/www/html"), {})
+        on_volume = mount.get("Type") == "volume" and mount.get("Name") == volume
+
+        # Gia' sul volume e con l'impronta giusta: niente da fare (un solo `docker exec`).
+        if on_volume and not refresh:
+            stamp = _docker("exec", wordpress, "cat", f"/var/www/html/{NATIVE_STAMP}", check=False)
+            if stamp.returncode == 0 and stamp.stdout == key:
+                return
+
+        # 1. Copia nel volume (solo se l'impronta non coincide), con un container di servizio della stessa immagine.
+        # L'impronta si scrive per ultima: una copia interrotta a meta' non risulta mai aggiornata.
+        owner = json.loads(_docker("inspect", cli).stdout)[0]["Config"]["User"] or "root"
+        copy_script = (
+            "set -eu; "
+            f'if [ -z "$REFRESH" ] && [ -f /dst/{NATIVE_STAMP} ] && [ "$(cat /dst/{NATIVE_STAMP})" = "$KEY" ]; then exit 0; fi; '
+            "find /dst -mindepth 1 -delete; "
+            "tar -C /src --exclude=./wp-content/debug.log -cf - . | tar -C /dst -xf -; "
+            "mkdir -p /dst/wp-content/mu-plugins /dst/wp-content/uploads; "
+            'chown -R "$OWNER" /dst; '
+            f'printf %s "$KEY" > /dst/{NATIVE_STAMP}; chown "$OWNER" /dst/{NATIVE_STAMP}'
+        )
+        print("[e2e] copia nativa: aggancio wordpress e cli al volume Docker del core (la copia si fa solo la prima volta, o quando cambia)...", flush=True)
+        _docker(
+            "run", "--rm", "--user", "root", "--entrypoint", "sh",
+            "-v", f"{core_dir}:/src:ro", "-v", f"{volume}:/dst",
+            "-e", f"KEY={key}", "-e", f"OWNER={owner}", "-e", f"REFRESH={'1' if refresh else ''}",
+            info["Config"]["Image"], "-c", copy_script,
+        )
+
+        # 2. Container "wordpress" e "cli" ricreati con il volume al posto del bind mount del core. Se erano gia' sul
+        # volume (impronta cambiata o copia rifatta) basta riavviarli: opcache non deve servire il codice vecchio.
+        if on_volume:
+            _docker("restart", wordpress, cli)
+        else:
+            WORK_DIR.mkdir(parents=True, exist_ok=True)
+            NATIVE_OVERRIDE.write_text(
+                "# Generato da tests/e2e/e2e_common.py (ensure_native_core): il core di WordPress su un volume Docker.\n"
+                "services:\n"
+                f"  wordpress:\n    volumes:\n      - '{volume}:/var/www/html'\n"
+                f"  cli:\n    volumes:\n      - '{volume}:/var/www/html'\n"
+                f"volumes:\n  {volume}:\n    external: true\n",
+                encoding="utf-8",
+            )
+            _docker("compose", "-p", project, "-f", str(base_compose), "-f", str(NATIVE_OVERRIDE),
+                    "up", "-d", "--no-deps", "--no-build", "wordpress", "cli", cwd=compose_dir)
+        global _CLI_CONTAINER
+        _CLI_CONTAINER = None
+    except (subprocess.SubprocessError, OSError, KeyError, IndexError, ValueError) as exc:
+        detail = (getattr(exc, "stderr", "") or str(exc)).strip().splitlines()
+        print(f"[e2e] copia nativa NON riuscita, proseguo con il core letto dall'host (lento): {detail[-1] if detail else exc}", flush=True)

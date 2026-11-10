@@ -7,6 +7,15 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Test molto piu' veloci su Windows (nessuna modifica al plugin)**: WordPress e `vendor/` non si leggono piu' dal disco dell'host attraverso il bind mount di Docker Desktop (protocollo 9p, circa 10 ms a file) ma da volumi Docker, copiati una volta e riallineati da soli quando cambiano. `tests/tools/run-phpunit-docker.sh`: suite completa su PHP 8.1 da 683 s a 86 s (`WPHC_NATIVE=0` per farne a meno, `WPHC_NATIVE_REFRESH=1` per rifare la copia); nel volume c'e' gia' `wp-content/mu-plugins` scrivibile. E2E: `e2e_common.ensure_native_core()` ricrea i container `wordpress` e `cli` di wp-env con il core su volume, `run_all.py` da circa 35 minuti a meno di 3 (`WPHC_E2E_NATIVE=0`, `WPHC_E2E_NATIVE_REFRESH=1`). Dettagli e misure in `tests/README.md` ("Copia nativa") e `tests/e2e/README.md`.
+- `phpcs.xml.dist`: cache dei risultati (`.phpcs-cache`, ignorata da git): `composer run lint` da circa 40 s a 3 s sui run successivi.
+
+### Fixed
+
+- **`tests/e2e/hub_contract.py` non dipende piu' dalla velocita' dell'ambiente**: il controllo sulla cache di `/health` falliva (59/60) solo perche' il blocco durava piu' dei 60 secondi della cache; quello sul codice caricato dopo il self-update passava solo perche' ogni richiesta costava 2 secondi. Ora versione in memoria e sha256 si verificano subito, la data dello script in opcache entro la rivalidazione (61 controlli).
+
 ## [1.41.1] - 2026-11-10
 
 ### Fixed

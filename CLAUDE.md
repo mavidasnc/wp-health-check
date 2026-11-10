@@ -47,6 +47,8 @@ EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1  
 docker run --rm -v "$PWD:/app" -w /app php:8.3-cli vendor/bin/phpunit -c lite/phpunit.xml.dist   # lite suite
 ```
 
+On Windows always run the suite with `bash tests/tools/run-phpunit-docker.sh <php>` (also for 8.1): it reads WordPress and `vendor/` from Docker volumes instead of the host disk ("Copia nativa" in `tests/README.md`), about 1.5 minutes instead of 11; the `tests-cli` commands above give the same result but are slow. The e2e scripts do the same for the WordPress core by themselves (`tests/e2e/README.md`). Never edit `run-phpunit-docker.sh` while a run is using it: bash reads the script as it goes.
+
 The wp-env database is shared: never run two `phpunit` at once. `run-phpunit-docker.sh` serializes runs with the `C:/tmp/wphc-phpunit.lock` directory lock; anything else that runs the suite must take the same lock. On Windows, Git Bash rewrites `/...` arguments (use `MSYS_NO_PATHCONV=1` or PowerShell), host env vars do not reach the container (pass them inside `bash -c '...'` or with `docker exec -e`), and `npx @wordpress/env` silently exits 1 on Node 26 (workaround in `tests/README.md`, section 1).
 
 The PHP 7.4 matrix (`tests/php74/`, `composer run test:check-locks`), golden snapshot normalization, contract vectors and the e2e upgrade test from 1.38.1 are detailed in `tests/README.md` and `tests/e2e/README.md`. Always rebuild (`composer run build`) after touching `src/` and commit the regenerated `mu-plugins/wp-health-check.php` together with the source: the PHPUnit bootstrap refuses to start if `mu-plugins/` differs from a fresh strip build.

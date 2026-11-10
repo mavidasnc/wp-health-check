@@ -17,6 +17,16 @@
 #     WPHC_PHPUNIT_LOCK     cartella usata come lock (default: C:/tmp/wphc-phpunit.lock su Windows, /tmp/... altrove)
 #     EXTRA_ENV             opzioni `-e NOME=valore` per il container (es. "-e WPHC_GOLDEN_UPDATE=1")
 #     EXTRA_MOUNT           opzioni `-v origine:destinazione` aggiuntive (es. per montare un file esterno)
+#     WPHC_NATIVE           0 = niente copia nativa: WordPress e vendor letti dal disco dell'host (lento su Windows)
+#     WPHC_NATIVE_REFRESH   1 = rifa' la copia nativa anche se risulta aggiornata
+#
+# Copia nativa (default). Su Windows i bind mount di Docker Desktop passano dal protocollo 9p: ogni file PHP letto dal
+# disco dell'host costa circa 10 ms, e WordPress piu' PHPUnit ne caricano qualche migliaio a OGNI processo PHP. Per
+# questo il WordPress di test e la cartella vendor vengono copiati UNA volta in due volumi Docker (filesystem del
+# container) e si ricopiano da soli solo quando cambiano la versione di WordPress, il suo wp-config.php o i pacchetti
+# di Composer (impronta in .wphc-native-stamp dentro il volume). Dal disco dell'host restano montati la radice del
+# progetto (src/, tests/, bin/, mu-plugins/: poche decine di file) e il wp-tests-config.php di wp-env. Il codice
+# provato e il database sono gli stessi di prima: cambia solo da dove PHP legge WordPress e vendor.
 #
 # Lo script serializza i run con un lock a directory (mkdir e' atomico anche su Windows): l'ambiente di test ha UN solo
 # database e due phpunit in parallelo si calpesterebbero.
@@ -64,10 +74,20 @@ WPENV_HOST="$(to_host_path "$WPENV_DIR")"
 IMAGE="wordpress:cli-php${PHP_VERSION}"
 APP_DIR=/var/www/html/wp-content/wphc-dev
 if [ "$PHP_VERSION" = "7.4" ]; then
-	VENDOR="$APP_DIR/tests/php74/vendor"
+	VENDOR_REL="tests/php74/vendor"
+	VENDOR_KIND="vendor-php74"
 else
-	VENDOR="$APP_DIR/vendor"
+	VENDOR_REL="vendor"
+	VENDOR_KIND="vendor"
 fi
+VENDOR="$APP_DIR/$VENDOR_REL"
+
+# 4b. Copia nativa: nomi dei volumi (uno per il WordPress di test, uno per ogni cartella vendor), distinti per
+# cartella di wp-env cosi' due copie del repository non si scambiano i volumi.
+NATIVE="${WPHC_NATIVE:-1}"
+NATIVE_ID="$(printf '%s' "${WPENV_NAME#wp-env-}" | tr -c 'a-zA-Z0-9_.-' '-')"
+WP_VOLUME="wphc-native-${NATIVE_ID}-wp"
+VENDOR_VOLUME="wphc-native-${NATIVE_ID}-${VENDOR_KIND}"
 
 # 5. Lock: aspetta il proprio turno e lo rilascia all'uscita (anche con Ctrl+C).
 if [ -n "${WPHC_PHPUNIT_LOCK:-}" ]; then
@@ -80,13 +100,73 @@ fi
 until mkdir "$LOCK" 2>/dev/null; do sleep 5; done
 trap 'rmdir "$LOCK"' EXIT
 
-# 6. Run. MSYS_NO_PATHCONV evita che Git Bash "traduca" gli argomenti che iniziano con `/`. `--do-not-cache-result`:
+# 6. Copia nativa: un container di servizio (root) allinea i due volumi. Quando le impronte coincidono non copia
+# nulla (legge tre file dall'host e finisce). Va fatto DOPO il lock: due run non devono copiare insieme.
+if [ "$NATIVE" != "0" ]; then
+	# Utente con cui girera' phpunit (quello di default dell'immagine): i volumi devono appartenergli, perche' i test
+	# scrivono in wp-content (uploads, plugins, mu-plugins).
+	docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE" >&2 || exit 2
+	RUN_USER="$(docker image inspect --format '{{.Config.User}}' "$IMAGE")"
+	# shellcheck disable=SC2016  # lo script fra apici singoli lo espande la shell del container, non questa.
+	MSYS_NO_PATHCONV=1 docker run --rm --user root --entrypoint sh \
+		-v "$WPENV_HOST/tests-WordPress:/src/wp:ro" \
+		-v "$REPO_HOST/$VENDOR_REL:/src/vendor:ro" \
+		-v "$WP_VOLUME:/dst/wp" \
+		-v "$VENDOR_VOLUME:/dst/vendor" \
+		-e RUN_USER="${RUN_USER:-root}" -e REFRESH="${WPHC_NATIVE_REFRESH:-}" \
+		"$IMAGE" -c '
+			set -eu
+			# Impronta = versione della disposizione + i file che dicono "e cambiato qualcosa".
+			layout=1
+			sync_dir() {
+				src="$1"; dst="$2"; label="$3"; shift 3
+				for file in "$@"; do
+					[ -f "$src/$file" ] || { echo "copia nativa: manca $src/$file ($label)" >&2; exit 1; }
+				done
+				key="$layout $(cd "$src" && cat "$@" | sha256sum | cut -d" " -f1)"
+				if [ -z "$REFRESH" ] && [ -f "$dst/.wphc-native-stamp" ] && [ "$(cat "$dst/.wphc-native-stamp")" = "$key" ]; then
+					return 0
+				fi
+				echo "copia nativa: aggiorno $label nel volume Docker (solo quando cambia, puo richiedere un paio di minuti)..." >&2
+				# Si svuota prima (via anche la vecchia impronta) e l impronta si scrive per ultima: una copia
+				# interrotta a meta non risulta mai aggiornata.
+				find "$dst" -mindepth 1 -delete
+				tar -C "$src" --exclude=./wp-content/debug.log -cf - . | tar -C "$dst" -xf -
+				printf "%s" "$key" > "$dst/.wphc-native-stamp"
+				return 10
+			}
+			status=0
+			sync_dir /src/wp /dst/wp "il WordPress di test" wp-includes/version.php wp-config.php || status=$?
+			if [ "$status" -eq 10 ]; then
+				# Punto di mount della radice del progetto e cartelle in cui i test scrivono.
+				mkdir -p /dst/wp/wp-content/wphc-dev /dst/wp/wp-content/mu-plugins /dst/wp/wp-content/uploads
+				chown -R "$RUN_USER" /dst/wp
+			elif [ "$status" -ne 0 ]; then
+				exit "$status"
+			fi
+			status=0
+			sync_dir /src/vendor /dst/vendor "la cartella vendor" composer/installed.json || status=$?
+			if [ "$status" -eq 10 ]; then
+				chown -R "$RUN_USER" /dst/vendor
+			elif [ "$status" -ne 0 ]; then
+				exit "$status"
+			fi
+		' || { echo "ERRORE: copia nativa non riuscita (per farne a meno: WPHC_NATIVE=0)." >&2; exit 2; }
+	WP_MOUNT="$WP_VOLUME:/var/www/html"
+	VENDOR=/opt/wphc-vendor
+	VENDOR_MOUNT="-v $VENDOR_VOLUME:$VENDOR"
+else
+	WP_MOUNT="$WPENV_HOST/tests-WordPress:/var/www/html"
+	VENDOR_MOUNT=""
+fi
+
+# 7. Run. MSYS_NO_PATHCONV evita che Git Bash "traduca" gli argomenti che iniziano con `/`. `--do-not-cache-result`:
 # l'utente del container non puo' scrivere .phpunit.result.cache nella cartella montata (avviso innocuo, cosi' non compare).
-# shellcheck disable=SC2086  # EXTRA_ENV e EXTRA_MOUNT sono elenchi di opzioni: vanno divisi in parole.
+# shellcheck disable=SC2086  # EXTRA_ENV, EXTRA_MOUNT e VENDOR_MOUNT sono elenchi di opzioni: vanno divisi in parole.
 MSYS_NO_PATHCONV=1 docker run --rm --network "$NETWORK" \
-	-v "$WPENV_HOST/tests-WordPress:/var/www/html" \
+	-v "$WP_MOUNT" \
 	-v "$WPENV_HOST/tests-WordPress-PHPUnit/tests/phpunit:/wordpress-phpunit" \
-	-v "$REPO_HOST:$APP_DIR" ${EXTRA_MOUNT:-} \
+	-v "$REPO_HOST:$APP_DIR" $VENDOR_MOUNT ${EXTRA_MOUNT:-} \
 	-e WP_TESTS_DIR=/wordpress-phpunit \
 	-e WORDPRESS_DB_USER=root -e WORDPRESS_DB_PASSWORD=password -e WORDPRESS_DB_NAME=tests-wordpress -e WORDPRESS_DB_HOST=tests-mysql \
 	-e WPHC_VENDOR_DIR="$VENDOR" ${EXTRA_ENV:-} \

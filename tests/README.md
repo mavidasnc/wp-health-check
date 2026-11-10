@@ -31,7 +31,7 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
-| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...): vedi "Matrice PHP" |
+| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...), con WordPress e `vendor` copiati in volumi Docker ("Copia nativa"): vedi "Matrice PHP". E' il modo consigliato anche per la 8.1 |
 | `build/run.php` | test della build stessa (`composer run test:build`): PHP puro, senza WordPress |
 | `fixtures/contract-vectors.json` | vettori di contratto (GENERATO, versionato) |
 | `fixtures/golden/**.json` | snapshot di risposta e option scritte (GENERATI, versionati) |
@@ -140,6 +140,11 @@ In Git Bash, gli argomenti che iniziano con `/` vengono "tradotti" da MSYS: usar
 container: vanno impostate dentro `bash -c '...'` (vedi sotto) o con `docker exec -e`.
 
 ## 2. Lanciare i test (PHP 8.1, default)
+
+**Su Windows usare `bash tests/tools/run-phpunit-docker.sh 8.1`** (sezione 3): con la copia nativa la suite completa
+dura circa un minuto e mezzo. I comandi qui sotto girano nel container `tests-cli` di wp-env, che legge WordPress e
+`vendor` dal disco dell'host: stessi test e stesso esito, ma circa 11 minuti (misure del 2026-11-10, vedi
+"Copia nativa").
 
 ```bash
 # Dalla radice del progetto. Comando esatto, equivalente a `composer run test`:
@@ -257,6 +262,39 @@ Lo script stampa su STDERR la versione di PHP del container (prima riga) e, dal 
 test. Verifica della versione a mano: `docker run --rm wordpress:cli-php7.4 php -v` (PHP 7.4.33). Senza lo script, un avviso
 `file_put_contents(.phpunit.result.cache): Permission denied` e' innocuo (l'utente del container non puo' scrivere la cache dei
 risultati nella cartella montata).
+
+### Copia nativa di WordPress e `vendor` (default dello script)
+
+Su Windows i bind mount di Docker Desktop passano dal protocollo 9p: ogni file letto dal disco dell'host costa circa
+10 ms (768 file PHP di `wp-includes`: 8,5 s dal bind mount, 0,2 s dal filesystem del container), e WordPress piu'
+PHPUnit ne caricano qualche migliaio a ogni processo PHP. Lo script copia quindi UNA volta il WordPress di test e la
+cartella `vendor` in volumi Docker e li monta al posto delle cartelle dell'host:
+
+| Volume | Contenuto | Si ricopia quando cambia |
+|---|---|---|
+| `wphc-native-<progetto wp-env>-wp` | `~/.wp-env/<progetto>/tests-WordPress` (senza `debug.log`) | `wp-includes/version.php` o `wp-config.php` |
+| `wphc-native-<progetto wp-env>-vendor` | `vendor/` | `vendor/composer/installed.json` |
+| `wphc-native-<progetto wp-env>-vendor-php74` | `tests/php74/vendor/` | `tests/php74/vendor/composer/installed.json` |
+
+L'impronta di quei file sta in `.wphc-native-stamp` dentro il volume: a ogni run un container di servizio la confronta
+(un paio di secondi) e copia solo se e' cambiata, quindi dopo un `composer install` o un cambio di versione di
+WordPress non c'e' nulla da ricordare. La prima copia dura un paio di minuti. Dall'host restano montati la radice del
+progetto (`src/`, `tests/`, `bin/`, `mu-plugins/`: il codice che si modifica, letto sempre dal vivo), il
+`wp-tests-config.php` di wp-env e il database. Nel volume lo script crea anche `wp-content/mu-plugins` e assegna tutto
+all'utente del container: non serve piu' creare la cartella a mano in un ambiente appena costruito.
+
+Misure del 2026-11-10 (suite completa, PHP 8.1, 643 test): 683 s dal disco dell'host, 86 s con la copia nativa; il
+test piu' lento passa da 80 s a 0,5 s. Esito e numero di asserzioni identici.
+
+```bash
+WPHC_NATIVE_REFRESH=1 bash tests/tools/run-phpunit-docker.sh 8.1   # rifa' la copia (es. plugin o temi aggiunti a mano nel WordPress di test)
+WPHC_NATIVE=0 bash tests/tools/run-phpunit-docker.sh 8.1           # senza copia: tutto dal disco dell'host, come prima
+docker volume ls --filter name=wphc-native                         # i volumi; si tolgono con `docker volume rm <nome>` (si ricreano da soli)
+```
+
+Cosa NON cambia: il file del plugin sotto test (la copia della build di `src/` fatta dal bootstrap), i golden, il
+database e il lock. Cosa tenere presente: una modifica fatta a mano dentro `tests-WordPress` dell'host (un plugin o un
+tema in piu') non arriva nel volume finche' non cambia una delle impronte: usare `WPHC_NATIVE_REFRESH=1`.
 
 ### Metodo alternativo: ambiente wp-env su 7.4
 
@@ -446,6 +484,7 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
 | `WP_PHPUNIT__TESTS_CONFIG` | config della test library (default: `$WP_TESTS_DIR/wp-tests-config.php` di wp-env) |
 | `WPHC_GOLDEN_UPDATE=1` | riscrive i golden invece di confrontarli |
 | `EXTRA_ENV`, `EXTRA_MOUNT`, `WPHC_WPENV_DIR`, `WPHC_PHPUNIT_LOCK` | solo per `tests/tools/run-phpunit-docker.sh` (opzioni `-e`, opzioni `-v`, cartella di wp-env, cartella di lock) |
+| `WPHC_NATIVE`, `WPHC_NATIVE_REFRESH` | solo per `tests/tools/run-phpunit-docker.sh`: `WPHC_NATIVE=0` disattiva la copia nativa, `WPHC_NATIVE_REFRESH=1` la rifa' (vedi "Copia nativa") |
 
 ## Limiti dichiarati
 
