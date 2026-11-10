@@ -180,8 +180,9 @@ WordPress vero e il codice Python vendorizzato dell'hub (`python -I tests/e2e/ru
 contratto con l'hub, comandi WP-CLI veri), e il **test di upgrade** da un sito enrollato
 con la 1.38.1 al file candidato (`tests/e2e/upgrade_test.py`, con `WPHC_CANDIDATE_FILE`
 per indicare il candidato). Un golden che cambia è un cambiamento di comportamento da
-decidere, non da rigenerare. Il database di wp-env è uno solo: due run di PHPUnit in
-parallelo si calpestano, e vanno serializzati (lock descritto in `tests/README.md`).
+decidere, non da rigenerare. `bash tests/tools/run-phpunit-matrix.sh` lancia le tre versioni di PHP in parallelo (un database e
+due volumi Docker per versione, meno di un minuto in tutto); due run sullo stesso database
+si calpestano e vanno serializzati (lock descritti in `tests/README.md`).
 
 ## Tre scelte di interpretazione del brief
 
