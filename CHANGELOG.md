@@ -7,6 +7,21 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+### Changed
+
+- **E2E molto piu' veloci su Windows (nessuna modifica al plugin)**: `e2e_common.ensure_native_core()` copia il core di WordPress dell'ambiente e2e in un volume Docker e ricrea i container `wordpress` e `cli` di wp-env con quel volume al posto del bind mount dell'host (stesso principio del runner PHPUnit). `run_all.py` da circa 35 minuti a circa 3; mediana di una richiesta HTTP da 2,0 s a 0,06 s. `WPHC_E2E_NATIVE=0` la disattiva, `WPHC_E2E_NATIVE_REFRESH=1` rifa' la copia. Dettagli in `tests/e2e/README.md`.
+- `phpcs.xml.dist`: cache dei risultati (`.phpcs-cache`, ignorata da git): `composer run lint` da circa 40 s a 3 s sui run successivi.
+- `tests/tools/run-phpunit-docker.sh` crea `wp-content/mu-plugins` nel volume del core se manca (ambiente wp-env appena costruito).
+- **PHP 8.2 e' la versione di default dei test** (era la 8.1): `.wp-env.json`, `.wp-env.e2e.json` e `tests/tools/run-phpunit-docker.sh`, che ora accetta la versione come primo argomento FACOLTATIVO (senza: 8.2). La matrice di `run-phpunit-matrix.sh` diventa 7.4, 8.1, 8.2 e 8.3. Dopo l'aggiornamento gli ambienti wp-env vanno ricostruiti una volta (`wp-env start --update`, anche con `--config=.wp-env.e2e.json`).
+
+### Deprecated
+
+- **PHP 7.4**: fuori dal supporto di sicurezza dal novembre 2022, il suo supporto verra' rimosso in una release futura. Per ora nulla cambia: il plugin resta compatibile 7.4+ (`testVersion` di phpcs invariato) e la 7.4 resta nella matrice dei test.
+
+### Fixed
+
+- **`tests/e2e/hub_contract.py` non dipende piu' dalla velocita' dell'ambiente**: il controllo sulla cache di `/health` falliva (59/60) solo perche' il blocco durava piu' dei 60 secondi della cache; quello sul codice caricato dopo il self-update passava solo perche' ogni richiesta costava 2 secondi. Ora versione in memoria e sha256 si verificano subito, la data dello script in opcache entro la rivalidazione (61 controlli).
+
 ## [1.42.0] - 2026-11-10
 
 Correzioni dell'update via API (core, plugin, temi), del log degli update, del webhook e del CORS. Nessun cambio di contratto REST.

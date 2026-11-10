@@ -164,7 +164,7 @@ caricherebbe al giro successivo (fatal `Cannot declare class`).
 | `composer run build:dev` | build senza strip (con il marcatore di sviluppo) in `build/dev/wp-health-check.php`, per sviluppo e debug; non scrive mai su `mu-plugins/` |
 | `composer run build:check` | confronta una build strip nuova con il file committato in `mu-plugins/` (exit 1 se diversi) |
 | `composer run test:build` | test della build stessa (PHP puro, senza WordPress) |
-| `composer run test` | suite PHPUnit di caratterizzazione dentro wp-env (PHP 8.1 di default) |
+| `composer run test` | suite PHPUnit di caratterizzazione dentro wp-env (PHP 8.2 di default) |
 | `composer run lint` / `composer run analyse` | phpcs e phpstan su `src/` e `bin/` (il file generato è escluso: lo strip toglie le annotazioni `phpcs:ignore`) |
 
 **Test.** La suite PHPUnit gira in WordPress reale (container `tests-cli` di wp-env) e
@@ -173,7 +173,7 @@ option scritte (`tests/fixtures/golden/`), registro di tutti gli hook con priori
 ordine, vettori di contratto con l'hub generati dal codice dell'hub. Il plugin sotto
 test è una COPIA del file costruito, e il bootstrap rifiuta di partire se
 `mu-plugins/` non coincide con una build strip fresca di `src/`: dopo ogni modifica a
-`src/` va lanciato `composer run build` e il file rigenerato si committa insieme al sorgente. La matrice copre PHP 7.4, 8.1 e 8.3 (procedura,
+`src/` va lanciato `composer run build` e il file rigenerato si committa insieme al sorgente. La matrice copre PHP 7.4, 8.1, 8.2 e 8.3, con 8.2 come versione di default; la 7.4 e' deprecata (procedura,
 runner e container usa-e-getta in [`tests/README.md`](tests/README.md)). Due insiemi
 di prove sono aggiuntivi e obbligatori prima di una release: gli e2e, con un sito
 WordPress vero e il codice Python vendorizzato dell'hub (`python -I tests/e2e/run_all.py`:
@@ -195,6 +195,9 @@ risolte così, per trasparenza:
    controllano). PHP 8.1 è la baseline dichiarata solo per il *tooling di sviluppo*
    di questo repository (composer, PHPStan, wp-env): `phpcs.xml.dist` verifica
    comunque la compatibilità 7.4+ del runtime con `PHPCompatibilityWP`.
+   **PHP 7.4 è deprecata**: è fuori dal supporto di sicurezza dal novembre 2022 e il
+   suo supporto verrà rimosso in una release futura. Fino ad allora resta provata
+   dalla matrice dei test (7.4, 8.1, 8.2, 8.3; la versione di sviluppo è la 8.2).
 2. **Autoload PSR-4 vs "file singolo autoconsistente".** Il vincolo architetturale è
    ripetuto due volte nel brief ed è motivato tecnicamente (mu-plugins carica solo i
    `.php` in radice): resta prioritario. `composer.json` non dichiara alcun
@@ -2373,7 +2376,7 @@ composer run lint          # phpcs su src/ e bin/
 composer run analyse       # phpstan su src/ e bin/
 
 npx @wordpress/env start   # wp-env: container di sviluppo e container tests-cli
-composer run test          # suite PHPUnit (PHP 8.1) dentro wp-env
+composer run test          # suite PHPUnit (PHP 8.2) dentro wp-env
 python -I tests/e2e/run_all.py   # e2e con un sito WordPress vero (ambiente .wp-env.e2e.json)
 ```
 
