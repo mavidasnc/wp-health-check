@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Esegue la suite PHPUnit su tutta la matrice PHP (7.4, 8.1, 8.3) IN PARALLELO: ogni versione ha il suo container,
+# Esegue la suite PHPUnit su tutta la matrice PHP (7.4, 8.1, 8.2, 8.3) IN PARALLELO: ogni versione ha il suo container,
 # il suo database e i suoi volumi (vedi run-phpunit-docker.sh), quindi non si calpestano.
 #
 # Uso (dalla radice di wp-health-check, con l'ambiente wp-env acceso):
 #     bash tests/tools/run-phpunit-matrix.sh [argomenti di phpunit]
 #     bash tests/tools/run-phpunit-matrix.sh --testsuite enroll
-#     WPHC_PHP_VERSIONS="8.1 8.3" bash tests/tools/run-phpunit-matrix.sh
+#     WPHC_PHP_VERSIONS="8.2 8.3" bash tests/tools/run-phpunit-matrix.sh
 #
 # L'output di ogni versione va in un file di log (il percorso e' stampato): a video restano l'esito e il riepilogo di
 # PHPUnit per versione. Esce con 1 se almeno una versione fallisce.
@@ -13,7 +13,8 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-VERSIONS="${WPHC_PHP_VERSIONS:-7.4 8.1 8.3}"
+# 8.2 e' la versione di sviluppo; la 7.4 e' deprecata (fuori supporto di sicurezza) e uscira' dalla matrice.
+VERSIONS="${WPHC_PHP_VERSIONS:-7.4 8.1 8.2 8.3}"
 LOG_DIR="$(mktemp -d)"
 
 pids=""
