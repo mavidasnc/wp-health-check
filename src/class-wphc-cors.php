@@ -115,7 +115,9 @@ final class WPHC_Cors {
 	public static function reassert_headers( $served, $result, $request ) {
 		unset( $result );
 
-		if ( 0 !== strpos( $request->get_route(), '/health-check/v1' ) ) {
+		// stripos: il core instrada le rotte REST senza distinguere le maiuscole, quindi anche
+		// "/HEALTH-CHECK/v1/..." arriva al plugin e deve ricevere le sue regole CORS.
+		if ( 0 !== stripos( $request->get_route(), '/health-check/v1' ) ) {
 			return $served;
 		}
 
@@ -144,7 +146,7 @@ final class WPHC_Cors {
 		if ( 'OPTIONS' !== $request->get_method() ) {
 			return $result;
 		}
-		if ( 0 !== strpos( $request->get_route(), '/health-check/v1' ) ) {
+		if ( 0 !== stripos( $request->get_route(), '/health-check/v1' ) ) { // Come sopra: instradamento case-insensitive.
 			return $result;
 		}
 

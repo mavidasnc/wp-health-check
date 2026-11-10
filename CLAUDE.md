@@ -42,12 +42,13 @@ Running a subset (one testsuite per test file; `phpunit tests/test-enroll.php` d
 ```bash
 npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit --testsuite enroll
 npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev vendor/bin/phpunit --filter test_rotate_grace_window
-bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # throwaway container, PHP 7.4 / 8.1 / 8.3
+bash tests/tools/run-phpunit-matrix.sh                           # FASTEST full check: PHP 7.4, 8.1 and 8.3 in parallel, under a minute
+bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # throwaway container, PHP 7.4 / 8.1 / 8.3 (about 40 s for the full suite)
 EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1   # rewrite goldens (only after deciding the change), then git diff tests/fixtures/golden
 docker run --rm -v "$PWD:/app" -w /app php:8.3-cli vendor/bin/phpunit -c lite/phpunit.xml.dist   # lite suite
 ```
 
-The wp-env database is shared: never run two `phpunit` at once. `run-phpunit-docker.sh` serializes runs with the `C:/tmp/wphc-phpunit.lock` directory lock; anything else that runs the suite must take the same lock. On Windows, Git Bash rewrites `/...` arguments (use `MSYS_NO_PATHCONV=1` or PowerShell), host env vars do not reach the container (pass them inside `bash -c '...'` or with `docker exec -e`), and `npx @wordpress/env` silently exits 1 on Node 26 (workaround in `tests/README.md`, section 1).
+Prefer `run-phpunit-docker.sh` / `run-phpunit-matrix.sh` over `composer run test`: they read WordPress core and `vendor/` from per-PHP-version Docker volumes instead of the Windows bind mount (about 40 s instead of 5 minutes; the volumes refresh themselves when the wp-env core or `vendor/composer/installed.json` change, or with `WPHC_REFRESH_VOLUMES=1`) and each PHP version has its own database (`tests-wordpress-php<NN>`) and lock (`C:/tmp/wphc-phpunit-php<NN>.lock`), so different versions run in parallel while two runs of the same version queue up. The database of the wp-env `tests-cli` container (`composer run test`) is still a single shared one: never run two `phpunit` on it at once, and take the `C:/tmp/wphc-phpunit.lock` directory lock around anything that uses it. On Windows, Git Bash rewrites `/...` arguments (use `MSYS_NO_PATHCONV=1` or PowerShell), host env vars do not reach the container (pass them inside `bash -c '...'` or with `docker exec -e`), and `npx @wordpress/env` silently exits 1 on Node 26 (workaround in `tests/README.md`, section 1).
 
 The PHP 7.4 matrix (`tests/php74/`, `composer run test:check-locks`), golden snapshot normalization, contract vectors and the e2e upgrade test from 1.38.1 are detailed in `tests/README.md` and `tests/e2e/README.md`. Always rebuild (`composer run build`) after touching `src/` and commit the regenerated `mu-plugins/wp-health-check.php` together with the source: the PHPUnit bootstrap refuses to start if `mu-plugins/` differs from a fresh strip build.
 

@@ -7,6 +7,25 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-10
+
+Correzioni dell'update via API (core, plugin, temi), del log degli update, del webhook e del CORS. Nessun cambio di contratto REST.
+
+### Fixed
+
+- **`/update/core` vede l'update anche con uno short-circuit `pre_site_transient_update_core`**: la lettura di `get_core_updates()` ora neutralizza il filtro come `/health` (`WPHC_Util::mute_update_shortcircuit()`). Prima `/health` diceva `core_update: true` e `POST /update/core` (anche nel bulk) rispondeva `up_to_date`, come visto in produzione.
+- **Un update del core riuscito non risulta piu' `rolled_back`**: dopo `Core_Upgrader::upgrade()` la versione si leggeva con `get_bloginfo( 'version' )`, cioe' il `$wp_version` caricato a inizio richiesta, che `update_core()` per scelta non aggiorna: il ramo di successo non veniva mai eseguito. Ora la versione si legge dal disco (`wp-includes/version.php` come testo, con ripiego sul valore restituito da `upgrade()` e poi su quello in memoria). Effetto collaterale voluto: se `update_core()` fallisce dopo aver gia' copiato `version.php`, l'esito e' `failed` invece di `rolled_back`. Nel ramo di successo, eseguito ora per la prima volta, partono anche `opcache_reset()`, il purge della cache di pagina e la riga `completed`.
+- **Plugin e temi aggiornabili anche con uno short-circuit `pre_site_transient_update_plugins|themes`**: `Plugin_Upgrader::upgrade()` e `Theme_Upgrader::upgrade()` rileggono il transient, quindi `?check=1` diceva `updatable` e l'update reale tornava `false` dall'upgrader e finiva `rolled_back`. Il filtro ora e' neutralizzato attorno a `upgrade()` (ripristinato subito dopo, in ogni esito) e nella lettura del transient in `patch_update_transient_after_success()`, che altrimenti non trovava l'entry da togliere.
+- **Nessun `.maintenance` orfano nel bulk e per il tema attivo**: la rimozione del `.maintenance` lasciato da un install fallito valeva solo per l'update sincrono di un plugin. Il core lo crea anche sotto WP-Cron vero (tick del bulk, plugin attivo) e sempre per il tema attivo, e lo toglie solo a install riuscito: ora si rimuove in ogni contesto, se non c'era prima dell'update.
+- **`WPHC_Update_Log::log_row()` non perde piu' la riga con un valore troppo lungo**: `$wpdb->insert()` non tronca e rifiuta la riga intera, quindi un messaggio d'errore oltre 255 caratteri faceva sparire la riga finale (`failed`, `reactivation_failed`...). Ora i valori si troncano (in caratteri, `mb_substr()`) alle lunghezze delle colonne della tabella.
+- **Il webhook si identifica con l'URL firmato all'enroll**: `X-WPHC-Site` era `home_url()` normalizzato, ma l'hub risolve il sito con un match esatto sull'URL registrato. Con `home_url()` diverso (www/non-www, prefisso di lingua) l'hub rispondeva 404 e il report del job era perso. Ora l'header e' `wp_health_check_site_url` normalizzato, con ripiego su `home_url()` se l'option e' vuota. L'header non entra nella firma; il campo `site` del payload non cambia.
+- **CORS: prefisso della rotta senza distinzione di maiuscole**: il core instrada le rotte REST case-insensitive, quindi `/wp-json/HEALTH-CHECK/v1/health` arrivava al plugin ma saltava `WPHC_Cors::reassert_headers()` e il preflight, ricevendo gli header CORS permissivi del core. Ora `stripos()` nei due controlli.
+
+### Changed
+
+- **Niente `wp_upgrade()` ne' `wp_version_check()` dopo un update del core** (chiamate che non sono mai state eseguite, perche' stavano nel ramo di successo). `wp_upgrade()` userebbe il `$wp_db_version` vecchio in memoria e, se il loopback `upgrade.php?step=upgrade_db` lanciato da `update_core()` fosse gia' passato, riscriverebbe `db_version` al valore vecchio: l'upgrade del database resta a quel loopback, come per gli auto-update di WordPress. `wp_version_check()` manderebbe a wordpress.org la versione vecchia in memoria e ripopolerebbe `update_core` con l'update appena installato. Lo fa gia' `Core_Upgrader::upgrade()` (`wp_version_check( $stats )` subito dopo aver cancellato il transient), lasciando un'offerta verso la versione appena installata: a update riuscito il transient `update_core` ora si cancella, cosi' `summary.core_update` torna subito `false` e un nuovo `POST /update/core` non reinstalla la stessa versione; lo ricrea il primo controllo in una richiesta successiva (cron `wp_version_check` o wp-admin).
+- Test: nuovi `test_core_update_ignores_and_restores_update_shortcircuit`, `test_installed_core_version_is_read_from_disk`, `test_plugin_update_ignores_update_shortcircuit`, `test_failed_install_under_real_cron_leaves_no_maintenance_file` (`test-item-update.php`), `test_log_row_truncates_values_longer_than_the_column` (`test-update-log.php`), `test_site_header_uses_the_enrolled_site_url` (`test-webhook.php`); `test_reassert_applies_only_to_the_plugin_namespace` e `test_preflight_filter_logic` coprono il namespace in maiuscolo. Il ramo di successo dell'update del core non e' coperto da PHPUnit (scriverebbe il core del container): resta da coprire con un e2e. Nessun golden cambiato.
+
 ## [1.41.1] - 2026-11-10
 
 ### Fixed

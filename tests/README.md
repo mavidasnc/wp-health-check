@@ -31,7 +31,8 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
-| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...): vedi "Matrice PHP" |
+| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...), con core e vendor in volumi Docker (circa 40 secondi): vedi "Matrice PHP" |
+| `tools/run-phpunit-matrix.sh` | lancia `run-phpunit-docker.sh` per 7.4, 8.1 e 8.3 in parallelo e riassume gli esiti (meno di un minuto): vedi "Matrice PHP" |
 | `build/run.php` | test della build stessa (`composer run test:build`): PHP puro, senza WordPress |
 | `fixtures/contract-vectors.json` | vettori di contratto (GENERATO, versionato) |
 | `fixtures/golden/**.json` | snapshot di risposta e option scritte (GENERATI, versionati) |
@@ -185,10 +186,12 @@ trap 'rmdir C:/tmp/wphc-phpunit.lock' EXIT
 # ...qui il comando phpunit (8.1 o 7.4)...
 ```
 
-Lo script `tests/tools/run-phpunit-docker.sh <versione PHP> [argomenti phpunit]` fa esattamente questo (con la stessa
-cartella di lock) per un container usa-e-getta, vedi "Matrice PHP"; `EXTRA_ENV="-e NOME=valore"` passa variabili d'ambiente
-al container (es. `WPHC_GOLDEN_UPDATE=1`, `WPHC_PLUGIN_FILE=...`). Chi lavora con uno script locale che fa `docker exec` nel
-container `tests-cli` (come `C:/tmp/wphc-run-phpunit.sh`, fuori dal repo) usa lo stesso lock.
+Questo lock riguarda SOLO il database `tests-wordpress` del container `tests-cli` (`composer run test`, o uno script locale
+che fa `docker exec` in quel container, come `C:/tmp/wphc-run-phpunit.sh`, fuori dal repo). Lo script
+`tests/tools/run-phpunit-docker.sh <versione PHP> [argomenti phpunit]` usa invece un database e un lock PER VERSIONE di PHP
+(`tests-wordpress-php<NN>` e `C:/tmp/wphc-phpunit-php<NN>.lock`): versioni diverse girano insieme, due run della stessa
+versione si mettono in coda da soli. Vedi "Matrice PHP"; `EXTRA_ENV="-e NOME=valore"` passa variabili d'ambiente al
+container (es. `WPHC_GOLDEN_UPDATE=1`, `WPHC_PLUGIN_FILE=...`).
 
 ## phpcs e phpstan non coprono `tests/`
 
@@ -218,45 +221,47 @@ composer run test:check-locks    # phpunit, polyfills e test library devono aver
 ### Metodo consigliato: container usa-e-getta (non tocca l'ambiente condiviso, che resta su 8.1)
 
 ```bash
-bash tests/tools/run-phpunit-docker.sh 8.3                       # suite completa su PHP 8.3
+bash tests/tools/run-phpunit-matrix.sh                           # 7.4, 8.1 e 8.3 in parallelo: meno di un minuto
+bash tests/tools/run-phpunit-matrix.sh --testsuite enroll        # gli argomenti vanno a phpunit, per ogni versione
+bash tests/tools/run-phpunit-docker.sh 8.3                       # suite completa su PHP 8.3 (circa 40 secondi)
 bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # un file su PHP 7.4
 bash tests/tools/run-phpunit-docker.sh 8.1                       # anche 8.1, senza usare il container tests-cli
 EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1 --testsuite hook-registry
 ```
 
-Lo script (parametrico sulla versione di PHP, portabile fra macchine) lancia un container `wordpress:cli-php<versione>`
-collegato alla rete di wp-env, con lo stesso WordPress di test, lo stesso database e la radice del progetto montata; la
-cartella di wp-env si trova da sola (`~/.wp-env/wp-env-wp-health-check-<hash8>`, l'unica; `WPHC_WPENV_DIR` per indicarne
-un'altra), il vendor e' `tests/php74/vendor` per la 7.4 e `vendor/` per le altre versioni (il vendor principale, risolto per
-8.1, va bene anche su 8.3), il lock e' lo stesso di sopra e `--do-not-cache-result` evita l'avviso sulla cache dei risultati.
-Il tag `wordpress:cli-php<versione>` e' fissato per versione: il tag `wordpress:cli` senza versione cambia PHP nel tempo. Le
-immagini si scaricano da sole al primo uso (`docker pull wordpress:cli-php8.3`). Il container sparisce a fine run (`--rm`),
-quindi `/tmp` riparte pulito. Per la 7.4 lo script equivale a questo comando manuale (i percorsi e il nome della rete
-dipendono dalla macchina: `<hash>` e' quello della cartella `~/.wp-env/wp-env-wp-health-check-<hash>`):
+`run-phpunit-docker.sh` (parametrico sulla versione di PHP, portabile fra macchine) lancia un container
+`wordpress:cli-php<versione>` collegato alla rete di wp-env, con il MySQL dell'ambiente di test e la radice del progetto
+montata; la cartella di wp-env si trova da sola (`~/.wp-env/wp-env-wp-health-check-<hash8>`, l'unica; `WPHC_WPENV_DIR` per
+indicarne un'altra), il vendor e' `tests/php74/vendor` per la 7.4 e `vendor/` per le altre versioni (il vendor principale,
+risolto per 8.1, va bene anche su 8.3) e `--do-not-cache-result` evita la scrittura della cache dei risultati. Il tag
+`wordpress:cli-php<versione>` e' fissato per versione: il tag `wordpress:cli` senza versione cambia PHP nel tempo. Le immagini
+si scaricano da sole al primo uso (`docker pull wordpress:cli-php8.3`). Il container sparisce a fine run (`--rm`), quindi
+`/tmp` riparte pulito.
 
-```bash
-#!/bin/bash
-# PHP 7.4 senza toccare l'ambiente condiviso (che resta su 8.1): contenitore usa-e-getta con la stessa rete,
-# lo stesso WordPress di test e lo stesso database; serializzato con il lock condiviso.
-HOME_WP="C:\Users\<utente>\.wp-env\wp-env-wp-health-check-<hash>"
-REPO="C:\Users\<utente>\Claude\projects\mavida-saas-ecosystem\wp-health-check"
-until mkdir C:/tmp/wphc-phpunit.lock 2>/dev/null; do sleep 5; done
-trap 'rmdir C:/tmp/wphc-phpunit.lock' EXIT
-MSYS_NO_PATHCONV=1 docker run --rm --network wp-env-wp-health-check-<hash>_default \
-  -v "$HOME_WP\tests-WordPress:/var/www/html" \
-  -v "$HOME_WP\tests-WordPress-PHPUnit\tests\phpunit:/wordpress-phpunit" \
-  -v "$REPO:/var/www/html/wp-content/wphc-dev" \
-  -e WP_TESTS_DIR=/wordpress-phpunit -e WORDPRESS_DB_USER=root -e WORDPRESS_DB_PASSWORD=password \
-  -e WORDPRESS_DB_NAME=tests-wordpress -e WORDPRESS_DB_HOST=tests-mysql \
-  -e WPHC_VENDOR_DIR=/var/www/html/wp-content/wphc-dev/tests/php74/vendor \
-  -w /var/www/html/wp-content/wphc-dev wordpress:cli-php7.4 \
-  php -d memory_limit=512M tests/php74/vendor/bin/phpunit "$@"
-```
+**Perche' e' veloce.** Su Windows il collo di bottiglia non sono i test ma il filesystem: con il core di WordPress
+(5.000 file) e `vendor/` letti dal bind mount dell'host ogni `include` attraversa il confine fra Docker e Windows, e i
+12 test a processo separato ricaricano tutto ogni volta. Misure sulla stessa macchina, suite completa (643 test):
+4 minuti e 43 secondi con tutto sul bind mount (container `tests-cli`), 1 minuto e 38 secondi con il solo core sul
+filesystem di Docker, 39 secondi con core e vendor. Per questo lo script tiene due volumi Docker per versione di PHP:
+
+- `wphc-tests-core-php<NN>`: copia di `tests-WordPress` di wp-env (senza `wp-content/wphc-dev`), montata su `/var/www/html`.
+  E' per versione perche' i test ci scrivono (plugin di prova, upload);
+- `wphc-tests-vendor-php<NN>`: copia della cartella vendor, montata in sola lettura su `/wphc-vendor` (`WPHC_VENDOR_DIR`).
+
+I volumi si ripopolano da soli (circa mezzo minuto, una volta) quando cambia l'impronta dell'origine, salvata nel file
+`.wphc-stamp` del volume: `wp-includes/version.php` del core di wp-env e `vendor/composer/installed.json`. Dopo una modifica
+a mano dentro `vendor/` o nel core di wp-env che non tocca quei due file: `WPHC_REFRESH_VOLUMES=1`. Il repo resta un bind
+mount: una modifica a `src/` o a `tests/` vale subito, e i golden riscritti con `WPHC_GOLDEN_UPDATE=1` finiscono nel repo.
+Per ripartire da zero: `docker volume rm wphc-tests-core-php81 wphc-tests-vendor-php81` (e simili).
+
+**Perche' si puo' lanciare in parallelo.** Ogni versione di PHP ha il suo database (`tests-wordpress-php<NN>`, creato se
+manca: la test library lo installa a ogni run), il suo volume del core e il suo lock. `run-phpunit-matrix.sh` lancia le tre
+versioni insieme (`WPHC_PHP_VERSIONS="8.1 8.3"` per sceglierne alcune), scrive l'output di ciascuna in un file di log di cui
+stampa il percorso, riassume esito e tempi ed esce con 1 se almeno una fallisce: 56 secondi per tutta la matrice, contro
+circa 14 minuti in serie sul bind mount.
 
 Lo script stampa su STDERR la versione di PHP del container (prima riga) e, dal bootstrap, lo SHA-256 del file sotto
-test. Verifica della versione a mano: `docker run --rm wordpress:cli-php7.4 php -v` (PHP 7.4.33). Senza lo script, un avviso
-`file_put_contents(.phpunit.result.cache): Permission denied` e' innocuo (l'utente del container non puo' scrivere la cache dei
-risultati nella cartella montata).
+test. Verifica della versione a mano: `docker run --rm wordpress:cli-php7.4 php -v` (PHP 7.4.33).
 
 ### Metodo alternativo: ambiente wp-env su 7.4
 
@@ -445,7 +450,8 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
 | `WPHC_WP_TESTS_DIR` | test library di WordPress (default: wp-phpunit di Composer) |
 | `WP_PHPUNIT__TESTS_CONFIG` | config della test library (default: `$WP_TESTS_DIR/wp-tests-config.php` di wp-env) |
 | `WPHC_GOLDEN_UPDATE=1` | riscrive i golden invece di confrontarli |
-| `EXTRA_ENV`, `EXTRA_MOUNT`, `WPHC_WPENV_DIR`, `WPHC_PHPUNIT_LOCK` | solo per `tests/tools/run-phpunit-docker.sh` (opzioni `-e`, opzioni `-v`, cartella di wp-env, cartella di lock) |
+| `EXTRA_ENV`, `EXTRA_MOUNT`, `WPHC_WPENV_DIR`, `WPHC_PHPUNIT_LOCK`, `WPHC_REFRESH_VOLUMES` | solo per `tests/tools/run-phpunit-docker.sh` (opzioni `-e`, opzioni `-v`, cartella di wp-env, cartella di lock, `1` = ripopola i volumi) |
+| `WPHC_PHP_VERSIONS` | solo per `tests/tools/run-phpunit-matrix.sh`: versioni da lanciare (default `7.4 8.1 8.3`) |
 
 ## Limiti dichiarati
 
