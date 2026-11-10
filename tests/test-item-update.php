@@ -614,6 +614,71 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 	}
 
 	/**
+	 * Regressione 1.42.0: con uno short-circuit `pre_site_transient_update_plugins` ?check=1 diceva updatable ma
+	 * Plugin_Upgrader::upgrade(), che rilegge il transient, non trovava l'update e l'esito era rolled_back. Ora il
+	 * filtro e' neutralizzato anche durante upgrade() e nella correzione del transient dopo il successo.
+	 */
+	public function test_plugin_update_ignores_update_shortcircuit() {
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		$shortcircuit = static function () {
+			return (object) array( 'response' => array() );
+		};
+		add_filter( 'pre_site_transient_update_plugins', $shortcircuit );
+
+		$response = $this->upd( 'POST', '/update/plugin', array( 'plugin' => self::FIXTURE_FILE ) );
+
+		$this->assertTrue( $response->get_data()['updated'], wp_json_encode( $response->get_data() ) );
+		$this->assertSame( array( 'requested', 'completed' ), $this->log_phases() );
+		$this->assertSame( 10, has_filter( 'pre_site_transient_update_plugins', $shortcircuit ), 'il filtro e\' ripristinato' );
+
+		// Transient reale (senza il filtro): l'entry del plugin aggiornato e' stata tolta.
+		remove_filter( 'pre_site_transient_update_plugins', $shortcircuit );
+		$after = get_site_transient( 'update_plugins' );
+		$this->assertArrayNotHasKey( self::FIXTURE_FILE, $after->response );
+		$this->assertSame( '2.0.0', $after->checked[ self::FIXTURE_FILE ] );
+		$this->assert_lock_released();
+	}
+
+	/**
+	 * Regressione 1.42.0: sotto WP-Cron vero (tick del bulk) il core mette in manutenzione il sito per un plugin
+	 * attivo e toglie il .maintenance solo a install riuscito. Un install fallito non deve lasciarlo: prima la
+	 * rimozione valeva solo per l'update via REST, non per il cron vero ne' per i temi.
+	 */
+	public function test_failed_install_under_real_cron_leaves_no_maintenance_file() {
+		$maintenance = ABSPATH . '.maintenance';
+		$this->assertFileDoesNotExist( $maintenance, 'residuo di un run precedente' );
+		$this->install_fixture_plugin( '1.0.0' );
+		$this->assertNull( activate_plugin( self::FIXTURE_FILE ) );
+		$this->set_plugin_update( self::FIXTURE_FILE, '2.0.0', self::OFFICIAL_PACKAGE );
+		$this->mock_wporg_api();
+		$this->serve_package_from( $this->build_fixture_zip( '2.0.0' ) );
+		// Priorita' 11: dopo Plugin_Upgrader::active_before() (10), che accende la manutenzione.
+		add_filter(
+			'upgrader_pre_install',
+			static function () {
+				return new WP_Error( 'wphc_test_install', 'install mock fallito' );
+			},
+			11
+		);
+
+		add_filter( 'wp_doing_cron', '__return_true' );
+		$outcome = self::call( 'wphc_perform_item_update', 'plugin', self::FIXTURE_FILE, false, 'cron' );
+		remove_filter( 'wp_doing_cron', '__return_true' );
+
+		// Il file si toglie comunque, cosi' un fallimento del test non sporca i test successivi.
+		$left = file_exists( $maintenance );
+		if ( $left ) {
+			unlink( $maintenance ); // phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- pulizia del residuo del test.
+		}
+		$this->assertSame( 'rolled_back', $outcome['result'] );
+		$this->assertFalse( $left, 'il .maintenance lasciato dall\'install fallito va rimosso' );
+		$this->assert_lock_released();
+	}
+
+	/**
 	 * Plugin disattivato durante l'update da un processo esterno (qui un hook su upgrader_post_install) e la
 	 * cui nuova versione non si riattiva (produce output in attivazione): l'update e' riuscito
 	 * (updated:true) ma l'esito e' 'reactivation_failed' con il dettaglio e una riga di log dedicata.
@@ -876,6 +941,44 @@ class WPHC_Test_Upd_ItemUpdate extends WPHC_Update_Test_Case {
 		$this->assertSame( 'not_updatable', $response->get_data()['result'] );
 		$this->assertSame( 'pacchetto non ospitato su wordpress.org', $response->get_data()['detail'] );
 		$this->assert_lock_released();
+	}
+
+	/**
+	 * Regressione 1.42.0: con uno short-circuit `pre_site_transient_update_core` (siti che spengono i controlli
+	 * update fuori da wp-admin) /health vedeva l'update e /update/core rispondeva up_to_date. La lettura ora
+	 * neutralizza il filtro come /health e lo ripristina subito dopo.
+	 */
+	public function test_core_update_ignores_and_restores_update_shortcircuit() {
+		$this->set_core_update( '99.0.0', 'https://downloads.wordpress.org/release/wordpress-99.0.0.zip' );
+		$shortcircuit = static function () {
+			return (object) array( 'updates' => array() );
+		};
+		add_filter( 'pre_site_transient_update_core', $shortcircuit );
+
+		$response = $this->upd( 'POST', '/update/core', null, array( 'check' => '1' ) );
+
+		$this->assertSame( 'updatable', $response->get_data()['result'] );
+		$this->assertSame( '99.0.0', $response->get_data()['latest'] );
+		$this->assertSame( 10, has_filter( 'pre_site_transient_update_core', $shortcircuit ), 'il filtro e\' ripristinato' );
+		$this->assert_lock_released();
+	}
+
+	/**
+	 * La versione installata del core si legge dal disco (wp-includes/version.php), non dal $wp_version in
+	 * memoria: update_core() non lo aggiorna, quindi dopo un update riuscito get_bloginfo( 'version' ) dice
+	 * ancora la versione vecchia. Confronto con una lettura indipendente del file.
+	 */
+	public function test_installed_core_version_is_read_from_disk() {
+		$method = new ReflectionMethod( 'WPHC_Item_Updater', 'installed_core_version' );
+		$method->setAccessible( true ); // Necessario con PHP 7.4 (dalla 8.1 non fa nulla).
+
+		$expected = ( static function () {
+			include ABSPATH . WPINC . '/version.php';
+			return $wp_version;
+		} )();
+
+		$this->assertSame( $expected, $method->invoke( null ) );
+		$this->assertSame( get_bloginfo( 'version' ), $method->invoke( null ), 'senza update il disco e la memoria coincidono' );
 	}
 
 	/**

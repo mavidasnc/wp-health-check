@@ -222,6 +222,27 @@ class WPHC_Test_Upd_UpdateLog extends WPHC_Update_Test_Case {
 	}
 
 	/**
+	 * Regressione 1.42.0: $wpdb->insert() non tronca, rifiuta la riga intera se un valore supera la colonna, e la
+	 * riga finale di un update (failed, reactivation_failed...) spariva. Ora i valori si troncano alle lunghezze
+	 * dello schema, contate in caratteri (lettere accentate: un taglio a byte farebbe fallire lo stesso).
+	 */
+	public function test_log_row_truncates_values_longer_than_the_column() {
+		$message = str_repeat( 'è', 600 );
+		$name    = str_repeat( 'n', 300 );
+
+		$id = self::call( 'wphc_log_update_row', 'dddddddddddddddd', 'plugin', 'a/a.php', $name, str_repeat( '1', 40 ), null, 'failed', $message );
+
+		$this->assertGreaterThan( 0, $id, 'la riga e\' scritta' );
+		$rows = $this->log_rows();
+		$this->assertCount( 1, $rows );
+		$this->assertSame( str_repeat( 'è', 255 ), $rows[0]['message'] );
+		$this->assertSame( str_repeat( 'n', 191 ), $rows[0]['name'] );
+		$this->assertSame( str_repeat( '1', 32 ), $rows[0]['version_from'] );
+		$this->assertNull( $rows[0]['version_to'], 'null resta NULL.' );
+		$this->assertSame( 'failed', $rows[0]['phase'] );
+	}
+
+	/**
 	 * Correlation id: 16 caratteri esadecimali, diversi a ogni chiamata.
 	 */
 	public function test_correlation_id_format() {

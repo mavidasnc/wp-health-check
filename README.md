@@ -1541,7 +1541,9 @@ un'opzione per sito anziché un vincolo fisso.
    (filtro `wp_doing_cron` attorno a `upgrade()`), quindi il core non lo
    disattiva e mette il sito in manutenzione per i secondi dell'install; un
    `.maintenance` lasciato da un install fallito viene tolto subito se non
-   c'era prima. Un plugin spento ma ancora candidato di `/update/reactivate`
+   c'era prima (dalla 1.42.0 in ogni contesto: anche sotto WP-Cron vero, cioè
+   nel tick del bulk, e per il tema attivo, casi in cui il core lo crea
+   comunque). Un plugin spento ma ancora candidato di `/update/reactivate`
    conta come attivo anche per un nuovo tentativo, che quindi non cancella la
    prova con `active=0` (caso codiceedizioni.it del 03/11/2026), ma solo se
    l'ultima riga di log del plugin e' un fallimento (`failed`, `rolled_back`,
@@ -1565,19 +1567,32 @@ comunque un temp-backup da richiedere). L'aggiornamento core è l'operazione
 più lenta e rischiosa delle tre, e il primo candidato a un'eventuale futura
 esecuzione asincrona se i timeout si rivelassero un problema in produzione.
 
-Dopo la sostituzione dei file, il flusso invoca esplicitamente `wp_upgrade()`
-per completare le routine di migrazione del database: in un contesto
-headless (nessuna sessione admin che visiterebbe
-`wp-admin/upgrade.php`) queste non partirebbero altrimenti da sole.
+L'esito si decide sulla versione letta **dal disco** dopo l'upgrade
+(`wp-includes/version.php`, letto come testo): `get_bloginfo( 'version' )`
+restituisce il `$wp_version` caricato a inizio richiesta, che `update_core()`
+per scelta non aggiorna. Fino alla 1.41.1 si leggeva quello, e un update
+riuscito veniva registrato come `rolled_back`.
 
-Dopo un update riuscito viene anche forzato un ricontrollo reale con
-`wp_version_check( array(), true )`, cosa che invece **non** si fa per
-plugin/temi (vedi sopra): per il core non esiste l'equivalente
-"update-checker premium" che in contesto REST non si caricherebbe — il
-check di versione di WordPress è identico in ogni contesto — quindi qui
-forzarlo è sicuro e ripopola subito `update_core`, così
-`summary.core_update` torna `false` senza aspettare il prossimo giro di
-cron.
+Dalla 1.42.0 il flusso **non** chiama più `wp_upgrade()` né
+`wp_version_check()` dopo l'update. `wp_upgrade()` userebbe il
+`$wp_db_version` vecchio rimasto in memoria e, se il loopback
+`upgrade.php?step=upgrade_db` lanciato da `update_core()` fosse già passato,
+riscriverebbe `db_version` al valore vecchio: l'upgrade del database resta a
+quel loopback, come per gli auto-update di WordPress. `wp_version_check()`
+manderebbe a wordpress.org la versione vecchia in memoria e ripopolerebbe
+`update_core` con l'update appena installato. Attenzione: lo fa già
+`Core_Upgrader::upgrade()`, che cancella il transient e subito dopo chiama
+`wp_version_check( $stats )` (forzato, con la versione vecchia), lasciando in
+`update_core` un'offerta `upgrade` verso la versione appena installata. Per
+questo, a update riuscito, il flusso cancella il transient `update_core`:
+`summary.core_update` torna subito `false` e un nuovo `POST /update/core` non
+reinstalla la stessa versione. Il transient lo ricrea, con la versione nuova,
+il primo controllo in una richiesta successiva: il cron `wp_version_check`
+(due volte al giorno) o una qualunque pagina di wp-admin
+(`_maybe_update_core()`).
+
+Anche la lettura dell'update disponibile neutralizza gli short-circuit
+`pre_site_transient_update_core`, come `/health` (dalla 1.42.0).
 
 Nota tecnica: a differenza di plugin/temi, gli update object del core non
 hanno un campo `->package`; il campo equivalente è `->download` (che, per un
@@ -1955,7 +1970,12 @@ mentre l'amministratore ne vede correttamente (in admin quei filtri non sono
 attivi). Le rotte dati neutralizzano quindi **temporaneamente** solo gli
 short-circuit `pre_site_transient_update_*` prima di leggere i transient e li
 ripristinano subito dopo (vedi `WPHC_Util::mute_update_shortcircuit()`), lasciando
-attive le iniezioni legittime dei plugin premium sui filtri di lettura. La rotta
+attive le iniezioni legittime dei plugin premium sui filtri di lettura. Dalla
+`1.42.0` lo fanno anche le rotte di update: la lettura dell'update del core,
+`Plugin_Upgrader::upgrade()`/`Theme_Upgrader::upgrade()` (che rileggono il
+transient) e la correzione del transient dopo un update riuscito; prima
+`?check=1` diceva `updatable` e l'update reale finiva `up_to_date` (core) o
+`rolled_back` (plugin/temi). La rotta
 diagnostica `GET /health-check/v1/debug` (gated `manage_options`) aiuta a
 individuare questo e altri casi, confrontando il transient filtrato con quello
 grezzo memorizzato ed elencando i callback registrati sui filtri.

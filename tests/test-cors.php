@@ -218,7 +218,8 @@ class WPHC_Test_Cors extends WPHC_Read_Test_Case {
 	/**
 	 * La riasserzione agisce solo sulle rotte che INIZIANO con "/health-check/v1" e restituisce sempre il
 	 * valore di $served invariato. PRESERVATO: il controllo e' un prefisso di stringa, quindi vale anche per
-	 * "/health-check/v10/..." (un namespace diverso).
+	 * "/health-check/v10/..." (un namespace diverso). Dalla 1.42.0 il prefisso si confronta senza distinguere
+	 * maiuscole e minuscole, come instrada il core: "/HEALTH-CHECK/v1/health" raggiunge la rotta del plugin.
 	 */
 	public function test_reassert_applies_only_to_the_plugin_namespace() {
 		$server = rest_get_server();
@@ -235,6 +236,8 @@ class WPHC_Test_Cors extends WPHC_Read_Test_Case {
 		$this->assertSame( array( true, 0 ), $run( '/wp/v2/posts', true ) );
 		$this->assertSame( array( true, 0 ), $run( '/altro/health-check/v1/health', true ), 'non e\' un prefisso' );
 		$this->assertSame( array( false, 1 ), $run( '/health-check/v10/qualcosa', false ), 'PRESERVATO: prefisso di stringa' );
+		$this->assertSame( array( true, 1 ), $run( '/HEALTH-CHECK/v1/health', true ), 'il core instrada senza distinguere le maiuscole' );
+		$this->assertSame( array( true, 0 ), $run( '/WP/v2/posts', true ) );
 	}
 
 	// -----------------------------------------------------------------------
@@ -257,6 +260,11 @@ class WPHC_Test_Cors extends WPHC_Read_Test_Case {
 		// Sostituisce un risultato gia' presente.
 		$replaced = apply_filters( 'rest_pre_dispatch', 'gia-gestito', $server, new WP_REST_Request( 'OPTIONS', '/health-check/v1/health' ) );
 		$this->assertInstanceOf( WP_REST_Response::class, $replaced );
+
+		// Namespace scritto in maiuscolo (1.42.0): il core lo instrada comunque al plugin, quindi e' intercettato.
+		$upper = apply_filters( 'rest_pre_dispatch', null, $server, new WP_REST_Request( 'OPTIONS', '/HEALTH-CHECK/v1/health' ) );
+		$this->assertInstanceOf( WP_REST_Response::class, $upper );
+		$this->assertSame( 3, $this->nocache_calls );
 
 		// GET sul namespace: non intercettato.
 		$before = $this->nocache_calls;

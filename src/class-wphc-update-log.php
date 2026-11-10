@@ -183,26 +183,50 @@ final class WPHC_Update_Log {
 	public static function log_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null, $active = null, $source = 'api', $actor = null ) {
 		global $wpdb;
 
+		$row = array(
+			'correlation_id' => $correlation_id,
+			'created_at'     => gmdate( 'Y-m-d H:i:s' ),
+			'type'           => $type,
+			'target'         => $target,
+			'name'           => $name,
+			'version_from'   => $version_from,
+			'version_to'     => $version_to,
+			'phase'          => $phase,
+			'message'        => $message,
+			'ip'             => WPHC_Util::get_client_ip(),
+			// $wpdb->insert() ignora il formato dichiarato quando il valore e'
+			// realmente null (usa NULL SQL a prescindere), quindi %d va bene
+			// anche per le righe temi/core dove $active resta null.
+			'active'         => null === $active ? null : (int) $active,
+			'source'         => $source,
+			'actor'          => $actor,
+		);
+
+		// $wpdb->insert() non tronca: un valore piu' lungo della colonna fa fallire l'insert e la riga (spesso
+		// quella finale di un errore, col messaggio lungo) va persa. Lunghezze in caratteri, le stesse della
+		// CREATE TABLE di maybe_install_schema(): vanno tenute allineate. I null restano null.
+		$lengths = array(
+			'correlation_id' => 16,
+			'type'           => 10,
+			'target'         => 191,
+			'name'           => 191,
+			'version_from'   => 32,
+			'version_to'     => 32,
+			'phase'          => 32,
+			'message'        => 255,
+			'ip'             => 45,
+			'source'         => 10,
+			'actor'          => 60,
+		);
+		foreach ( $lengths as $column => $length ) {
+			if ( is_string( $row[ $column ] ) ) {
+				$row[ $column ] = mb_substr( $row[ $column ], 0, $length );
+			}
+		}
+
 		$wpdb->insert(
 			self::table(),
-			array(
-				'correlation_id' => $correlation_id,
-				'created_at'     => gmdate( 'Y-m-d H:i:s' ),
-				'type'           => $type,
-				'target'         => $target,
-				'name'           => $name,
-				'version_from'   => $version_from,
-				'version_to'     => $version_to,
-				'phase'          => $phase,
-				'message'        => $message,
-				'ip'             => WPHC_Util::get_client_ip(),
-				// $wpdb->insert() ignora il formato dichiarato quando il valore e'
-				// realmente null (usa NULL SQL a prescindere), quindi %d va bene
-				// anche per le righe temi/core dove $active resta null.
-				'active'         => null === $active ? null : (int) $active,
-				'source'         => $source,
-				'actor'          => $actor,
-			),
+			$row,
 			array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s' )
 		);
 

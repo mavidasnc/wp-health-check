@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.41.1
+ * Version:     1.42.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 
 
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.41.1' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.42.0' );
 }
 
 
@@ -1111,7 +1111,9 @@ final class WPHC_Cors {
 	public static function reassert_headers( $served, $result, $request ) {
 		unset( $result );
 
-		if ( 0 !== strpos( $request->get_route(), '/health-check/v1' ) ) {
+		
+		
+		if ( 0 !== stripos( $request->get_route(), '/health-check/v1' ) ) {
 			return $served;
 		}
 
@@ -1140,7 +1142,7 @@ final class WPHC_Cors {
 		if ( 'OPTIONS' !== $request->get_method() ) {
 			return $result;
 		}
-		if ( 0 !== strpos( $request->get_route(), '/health-check/v1' ) ) {
+		if ( 0 !== stripos( $request->get_route(), '/health-check/v1' ) ) { 
 			return $result;
 		}
 
@@ -1876,26 +1878,50 @@ final class WPHC_Update_Log {
 	public static function log_row( $correlation_id, $type, $target, $name, $version_from, $version_to, $phase, $message = null, $active = null, $source = 'api', $actor = null ) {
 		global $wpdb;
 
+		$row = array(
+			'correlation_id' => $correlation_id,
+			'created_at'     => gmdate( 'Y-m-d H:i:s' ),
+			'type'           => $type,
+			'target'         => $target,
+			'name'           => $name,
+			'version_from'   => $version_from,
+			'version_to'     => $version_to,
+			'phase'          => $phase,
+			'message'        => $message,
+			'ip'             => WPHC_Util::get_client_ip(),
+			
+			
+			
+			'active'         => null === $active ? null : (int) $active,
+			'source'         => $source,
+			'actor'          => $actor,
+		);
+
+		
+		
+		
+		$lengths = array(
+			'correlation_id' => 16,
+			'type'           => 10,
+			'target'         => 191,
+			'name'           => 191,
+			'version_from'   => 32,
+			'version_to'     => 32,
+			'phase'          => 32,
+			'message'        => 255,
+			'ip'             => 45,
+			'source'         => 10,
+			'actor'          => 60,
+		);
+		foreach ( $lengths as $column => $length ) {
+			if ( is_string( $row[ $column ] ) ) {
+				$row[ $column ] = mb_substr( $row[ $column ], 0, $length );
+			}
+		}
+
 		$wpdb->insert(
 			self::table(),
-			array(
-				'correlation_id' => $correlation_id,
-				'created_at'     => gmdate( 'Y-m-d H:i:s' ),
-				'type'           => $type,
-				'target'         => $target,
-				'name'           => $name,
-				'version_from'   => $version_from,
-				'version_to'     => $version_to,
-				'phase'          => $phase,
-				'message'        => $message,
-				'ip'             => WPHC_Util::get_client_ip(),
-				
-				
-				
-				'active'         => null === $active ? null : (int) $active,
-				'source'         => $source,
-				'actor'          => $actor,
-			),
+			$row,
 			array( '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%d', '%s', '%s' )
 		);
 
@@ -5612,7 +5638,11 @@ final class WPHC_Item_Updater {
 
 	private static function patch_update_transient_after_success( $type, $target, $version_to ) {
 		$transient_name = ( 'plugin' === $type ) ? 'update_plugins' : 'update_themes';
-		$transient      = get_site_transient( $transient_name );
+		
+		
+		$muted     = WPHC_Util::mute_update_shortcircuit();
+		$transient = get_site_transient( $transient_name );
+		WPHC_Util::restore_update_shortcircuit( $muted );
 
 		if ( ! is_object( $transient ) || ! isset( $transient->response[ $target ] ) ) {
 			return;
@@ -5785,21 +5815,27 @@ final class WPHC_Item_Updater {
 		
 		
 		
+		
+		
 		$as_cron              = ( 'plugin' === $type && ! wp_doing_cron() );
 		$had_maintenance_file = file_exists( self::maintenance_file_path() );
 		if ( $as_cron ) {
 			add_filter( 'wp_doing_cron', '__return_true' );
 		}
 
+		
+		
 		WPHC_Update_Log::begin_api_update();
+		$muted  = WPHC_Util::mute_update_shortcircuit();
 		$result = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
+		WPHC_Util::restore_update_shortcircuit( $muted );
 		WPHC_Update_Log::end_api_update();
 
 		if ( $as_cron ) {
 			remove_filter( 'wp_doing_cron', '__return_true' );
-			if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
-				wp_delete_file( self::maintenance_file_path() );
-			}
+		}
+		if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
+			wp_delete_file( self::maintenance_file_path() );
 		}
 
 		$exists         = false;
@@ -6033,6 +6069,7 @@ final class WPHC_Item_Updater {
 
 
 
+
 	public static function perform_core_update( $dry_run = false, $source = 'api' ) {
 		$preflight = self::update_preflight( false );
 		if ( true !== $preflight ) {
@@ -6050,8 +6087,11 @@ final class WPHC_Item_Updater {
 		
 		
 		
+		
+		$muted        = WPHC_Util::mute_update_shortcircuit();
 		$core_updates = get_core_updates( array( 'dismissed' => false ) );
-		$update       = ( is_array( $core_updates ) && isset( $core_updates[0] ) ) ? $core_updates[0] : null;
+		WPHC_Util::restore_update_shortcircuit( $muted );
+		$update = ( is_array( $core_updates ) && isset( $core_updates[0] ) ) ? $core_updates[0] : null;
 
 		if ( null === $update || ! isset( $update->response ) || in_array( $update->response, array( 'development', 'latest' ), true ) ) {
 			self::release_update_lock();
@@ -6109,7 +6149,13 @@ final class WPHC_Item_Updater {
 		$result = $upgrader->upgrade( $update );
 		WPHC_Update_Log::end_api_update();
 
-		$actual_version = get_bloginfo( 'version' );
+		
+		
+		
+		$actual_version = self::installed_core_version();
+		if ( '' === $actual_version ) {
+			$actual_version = ( is_string( $result ) && '' !== $result ) ? $result : get_bloginfo( 'version' );
+		}
 
 		
 		
@@ -6140,9 +6186,6 @@ final class WPHC_Item_Updater {
 		
 		
 		
-		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-		wp_upgrade();
-
 		if ( function_exists( 'opcache_reset' ) ) {
 			
 			
@@ -6154,10 +6197,7 @@ final class WPHC_Item_Updater {
 		
 		
 		
-		
-		
-		
-		wp_version_check( array(), true );
+		delete_site_transient( 'update_core' );
 		delete_transient( WPHC_Options::TRANSIENT_HEALTH_CACHE );
 		WPHC_Util::purge_page_cache();
 
@@ -6175,6 +6215,22 @@ final class WPHC_Item_Updater {
 			'log_id' => $log_id,
 			'http'   => 200,
 		);
+	}
+
+	
+
+
+
+
+
+	private static function installed_core_version() {
+		$file = ABSPATH . 'wp-includes/version.php';
+		if ( ! is_readable( $file ) ) {
+			return '';
+		}
+		$contents = file_get_contents( $file ); 
+
+		return ( is_string( $contents ) && preg_match( '/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]\s*;/', $contents, $match ) ) ? $match[1] : '';
 	}
 
 	
@@ -6718,6 +6774,11 @@ final class WPHC_Webhook {
 		$body_json = wp_json_encode( $payload );
 		$sig       = self::build_outbound_signature( $event, $body_json, $secret );
 
+		
+		
+		$signed_site_url = (string) get_option( WPHC_Options::OPT_SITE_URL, '' );
+		$site_header     = ( '' !== $signed_site_url ) ? WPHC_Util::normalize_url( $signed_site_url ) : WPHC_Util::normalize_site_url();
+
 		$headers = array(
 			'Content-Type'      => 'application/json; charset=utf-8',
 			'Accept'            => 'application/json',
@@ -6727,7 +6788,7 @@ final class WPHC_Webhook {
 			'X-WPHC-Signature'  => $sig['signature'],
 			'X-WPHC-Event'      => $event,
 			'X-WPHC-Secret-Kid' => (string) get_option( WPHC_Options::OPT_SECRET_KID, '' ),
-			'X-WPHC-Site'       => WPHC_Util::normalize_site_url(),
+			'X-WPHC-Site'       => $site_header,
 			'X-WPHC-Delivery'   => (string) $job_id,
 			'X-WPHC-Attempt'    => (string) $attempt,
 		);

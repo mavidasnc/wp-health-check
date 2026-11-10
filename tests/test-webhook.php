@@ -386,6 +386,29 @@ class WPHC_Test_Upd_Webhook extends WPHC_Update_Test_Case {
 	}
 
 	/**
+	 * Regressione 1.42.0: X-WPHC-Site e' l'URL firmato all'enroll (normalizzato), non home_url(). L'hub risolve
+	 * il sito con un match esatto sull'URL registrato: con home_url() diverso (www/non-www, prefisso di lingua)
+	 * rispondeva 404 e il report era perso. Senza l'option si torna a home_url(). Il campo site del payload non
+	 * cambia.
+	 */
+	public function test_site_header_uses_the_enrolled_site_url() {
+		$this->enable_webhook( $this->http_response( 200, 'ok' ) );
+		update_option( 'wp_health_check_site_url', 'https://WWW.Example.test/', false );
+		$this->assertNotSame( 'https://www.example.test', $this->own_site_url() );
+
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array( 'site' => $this->own_site_url() ), 'job-site-1', 1 );
+
+		delete_option( 'wp_health_check_site_url' );
+		self::call( 'wphc_dispatch_webhook_payload', self::EVENT, array( 'site' => $this->own_site_url() ), 'job-site-2', 1 );
+
+		$calls = $this->hook_calls();
+		$this->assertCount( 2, $calls );
+		$this->assertSame( 'https://www.example.test', $calls[0]['args']['headers']['X-WPHC-Site'] );
+		$this->assertSame( wp_json_encode( array( 'site' => $this->own_site_url() ) ), $calls[0]['args']['body'] );
+		$this->assertSame( $this->own_site_url(), $calls[1]['args']['headers']['X-WPHC-Site'] );
+	}
+
+	/**
 	 * Senza kid configurato l'header X-WPHC-Secret-Kid e' una stringa vuota.
 	 */
 	public function test_dispatch_secret_kid_defaults_to_empty_string() {

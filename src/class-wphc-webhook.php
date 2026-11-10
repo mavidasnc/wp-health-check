@@ -209,6 +209,11 @@ final class WPHC_Webhook {
 		$body_json = wp_json_encode( $payload );
 		$sig       = self::build_outbound_signature( $event, $body_json, $secret );
 
+		// L'hub trova il sito con un match esatto sull'URL registrato, cioe' quello firmato all'enroll:
+		// home_url() puo' differire (www/non-www, prefisso di lingua) e il report finirebbe in un 404.
+		$signed_site_url = (string) get_option( WPHC_Options::OPT_SITE_URL, '' );
+		$site_header     = ( '' !== $signed_site_url ) ? WPHC_Util::normalize_url( $signed_site_url ) : WPHC_Util::normalize_site_url();
+
 		$headers = array(
 			'Content-Type'      => 'application/json; charset=utf-8',
 			'Accept'            => 'application/json',
@@ -218,7 +223,7 @@ final class WPHC_Webhook {
 			'X-WPHC-Signature'  => $sig['signature'],
 			'X-WPHC-Event'      => $event,
 			'X-WPHC-Secret-Kid' => (string) get_option( WPHC_Options::OPT_SECRET_KID, '' ),
-			'X-WPHC-Site'       => WPHC_Util::normalize_site_url(),
+			'X-WPHC-Site'       => $site_header,
 			'X-WPHC-Delivery'   => (string) $job_id,
 			'X-WPHC-Attempt'    => (string) $attempt,
 		);

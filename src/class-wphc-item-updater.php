@@ -237,7 +237,11 @@ final class WPHC_Item_Updater {
 	 */
 	private static function patch_update_transient_after_success( $type, $target, $version_to ) {
 		$transient_name = ( 'plugin' === $type ) ? 'update_plugins' : 'update_themes';
-		$transient      = get_site_transient( $transient_name );
+		// Lettura del transient reale anche con uno short-circuit pre_site_transient_* attivo (che restituirebbe
+		// il suo valore, senza l'entry da togliere); la scrittura sotto non passa da quei filtri.
+		$muted     = WPHC_Util::mute_update_shortcircuit();
+		$transient = get_site_transient( $transient_name );
+		WPHC_Util::restore_update_shortcircuit( $muted );
 
 		if ( ! is_object( $transient ) || ! isset( $transient->response[ $target ] ) ) {
 			return;
@@ -409,22 +413,28 @@ final class WPHC_Item_Updater {
 		// plugin prima di installarlo (in wp-admin lo riattiva poi la pagina di update): via REST restava
 		// spento. Come nel drain bulk, si fa vedere l'update come cron: il core non disattiva e mette il
 		// sito in manutenzione per la durata dell'install. Un .maintenance lasciato da un install fallito
-		// (il core lo toglie solo a install riuscito) si rimuove subito se non c'era prima.
+		// (il core lo toglie solo a install riuscito) si rimuove subito se non c'era prima: in ogni contesto,
+		// perche' il core lo crea anche sotto WP-Cron vero (tick del bulk) per un plugin attivo e sempre per
+		// il tema attivo.
 		$as_cron              = ( 'plugin' === $type && ! wp_doing_cron() );
 		$had_maintenance_file = file_exists( self::maintenance_file_path() );
 		if ( $as_cron ) {
 			add_filter( 'wp_doing_cron', '__return_true' );
 		}
 
+		// Plugin_Upgrader::upgrade() e Theme_Upgrader::upgrade() rileggono il transient di update: con uno
+		// short-circuit pre_site_transient_* attivo non troverebbero l'update visto sopra e restituirebbero false.
 		WPHC_Update_Log::begin_api_update();
+		$muted  = WPHC_Util::mute_update_shortcircuit();
 		$result = $upgrader->upgrade( $target, array( 'clear_update_cache' => false ) );
+		WPHC_Util::restore_update_shortcircuit( $muted );
 		WPHC_Update_Log::end_api_update();
 
 		if ( $as_cron ) {
 			remove_filter( 'wp_doing_cron', '__return_true' );
-			if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
-				wp_delete_file( self::maintenance_file_path() );
-			}
+		}
+		if ( ! $had_maintenance_file && file_exists( self::maintenance_file_path() ) ) {
+			wp_delete_file( self::maintenance_file_path() );
 		}
 
 		$exists         = false;
@@ -649,9 +659,10 @@ final class WPHC_Item_Updater {
 	 * temp-backup nativo: il suo meccanismo di rollback e' quello proprio
 	 * dell'upgrader, una garanzia diversa e piu' debole (per questo il
 	 * requisito WP 6.3 non si applica a questo ramo: non ci sarebbe comunque
-	 * un temp-backup da richiedere). Dopo la sostituzione dei file invoca
-	 * wp_upgrade() per completare l'aggiornamento del database in contesto
-	 * headless, dove nessuna visita a wp-admin/upgrade.php lo farebbe altrimenti.
+	 * un temp-backup da richiedere). L'esito si decide sulla versione letta dal
+	 * disco dopo upgrade() (WPHC_Item_Updater::installed_core_version()). L'upgrade
+	 * del database lo lancia update_core() con il loopback upgrade.php?step=upgrade_db,
+	 * come per gli auto-update del core: dalla 1.42.0 non si chiama piu' wp_upgrade().
 	 *
 	 * @param bool   $dry_run True per un controllo senza eseguire l'update (?check=1).
 	 * @param string $source  Origine della richiesta ('api'|'wp-admin'|'cron'|'wp-cli'), solo
@@ -674,9 +685,12 @@ final class WPHC_Item_Updater {
 		// Stessa lettura usata dal core in wp-admin/update-core.php: l'indice 0
 		// e' l'update che WordPress stesso ha determinato disponibile per
 		// questo sito (versione e locale), mai una versione indicata dal
-		// chiamante.
+		// chiamante. Letta neutralizzando gli short-circuit pre_site_transient_*
+		// come fa /health: senza, /health vedrebbe l'update e questa rotta no.
+		$muted        = WPHC_Util::mute_update_shortcircuit();
 		$core_updates = get_core_updates( array( 'dismissed' => false ) );
-		$update       = ( is_array( $core_updates ) && isset( $core_updates[0] ) ) ? $core_updates[0] : null;
+		WPHC_Util::restore_update_shortcircuit( $muted );
+		$update = ( is_array( $core_updates ) && isset( $core_updates[0] ) ) ? $core_updates[0] : null;
 
 		if ( null === $update || ! isset( $update->response ) || in_array( $update->response, array( 'development', 'latest' ), true ) ) {
 			self::release_update_lock();
@@ -734,7 +748,13 @@ final class WPHC_Item_Updater {
 		$result = $upgrader->upgrade( $update );
 		WPHC_Update_Log::end_api_update();
 
-		$actual_version = get_bloginfo( 'version' );
+		// Versione dal disco: get_bloginfo( 'version' ) restituisce il $wp_version caricato a inizio richiesta,
+		// che update_core() per scelta non aggiorna, e un update riuscito risulterebbe rolled_back. Se il file non
+		// si legge, la versione restituita da upgrade() (la nuova, a successo), poi quella in memoria.
+		$actual_version = self::installed_core_version();
+		if ( '' === $actual_version ) {
+			$actual_version = ( is_string( $result ) && '' !== $result ) ? $result : get_bloginfo( 'version' );
+		}
 
 		// Sincronizza SEMPRE l'opzione con la versione reale osservata ora,
 		// indipendentemente dall'esito: e' il valore che
@@ -762,12 +782,9 @@ final class WPHC_Item_Updater {
 			);
 		}
 
-		// Completa l'upgrade del database: in contesto headless (nessuna
-		// sessione admin che visiterebbe wp-admin/upgrade.php) le routine di
-		// migrazione del DB non partirebbero altrimenti da sole.
-		require_once ABSPATH . 'wp-admin/includes/upgrade.php';
-		wp_upgrade();
-
+		// Niente wp_upgrade() qui: userebbe il $wp_db_version vecchio rimasto in memoria e, se il loopback
+		// upgrade.php?step=upgrade_db lanciato da update_core() fosse gia' passato, riscriverebbe db_version al
+		// valore vecchio. L'upgrade del database resta a quel loopback, come per gli auto-update del core.
 		if ( function_exists( 'opcache_reset' ) ) {
 			// Il core sostituisce centinaia di file in un colpo solo: a
 			// differenza del path per singolo plugin/tema, invalidare uno per
@@ -775,14 +792,11 @@ final class WPHC_Item_Updater {
 			opcache_reset();
 		}
 
-		// A differenza di plugin/temi, per il core NON esiste un equivalente
-		// "update-checker premium" che in contesto REST non si caricherebbe: il
-		// check di versione di WordPress e' identico in ogni contesto. Forzare
-		// un ricontrollo reale qui e' quindi sicuro (non riproduce il bug di
-		// wp_update_plugins()/wp_update_themes() visto sopra) e ripopola subito
-		// il transient update_core, cosi' summary.core_update torna false senza
-		// dover aspettare il prossimo giro di cron.
-		wp_version_check( array(), true );
+		// Niente wp_version_check() qui: la versione in memoria e' ancora quella vecchia e wordpress.org riproporrebbe
+		// l'update appena installato. Lo fa gia' Core_Upgrader::upgrade() (wp_version_check( $stats )): quell'offerta
+		// si cancella, altrimenti /health direbbe ancora core_update: true e un nuovo POST /update/core reinstallerebbe
+		// la stessa versione. Il transient lo ricrea il prossimo controllo (cron o wp-admin), con la versione nuova.
+		delete_site_transient( 'update_core' );
 		delete_transient( WPHC_Options::TRANSIENT_HEALTH_CACHE );
 		WPHC_Util::purge_page_cache();
 
@@ -800,6 +814,22 @@ final class WPHC_Item_Updater {
 			'log_id' => $log_id,
 			'http'   => 200,
 		);
+	}
+
+	/**
+	 * Versione del core installata sul disco, letta da wp-includes/version.php. Il file si legge come testo:
+	 * un require potrebbe ricevere da opcache la copia vecchia (e in scope globale sovrascriverebbe $wp_version).
+	 *
+	 * @return string Versione, oppure stringa vuota se il file non si legge o non contiene $wp_version.
+	 */
+	private static function installed_core_version() {
+		$file = ABSPATH . 'wp-includes/version.php';
+		if ( ! is_readable( $file ) ) {
+			return '';
+		}
+		$contents = file_get_contents( $file ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_get_contents_file_get_contents -- file locale del core.
+
+		return ( is_string( $contents ) && preg_match( '/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]\s*;/', $contents, $match ) ) ? $match[1] : '';
 	}
 
 	/**
