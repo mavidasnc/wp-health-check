@@ -99,14 +99,15 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 	 *
 	 * @param string   $name     'update_plugins' | 'update_themes'.
 	 * @param string[] $response Chiavi (plugin file / stylesheet) con aggiornamento disponibile.
+	 * @param string   $package  URL del pacchetto di ogni voce ('' = nessun pacchetto, come un plugin a pagamento senza licenza).
 	 */
-	private function seed_update_transient( $name, array $response ) {
+	private function seed_update_transient( $name, array $response, $package = '' ) {
 		// Il core salva le voci dei plugin come oggetti e quelle dei temi come array.
 		$items = array();
 		foreach ( $response as $key ) {
 			$item          = array(
 				'new_version' => '99.0',
-				'package'     => '',
+				'package'     => $package,
 			);
 			$items[ $key ] = ( 'update_themes' === $name ) ? $item : (object) $item;
 		}
@@ -702,7 +703,7 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 	// -----------------------------------------------------------------------
 
 	/**
-	 * /detail/plugins con elenco finto: per ogni plugin le 9 chiavi, slug da cartella o da nome file,
+	 * /detail/plugins con elenco finto: per ogni plugin le 9 chiavi (update_blocked_reason solo se valorizzato), slug da cartella o da nome file,
 	 * update dal transient del cron, auto_update dalla option; il transient da 1 ora contiene il payload.
 	 */
 	public function test_detail_plugins_shape_cache_and_golden() {
@@ -742,6 +743,9 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 		$this->assertTrue( $by_file['fake-two/fake-two.php']['auto_update'] );
 		$this->assertFalse( $by_file['fake-one/fake-one.php']['auto_update'] );
 		$this->assertNull( $by_file['fake-two/fake-two.php']['auto_update_forced'], 'null = nessun filtro forza lo stato' );
+		// Il seed ha pacchetto vuoto: l'update di fake-two non e' eseguibile (plugin a pagamento senza licenza).
+		$this->assertSame( 'no_package', $by_file['fake-two/fake-two.php']['update_blocked_reason'] );
+		$this->assertArrayNotHasKey( 'update_blocked_reason', $by_file['fake-one/fake-one.php'], 'senza update: stessa forma della 1.38.1' );
 
 		// Cache da 1 ora con il payload completo.
 		$this->assertSame( $data, $this->transient_raw( 'wphc_detail_plugins_cache' ) );
@@ -750,6 +754,50 @@ class WPHC_Test_Read_Routes extends WPHC_Read_Test_Case {
 		$this->assertLessThanOrEqual( HOUR_IN_SECONDS, $ttl );
 
 		$this->assert_read_golden( 'read/detail-plugins', $response, $before );
+	}
+
+	/**
+	 * update_blocked_reason segue lo stesso criterio di POST /update/plugin: pacchetto vuoto, host escluso dalla
+	 * restrizione "solo wordpress.org", oppure null se l'update e' eseguibile.
+	 *
+	 * @return array<string,array{0:string,1:bool,2:string|null}>
+	 */
+	public function provide_update_blocked_reasons() {
+		return array(
+			'pacchetto vuoto'                   => array( '', false, 'no_package' ),
+			'pacchetto vuoto, restrizione'      => array( '', true, 'no_package' ),
+			'wordpress.org, restrizione'        => array( 'https://downloads.wordpress.org/plugin/fake-two.zip', true, null ),
+			'host terzo, restrizione spenta'    => array( 'https://example.com/fake-two.zip', false, null ),
+			'host terzo, restrizione attiva'    => array( 'https://example.com/fake-two.zip', true, 'host_not_allowed' ),
+		);
+	}
+
+	/**
+	 * @dataProvider provide_update_blocked_reasons
+	 *
+	 * @param string      $package  Pacchetto dell'update di fake-two.
+	 * @param bool        $restrict Valore di wp_health_check_restrict_official_only.
+	 * @param string|null $expected update_blocked_reason atteso.
+	 */
+	public function test_detail_plugins_update_blocked_reason( $package, $restrict, $expected ) {
+		$this->enrolled();
+		$this->seed_fake_plugins();
+		update_option( 'wp_health_check_restrict_official_only', $restrict );
+		$this->seed_update_transient( 'update_plugins', array( 'fake-two/fake-two.php' ), $package );
+
+		$by_file = array();
+		foreach ( $this->get_route( '/detail/plugins' )->get_data()['plugins'] as $item ) {
+			$by_file[ $item['file'] ] = $item;
+		}
+
+		$this->assertTrue( $by_file['fake-two/fake-two.php']['update_available'] );
+		// Campo presente solo se valorizzato: assente = aggiornabile (l'hub lo legge come NULL).
+		if ( null === $expected ) {
+			$this->assertArrayNotHasKey( 'update_blocked_reason', $by_file['fake-two/fake-two.php'] );
+		} else {
+			$this->assertSame( $expected, $by_file['fake-two/fake-two.php']['update_blocked_reason'] );
+		}
+		$this->assertArrayNotHasKey( 'update_blocked_reason', $by_file['fake-one/fake-one.php'] );
 	}
 
 	/**

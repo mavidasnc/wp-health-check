@@ -549,6 +549,16 @@ final class WPHC_Health {
 			$has_update  = isset( $plugin_updates[ $plugin_file ]->update->new_version );
 			$new_version = $has_update ? $plugin_updates[ $plugin_file ]->update->new_version : null;
 
+			// Se c'e' un update ma POST /update/plugin lo rifiuterebbe (not_updatable):
+			// 'no_package' = pacchetto vuoto, tipico dei plugin a pagamento senza licenza;
+			// 'host_not_allowed' = host escluso dalla restrizione "solo wordpress.org".
+			// null = eseguibile, o nessun update. Stesso criterio dell'esecuzione.
+			$blocked_reason = null;
+			if ( $has_update ) {
+				$package        = isset( $plugin_updates[ $plugin_file ]->update->package ) ? (string) $plugin_updates[ $plugin_file ]->update->package : '';
+				$blocked_reason = WPHC_Item_Updater::package_block_reason( $package );
+			}
+
 			// Slug: la cartella del plugin (plugin.php in cartella "foo/foo.php"
 			// -> "foo"); per i plugin a file singolo nella radice ("bar.php")
 			// non esiste cartella, quindi si usa il nome file senza estensione.
@@ -574,7 +584,7 @@ final class WPHC_Health {
 			// dichiara "bool", l'implementazione reale puo' restituire null.
 			$auto_update_effective = ( null === $forced ) ? $auto_update_stored : (bool) $forced; // @phpstan-ignore identical.alwaysFalse
 
-			$items[] = array(
+			$item = array(
 				'name'               => $plugin_data['Name'],
 				'slug'               => $slug,
 				// Plugin file (chiave di get_plugins(), es. "wordpress-seo/wp-seo.php"):
@@ -589,6 +599,12 @@ final class WPHC_Health {
 				'auto_update'        => $auto_update_effective,
 				'auto_update_forced' => $forced,
 			);
+			// Solo quando valorizzato (come i campi della 1.41.0 degli update): un plugin
+			// senza blocco ha la stessa forma della 1.38.1, e l'hub legge l'assenza come NULL.
+			if ( null !== $blocked_reason ) {
+				$item['update_blocked_reason'] = $blocked_reason;
+			}
+			$items[] = $item;
 		}
 
 		$payload = array(

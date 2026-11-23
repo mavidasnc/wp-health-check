@@ -86,6 +86,25 @@ final class WPHC_Item_Updater {
 	}
 
 	/**
+	 * Perche' un update con questo pacchetto NON si puo' eseguire via API, o null se si puo'.
+	 * Unico criterio, condiviso da perform_item_update() (esito not_updatable) e da
+	 * /detail/plugins (campo update_blocked_reason): cosi' l'elenco non promette update che
+	 * l'esecuzione poi rifiuta.
+	 *
+	 * 'no_package'       = pacchetto vuoto: plugin a pagamento senza licenza/chiave valida.
+	 * 'host_not_allowed' = pacchetto presente ma host escluso dalla restrizione "solo wordpress.org".
+	 *
+	 * @param string $package URL del pacchetto dal transient di update ('' se assente).
+	 * @return string|null 'no_package' | 'host_not_allowed' | null.
+	 */
+	public static function package_block_reason( $package ) {
+		if ( '' === (string) $package ) {
+			return 'no_package';
+		}
+		return self::is_package_host_allowed( $package ) ? null : 'host_not_allowed';
+	}
+
+	/**
 	 * Preambolo comune a tutte le rotte di update di terze parti: accesso,
 	 * kill-switch, requisito versione WP (solo plugin/temi, per la garanzia di
 	 * rollback via temp-backup nativo), lock anti-concorrenza, preflight
@@ -376,7 +395,7 @@ final class WPHC_Item_Updater {
 			);
 		}
 
-		if ( '' === $package || ! self::is_package_host_allowed( $package ) ) {
+		if ( null !== self::package_block_reason( $package ) ) {
 			self::release_update_lock();
 			return array(
 				'result' => 'not_updatable',
