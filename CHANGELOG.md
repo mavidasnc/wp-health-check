@@ -7,6 +7,15 @@ progetto aderisce a [Semantic Versioning](https://semver.org/lang/it/).
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-23
+
+`GET /detail/plugins` segnala i plugin il cui aggiornamento non si puo' eseguire via API. Campo nuovo e retrocompatibile: nessun altro cambio di contratto REST.
+
+### Added
+
+- **`update_blocked_reason` nei plugin di `/detail/plugins`, solo quando valorizzato** (come i campi della 1.41.0: un plugin senza blocco ha la stessa forma della 1.38.1, e il test di upgrade da 1.38.1 lo richiede): `no_package` quando l'update disponibile ha il pacchetto vuoto (tipico dei plugin a pagamento senza licenza o chiave valida), `host_not_allowed` quando il pacchetto c'e' ma la restrizione «solo wordpress.org» ne esclude l'host, assente se l'update e' eseguibile o non c'e' alcun update. Prima l'elenco diceva `update_available: true` e il rifiuto (`not_updatable`) si scopriva solo al tentativo. Il criterio e' unico: `WPHC_Item_Updater::package_block_reason()` e' usato sia dall'elenco sia da `perform_item_update()`, quindi i due non possono divergere. Il testo dell'esito `not_updatable` non cambia.
+- Test: `test_detail_plugins_update_blocked_reason` (5 casi) e il test sul golden `read/detail-plugins` (`test-read-routes.php`). Cambia solo il golden `read/detail-plugins` (una chiave in piu' sul solo plugin bloccato), deciso esplicitamente.
+
 ## [1.42.0] - 2026-11-10
 
 Correzioni dell'update via API (core, plugin, temi), del log degli update, del webhook e del CORS. Nessun cambio di contratto REST.

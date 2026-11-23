@@ -24,6 +24,7 @@
                 "new_version": "99.0",
                 "slug": "fake-two",
                 "update_available": true,
+                "update_blocked_reason": "no_package",
                 "version": "2.0.0"
             },
             {

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Health Check (Fleet Agent)
  * Description: Must-use plugin di monitoraggio per una flotta di siti WordPress, con enroll firmato, endpoint REST protetti da token e self-update firmato dalle release di un repository GitHub pubblico.
- * Version:     1.42.0
+ * Version:     1.43.0
  * Author:      MAVIDA
  * Author URI:  https://mavida.com
  * License:     GPL-2.0-or-later
@@ -44,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
 
 
 if ( ! defined( 'WP_HEALTH_CHECK_VERSION' ) ) {
-	define( 'WP_HEALTH_CHECK_VERSION', '1.42.0' );
+	define( 'WP_HEALTH_CHECK_VERSION', '1.43.0' );
 }
 
 
@@ -3824,6 +3824,16 @@ final class WPHC_Health {
 			
 			
 			
+			
+			$blocked_reason = null;
+			if ( $has_update ) {
+				$package        = isset( $plugin_updates[ $plugin_file ]->update->package ) ? (string) $plugin_updates[ $plugin_file ]->update->package : '';
+				$blocked_reason = WPHC_Item_Updater::package_block_reason( $package );
+			}
+
+			
+			
+			
 			$plugin_dir = dirname( $plugin_file );
 			$slug       = ( '.' !== $plugin_dir ) ? $plugin_dir : basename( $plugin_file, '.php' );
 
@@ -3846,7 +3856,7 @@ final class WPHC_Health {
 			
 			$auto_update_effective = ( null === $forced ) ? $auto_update_stored : (bool) $forced; 
 
-			$items[] = array(
+			$item = array(
 				'name'               => $plugin_data['Name'],
 				'slug'               => $slug,
 				
@@ -3861,6 +3871,12 @@ final class WPHC_Health {
 				'auto_update'        => $auto_update_effective,
 				'auto_update_forced' => $forced,
 			);
+			
+			
+			if ( null !== $blocked_reason ) {
+				$item['update_blocked_reason'] = $blocked_reason;
+			}
+			$items[] = $item;
 		}
 
 		$payload = array(
@@ -5498,6 +5514,25 @@ final class WPHC_Item_Updater {
 
 
 
+	public static function package_block_reason( $package ) {
+		if ( '' === (string) $package ) {
+			return 'no_package';
+		}
+		return self::is_package_host_allowed( $package ) ? null : 'host_not_allowed';
+	}
+
+	
+
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -5777,7 +5812,7 @@ final class WPHC_Item_Updater {
 			);
 		}
 
-		if ( '' === $package || ! self::is_package_host_allowed( $package ) ) {
+		if ( null !== self::package_block_reason( $package ) ) {
 			self::release_update_lock();
 			return array(
 				'result' => 'not_updatable',
