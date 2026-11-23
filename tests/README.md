@@ -31,8 +31,8 @@ c'e' una suite e2e (`e2e/`) con un sito WordPress vero pilotato dal codice Pytho
 | `phpunit.admin.xml` | esecuzione isolata di `test-admin.php` e `test-cli.php`: `vendor/bin/phpunit -c tests/phpunit.admin.xml` |
 | `tools/gen_contract_vectors.py` | genera `fixtures/contract-vectors.json` dal codice dell'hub |
 | `tools/check-locks.php` | confronta le versioni di phpunit, polyfills e test library nei due `composer.lock` (`composer run test:check-locks`) |
-| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.3, ...), con core e vendor in volumi Docker (circa 40 secondi): vedi "Matrice PHP" |
-| `tools/run-phpunit-matrix.sh` | lancia `run-phpunit-docker.sh` per 7.4, 8.1 e 8.3 in parallelo e riassume gli esiti (meno di un minuto): vedi "Matrice PHP" |
+| `tools/run-phpunit-docker.sh` | esegue la suite in un container usa-e-getta con la versione di PHP indicata (7.4, 8.1, 8.2, 8.3, ...; senza versione: 8.2), con core e vendor in volumi Docker (circa 40 secondi): vedi "Matrice PHP" |
+| `tools/run-phpunit-matrix.sh` | lancia `run-phpunit-docker.sh` per 7.4, 8.1, 8.2 e 8.3 in parallelo e riassume gli esiti (meno di un minuto): vedi "Matrice PHP" |
 | `build/run.php` | test della build stessa (`composer run test:build`): PHP puro, senza WordPress |
 | `fixtures/contract-vectors.json` | vettori di contratto (GENERATO, versionato) |
 | `fixtures/golden/**.json` | snapshot di risposta e option scritte (GENERATI, versionati) |
@@ -77,7 +77,7 @@ chiavi k2 di test un ramo positivo riscriverebbe il file vero. Per questo:
   un ParseError che non dipende dal plugin). Il bootstrap scrive la build di riferimento (quella del processo
   figlio, non una rilettura del file del repo) con `file_put_contents()`, RILEGGE la copia da disco e confronta
   lo SHA-256 con quello della build; la copia con byte NUL o diversa si riprova fino a 3 volte, poi il bootstrap si
-  ferma con un messaggio chiaro. Il runner di default (`tests/tools/run-phpunit-docker.sh 8.1`) e' quindi affidabile anche
+  ferma con un messaggio chiaro. Il runner di default (`tests/tools/run-phpunit-docker.sh`) e' quindi affidabile anche
   subito dopo `composer run build`, senza dover usare `WPHC_PLUGIN_FILE` e un `cp` nel container.
 - **Lo SHA-256 del file sotto test e' su STDERR** (riga `Plugin sotto test: <file> sha256 <hash> (...)`, una
   volta per run: i figli dei test `@runInSeparateProcess` non la ripetono, perche' PHPUnit tratterebbe un loro
@@ -140,7 +140,10 @@ In Git Bash, gli argomenti che iniziano con `/` vengono "tradotti" da MSYS: usar
 `MSYS_NO_PATHCONV=1` oppure PowerShell. Le variabili d'ambiente dell'host NON arrivano nel
 container: vanno impostate dentro `bash -c '...'` (vedi sotto) o con `docker exec -e`.
 
-## 2. Lanciare i test (PHP 8.1, default)
+## 2. Lanciare i test (PHP 8.2, default)
+
+La versione di default e' la 8.2: e' quella di `.wp-env.json` (container `tests-cli`), dell'ambiente e2e e di
+`tests/tools/run-phpunit-docker.sh` lanciato senza versione (il modo consigliato, vedi la sezione 3).
 
 ```bash
 # Dalla radice del progetto. Comando esatto, equivalente a `composer run test`:
@@ -183,7 +186,7 @@ serializza i run con un lock a directory (atomico anche su Windows) attorno a og
 ```bash
 until mkdir C:/tmp/wphc-phpunit.lock 2>/dev/null; do sleep 5; done
 trap 'rmdir C:/tmp/wphc-phpunit.lock' EXIT
-# ...qui il comando phpunit (8.1 o 7.4)...
+# ...qui il comando phpunit...
 ```
 
 Questo lock riguarda SOLO il database `tests-wordpress` del container `tests-cli` (`composer run test`, o uno script locale
@@ -204,12 +207,15 @@ prefissi globali, docblock), e phpstan richiederebbe gli stub della test library
 Nota: `composer run analyse` passa gia' `--memory-limit=4G`; un `vendor/bin/phpstan analyse` lanciato a mano
 con il `memory_limit` di default dell'host (128M) va in crash: aggiungere `--memory-limit=4G`.
 
-## 3. Matrice PHP (7.4, 8.1, 8.3)
+## 3. Matrice PHP (7.4, 8.1, 8.2, 8.3)
+
+**PHP 7.4 e' deprecata**: e' fuori dal supporto di sicurezza dal novembre 2022 e uscira' dalla matrice (e dal vincolo
+di compatibilita' del plugin) in una release futura. Fino a quella decisione resta provata come le altre.
 
 WordPress 7.1 richiede PHP 7.4 come minimo, quindi il core fissato in `.wp-env.json`
 resta lo stesso. Il `composer.json` principale richiede PHP 8.1+ (gli strumenti di sviluppo),
 percio' per 7.4 si usa un vendor separato con le sole dipendenze di test, risolto per PHP 7.4.33
-(`tests/php74/`, solo file PHP: si installa dall'host). La suite gira verde su PHP 7.4, 8.1 e 8.3: la 8.3 ha richiesto di
+(`tests/php74/`, solo file PHP: si installa dall'host). La suite gira verde su PHP 7.4, 8.1, 8.2 e 8.3: la 8.3 ha richiesto di
 togliere due forme deprecate dai test (`ReflectionProperty::setValue()` con un solo argomento su una proprieta' statica:
 oggi `setValue( null, valore )`, valido anche su 7.4); `convertDeprecationsToExceptions` le avrebbe trasformate in errori.
 
@@ -218,22 +224,24 @@ composer install --working-dir=tests/php74
 composer run test:check-locks    # phpunit, polyfills e test library devono avere la stessa versione nei due lock
 ```
 
-### Metodo consigliato: container usa-e-getta (non tocca l'ambiente condiviso, che resta su 8.1)
+### Metodo consigliato: container usa-e-getta (non tocca l'ambiente condiviso, che resta su 8.2)
 
 ```bash
-bash tests/tools/run-phpunit-matrix.sh                           # 7.4, 8.1 e 8.3 in parallelo: meno di un minuto
+bash tests/tools/run-phpunit-matrix.sh                           # 7.4, 8.1, 8.2 e 8.3 in parallelo
+bash tests/tools/run-phpunit-docker.sh                           # suite completa su PHP 8.2, la versione di default
+bash tests/tools/run-phpunit-docker.sh --testsuite enroll        # un file sulla versione di default
 bash tests/tools/run-phpunit-matrix.sh --testsuite enroll        # gli argomenti vanno a phpunit, per ogni versione
 bash tests/tools/run-phpunit-docker.sh 8.3                       # suite completa su PHP 8.3 (circa 40 secondi)
 bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll    # un file su PHP 7.4
-bash tests/tools/run-phpunit-docker.sh 8.1                       # anche 8.1, senza usare il container tests-cli
-EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1 --testsuite hook-registry
+bash tests/tools/run-phpunit-docker.sh 8.1                       # una versione precisa: sempre il primo argomento
+EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh --testsuite hook-registry
 ```
 
 `run-phpunit-docker.sh` (parametrico sulla versione di PHP, portabile fra macchine) lancia un container
 `wordpress:cli-php<versione>` collegato alla rete di wp-env, con il MySQL dell'ambiente di test e la radice del progetto
 montata; la cartella di wp-env si trova da sola (`~/.wp-env/wp-env-wp-health-check-<hash8>`, l'unica; `WPHC_WPENV_DIR` per
 indicarne un'altra), il vendor e' `tests/php74/vendor` per la 7.4 e `vendor/` per le altre versioni (il vendor principale,
-risolto per 8.1, va bene anche su 8.3) e `--do-not-cache-result` evita la scrittura della cache dei risultati. Il tag
+risolto per 8.1, va bene anche su 8.2 e 8.3) e `--do-not-cache-result` evita la scrittura della cache dei risultati. Il tag
 `wordpress:cli-php<versione>` e' fissato per versione: il tag `wordpress:cli` senza versione cambia PHP nel tempo. Le immagini
 si scaricano da sole al primo uso (`docker pull wordpress:cli-php8.3`). Il container sparisce a fine run (`--rm`), quindi
 `/tmp` riparte pulito.
@@ -256,7 +264,7 @@ Per ripartire da zero: `docker volume rm wphc-tests-core-php81 wphc-tests-vendor
 
 **Perche' si puo' lanciare in parallelo.** Ogni versione di PHP ha il suo database (`tests-wordpress-php<NN>`, creato se
 manca: la test library lo installa a ogni run), il suo volume del core e il suo lock. `run-phpunit-matrix.sh` lancia le tre
-versioni insieme (`WPHC_PHP_VERSIONS="8.1 8.3"` per sceglierne alcune), scrive l'output di ciascuna in un file di log di cui
+versioni insieme (`WPHC_PHP_VERSIONS="8.2 8.3"` per sceglierne alcune), scrive l'output di ciascuna in un file di log di cui
 stampa il percorso, riassume esito e tempi ed esce con 1 se almeno una fallisce: 56 secondi per tutta la matrice, contro
 circa 14 minuti in serie sul bind mount.
 
@@ -272,7 +280,7 @@ npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev bash -c \
   'WPHC_VENDOR_DIR=/var/www/html/wp-content/wphc-dev/tests/php74/vendor tests/php74/vendor/bin/phpunit'
 ```
 
-Per tornare a 8.1: eliminare `.wp-env.override.json` e rilanciare `start --update`.
+Per tornare a 8.2: eliminare `.wp-env.override.json` e rilanciare `start --update`.
 
 ## 4. Rigenerare vettori e golden
 
@@ -299,7 +307,7 @@ dell'hub (gli hash dei sorgenti sono in `_meta`). Fedelta' ai byte dell'hub:
 PERCHE' il comportamento e' cambiato (servono a dimostrare che il refactoring non lo cambia):
 
 ```bash
-EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1
+EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh
 # oppure: npx @wordpress/env run tests-cli --env-cwd=wp-content/wphc-dev bash -c 'WPHC_GOLDEN_UPDATE=1 vendor/bin/phpunit'
 git diff tests/fixtures/golden        # controllare cosa e' cambiato
 ```
@@ -324,9 +332,9 @@ di prova delle release).
 
 ```bash
 # una copia della build strip (deve coincidere con src/, altrimenti il bootstrap si ferma)
-EXTRA_ENV="-e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/copia.php" bash tests/tools/run-phpunit-docker.sh 8.1
+EXTRA_ENV="-e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/copia.php" bash tests/tools/run-phpunit-docker.sh
 # un file che NON coincide con src/ (prova di proposito): consenso esplicito
-EXTRA_ENV="-e WPHC_ALLOW_FOREIGN_BUILD=1 -e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/altro.php" bash tests/tools/run-phpunit-docker.sh 8.1
+EXTRA_ENV="-e WPHC_ALLOW_FOREIGN_BUILD=1 -e WPHC_PLUGIN_FILE=/var/www/html/wp-content/wphc-dev/build/altro.php" bash tests/tools/run-phpunit-docker.sh
 ```
 
 Il bootstrap verifica che il file coincida con la build strip di `src/` (salvo `WPHC_ALLOW_FOREIGN_BUILD=1`), la provenienza
@@ -403,7 +411,7 @@ rotte (22 registrazioni su 20 percorsi, `wphc_require_token` su 17 handler). Il 
 'health-check', ... )` non gira in PHPUnit (`WP_CLI` non e' definita): si verifica nel sorgente (anche in
 `test-cli.php`) e con la WP-CLI vera in `tests/e2e/wpcli_test.py`.
 
-Per rigenerare il golden: `EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh 8.1 --testsuite hook-registry`
+Per rigenerare il golden: `EXTRA_ENV="-e WPHC_GOLDEN_UPDATE=1" bash tests/tools/run-phpunit-docker.sh --testsuite hook-registry`
 e controllare il diff: un cambiamento di priorita', di ordine o di `accepted_args` e' un cambiamento di comportamento
 da decidere, non da rigenerare.
 
@@ -451,7 +459,7 @@ Il loopback di WP-Cron (`wp-cron.php?doing_wp_cron`) e' ignorato (e' del core).
 | `WP_PHPUNIT__TESTS_CONFIG` | config della test library (default: `$WP_TESTS_DIR/wp-tests-config.php` di wp-env) |
 | `WPHC_GOLDEN_UPDATE=1` | riscrive i golden invece di confrontarli |
 | `EXTRA_ENV`, `EXTRA_MOUNT`, `WPHC_WPENV_DIR`, `WPHC_PHPUNIT_LOCK`, `WPHC_REFRESH_VOLUMES` | solo per `tests/tools/run-phpunit-docker.sh` (opzioni `-e`, opzioni `-v`, cartella di wp-env, cartella di lock, `1` = ripopola i volumi) |
-| `WPHC_PHP_VERSIONS` | solo per `tests/tools/run-phpunit-matrix.sh`: versioni da lanciare (default `7.4 8.1 8.3`) |
+| `WPHC_PHP_VERSIONS` | solo per `tests/tools/run-phpunit-matrix.sh`: versioni da lanciare (default `7.4 8.1 8.2 8.3`) |
 
 ## Limiti dichiarati
 

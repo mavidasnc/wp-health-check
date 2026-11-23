@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # Esegue la suite PHPUnit in un container USA-E-GETTA con la versione di PHP indicata, senza toccare l'ambiente
-# wp-env condiviso (che resta su PHP 8.1): stessa rete e stesso MySQL dell'ambiente "tests" di wp-env, con la radice
-# del progetto montata. Serve per la matrice 7.4 / 8.1 / 8.3 (e successive).
+# wp-env condiviso (che resta su PHP 8.2): stessa rete e stesso MySQL dell'ambiente "tests" di wp-env, con la radice
+# del progetto montata. Serve per la matrice 7.4 / 8.1 / 8.2 / 8.3 (e successive).
 #
 # Uso (dalla radice di wp-health-check, con l'ambiente wp-env acceso: `wp-env start`):
-#     bash tests/tools/run-phpunit-docker.sh <php> [argomenti di phpunit]
+#     bash tests/tools/run-phpunit-docker.sh [<php>] [argomenti di phpunit]
+#     bash tests/tools/run-phpunit-docker.sh                       # PHP 8.2, la versione di default
+#     bash tests/tools/run-phpunit-docker.sh --testsuite enroll    # un file, sempre su 8.2
 #     bash tests/tools/run-phpunit-docker.sh 8.3
 #     bash tests/tools/run-phpunit-docker.sh 7.4 --testsuite enroll
 #
-# <php> e' la versione di PHP (7.4, 8.1, 8.3, ...): l'immagine e' `wordpress:cli-php<versione>` (il tag `wordpress:cli`
+# <php> e' la versione di PHP (7.4, 8.1, 8.2, 8.3, ...; se manca vale 8.2, la versione di sviluppo). PHP 7.4 e'
+# DEPRECATA (fuori supporto di sicurezza): resta nella matrice finche' la flotta ha siti che la usano.
+# L'immagine e' `wordpress:cli-php<versione>` (il tag `wordpress:cli`
 # senza versione puo' cambiare PHP da un giorno all'altro, per questo qui non si usa). Con 7.4 si usa il vendor dedicato
 # `tests/php74/vendor` (vedi tests/README.md); con le altre versioni il vendor principale `vendor/`.
 #
@@ -32,13 +36,17 @@
 
 set -u
 
-# 1. Argomenti: la versione di PHP e' obbligatoria; il resto va a phpunit.
-if [ $# -lt 1 ]; then
-	echo "Uso: $0 <versione PHP: 7.4|8.1|8.3|...> [argomenti di phpunit]" >&2
-	exit 2
-fi
-PHP_VERSION="$1"
-shift
+# 1. Argomenti: la versione di PHP (N.N) e' facoltativa e, se c'e', e' il primo argomento; il resto va a phpunit.
+DEFAULT_PHP_VERSION="8.2"
+case "${1:-}" in
+	[0-9]*.[0-9]*)
+		PHP_VERSION="$1"
+		shift
+		;;
+	*)
+		PHP_VERSION="$DEFAULT_PHP_VERSION"
+		;;
+esac
 
 # 2. Percorsi: radice del progetto e, su Windows (Git Bash), forma `C:/...` che Docker Desktop capisce.
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -73,7 +81,7 @@ WPENV_HOST="$(to_host_path "$WPENV_DIR")"
 IMAGE="wordpress:cli-php${PHP_VERSION}"
 APP_DIR=/var/www/html/wp-content/wphc-dev
 VENDOR=/wphc-vendor
-TAG="php${PHP_VERSION//./}"                 # php74, php81, php83
+TAG="php${PHP_VERSION//./}"                 # php74, php81, php82, php83
 if [ "$PHP_VERSION" = "7.4" ]; then
 	VENDOR_SRC="$REPO/tests/php74/vendor"
 else
@@ -122,6 +130,8 @@ sync_volume "$VENDOR_VOLUME" "$VENDOR_SRC" "$(stamp_of "$VENDOR_SRC/composer/ins
 
 # 7. Run. `--do-not-cache-result`: il vendor e' montato in sola lettura e l'utente del container non puo' scrivere
 # .phpunit.result.cache nella cartella del repo. Il database della versione si crea se manca (la test library lo installa).
+# `wp-content/mu-plugins` si crea se manca: un ambiente `tests` di wp-env appena costruito non ce l'ha, e senza i test del
+# self-update e dei vettori di contratto falliscono con `not_writable` (il volume appartiene all'utente del container).
 # shellcheck disable=SC2086  # EXTRA_ENV e EXTRA_MOUNT sono elenchi di opzioni: vanno divisi in parole.
 docker run --rm --network "$NETWORK" \
 	-v "$CORE_VOLUME:/var/www/html" \
@@ -134,4 +144,5 @@ docker run --rm --network "$NETWORK" \
 	-w "$APP_DIR" "$IMAGE" \
 	bash -c 'php -v | head -1 >&2
 		mysql --skip-ssl -h "$WORDPRESS_DB_HOST" -u"$WORDPRESS_DB_USER" -p"$WORDPRESS_DB_PASSWORD" -e "CREATE DATABASE IF NOT EXISTS \`$WORDPRESS_DB_NAME\`" || exit 3
+		mkdir -p /var/www/html/wp-content/mu-plugins || exit 3
 		exec php -d memory_limit=512M "$0" "$@"' "$VENDOR/bin/phpunit" --do-not-cache-result "$@"

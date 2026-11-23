@@ -25,6 +25,7 @@ copia montata nel container (tests/e2e/.work/mu-plugins/).
 import importlib.util
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -254,9 +255,20 @@ def main() -> int:
     report.check(f"  /health?fresh=1: agent_version = {pushed_version}", fresh["status"] == "ok" and fresh["summary"].get("agent_version") == pushed_version, str(fresh.get("summary", {}).get("agent_version")))
     support.clear_throttle()
     report.check(f"  /ping: agent_version = {pushed_version}", hub.ping().get("agent_version") == pushed_version)
-    # Il codice caricato (versione in memoria, sha256 del file incluso, opcache) e' quello scritto dal self-update.
+    # Il codice caricato (versione in memoria, sha256 del file incluso) e' quello scritto dal self-update, SUBITO e
+    # senza attese: e' la prova che il plugin invalida opcache (senza, per 2 secondi girerebbe il codice vecchio).
     loaded = support.state()
-    report.check("  il PHP carica la nuova versione e il file scritto (sha256)", not c.loaded_code_mismatch(loaded, candidate), str(c.loaded_code_mismatch(loaded, candidate)))
+    reasons = c.loaded_code_mismatch(loaded, candidate, opcache_timestamp=False)
+    report.check("  il PHP carica la nuova versione e il file scritto (sha256)", not reasons, str(reasons))
+    # La DATA dello script in opcache puo' invece restare per un attimo quella letta al momento della ricompilazione,
+    # diversa da quella che il file ha poco dopo sulla cartella montata dall'host: si riallinea alla rivalidazione
+    # successiva (revalidate_freq=2). Finche' ogni richiesta costava 2 secondi questo controllo passava per caso.
+    deadline = time.time() + 15
+    reasons = c.loaded_code_mismatch(loaded, candidate)
+    while reasons and time.time() < deadline:
+        time.sleep(1)
+        reasons = c.loaded_code_mismatch(support.state(), candidate)
+    report.check("  opcache allinea la data dello script a quella del file entro la rivalidazione", not reasons, str(reasons))
 
     support.clear_throttle()
     status, body = push(c.build_push_package(candidate, sig))

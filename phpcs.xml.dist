@@ -16,6 +16,9 @@
     <arg name="colors"/>
     <arg name="extensions" value="php"/>
     <arg value="sp"/>
+    <!-- Cache dei risultati: i file non modificati non si rianalizzano (da circa 40 secondi a pochi secondi sui run
+         successivi). phpcs la scarta da solo quando cambiano questo ruleset o la versione degli standard. -->
+    <arg name="cache" value=".phpcs-cache"/>
 
     <!-- WordPress Coding Standards -->
     <rule ref="WordPress-Extra">

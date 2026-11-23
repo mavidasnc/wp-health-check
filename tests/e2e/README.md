@@ -82,6 +82,21 @@ tests/e2e/
   accetta solo chiamanti con `REMOTE_ADDR` di loopback o di una rete privata (127.0.0.0/8, ::1, 10.0.0.0/8,
   172.16.0.0/12, 192.168.0.0/16: il gateway del bridge docker, osservato `172.x.0.1`, cade in 172.16.0.0/12)
   E la chiave fissa nell'header `X-E2E-Key`: un chiamante con indirizzo pubblico e' respinto anche con la chiave giusta.
+- **Il core di WordPress sta su un volume Docker (copia nativa).** wp-env monta il core dalla cartella
+  `~/.wp-env/<progetto>/WordPress` dell'host; su Windows quel bind mount passa dal protocollo 9p e ogni file PHP
+  letto, o anche solo ricontrollato da opcache ogni 2 secondi, costa una decina di millisecondi. Alla partenza di
+  ogni script `e2e_common.ensure_native_core()` (chiamata da `Support.wait_ready()`) copia il core in un volume
+  `wphc-native-<progetto>-wp` e ricrea i container `wordpress` e `cli` con quel volume al posto del bind mount,
+  usando il `docker-compose.yml` generato da wp-env piu' un file di override (`.work/native-compose.override.yml`):
+  stesse immagini, stessa configurazione, stesso database. Dall'host resta montata solo `.work/mu-plugins`. La
+  copia si rifa' da sola quando cambiano `wp-config.php` o la versione di WordPress (impronta
+  `.wphc-native-stamp` nel volume); dopo un `wp-env start`, che rimette il bind mount, la prima esecuzione
+  riaggancia il volume (una decina di secondi). Se un passo non riesce lo script lo dice e prosegue sul core letto
+  dall'host. `WPHC_E2E_NATIVE=0` la disattiva, `WPHC_E2E_NATIVE_REFRESH=1` rifa' la copia.
+  Misure del 2026-11-10 (stessi controlli, tutti verdi): `run_all.py` da circa 35 minuti a meno di 3;
+  `hub_contract.py` 168 s -> 16 s, `wpcli_test.py` 217 s -> 40-57 s, `upgrade_test.py` 1740 s -> 123 s; mediana di
+  una richiesta HTTP da 2,0 s a 0,06 s. Quello che resta in `wpcli_test.py` e' il costo di `docker exec` (1,6 s a
+  comando).
 - **Rete isolata (deny-by-default).** `pre_http_request` risponde a tutto, nessuna richiesta esce dal
   container: le POST verso `93.184.216.34` (il finto ricevente del webhook, un IP pubblico letterale perche' un
   nome non risolvibile e' scartato dal validatore URL di WordPress) sono registrate e ricevono lo status scelto;
@@ -226,6 +241,14 @@ sul downgrade restano significative anche se candidato e baseline avessero la st
 - Dopo un aggiornamento `/health` risponde da cache (60 s) con la vecchia `agent_version`;
   `?fresh=1` e `/ping` riportano subito la nuova (fissato dallo scenario `health-cache`).
 - Il push firmato col segreto nuovo chiude la grazia del precedente, come qualunque primo uso.
+- **Due controlli di `hub_contract.py` dipendevano dalla velocita' dell'ambiente.** Con il core letto dall'host
+  (2 secondi a richiesta) fra l'ultima `/health` e il push passavano piu' di 60 secondi: la cache di `/health`
+  scadeva e «`/health` (da cache) riporta ancora la vecchia agent_version» falliva (59/60) senza che il plugin
+  c'entrasse. Con il core nativo passa. All'opposto, il controllo sul codice caricato dopo il self-update passava
+  solo perche' la richiesta successiva arrivava 2 secondi dopo: subito dopo la ricompilazione la data dello script
+  in opcache puo' non coincidere ancora con quella del file sulla cartella montata dall'host, e si riallinea alla
+  rivalidazione successiva (`revalidate_freq=2`). Ora i controlli sono due: versione in memoria e sha256 SUBITO
+  (la prova che il plugin invalida opcache), data dello script entro la rivalidazione (attesa di pochi secondi).
 
 ## Pulizia e rapporti con gli altri servizi docker
 
@@ -235,6 +258,8 @@ node <percorso>/@wordpress/env/bin/wp-env stop  --config=.wp-env.e2e.json
 # distruggerlo del tutto (container, volumi, cartella di lavoro di wp-env)
 node <percorso>/@wordpress/env/bin/wp-env destroy --config=.wp-env.e2e.json
 rm -rf tests/e2e/.work tests/e2e/__pycache__
+# il volume della copia nativa del core non appartiene al progetto di wp-env: si toglie a parte (si ricrea da solo)
+docker volume rm wphc-native-wp-health-check-e2e-<hash>-wp
 ```
 
 Cosa NON toccare e cosa e' sicuro:
@@ -284,6 +309,6 @@ Anche con tutti i controlli verdi restano fuori:
   nel candidato si vede solo se il test di quel ramo fallisce (lo si e' provato per `write_failed` con una
   mutazione del candidato in cui il `rename()` fallisce: il blocco `candidate-self-update` diventa rosso).
 - **Il canale pull** e gli aggiornamenti veri di plugin/temi/core (sopra).
-- **PHP diverso da 8.1** e un sito dietro cache o reverse proxy reale: l'ambiente e2e e' PHP 8.1, Apache,
+- **PHP diverso da 8.2** e un sito dietro cache o reverse proxy reale: l'ambiente e2e e' PHP 8.2, Apache,
   WordPress 7.1.1 e HTTPS simulato.
 - **Transizioni di versione del database** e dati reali di un sito di produzione.

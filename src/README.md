@@ -256,7 +256,7 @@ composer run build:check      # CHECK OK: il file committato coincide con la bui
 composer run test:build       # test della build (PHP puro, anche con PHP 7.4)
 composer run lint && composer run analyse
 
-# 2. suite PHPUnit su PHP 7.4, 8.1 e 8.3 in parallelo (container usa-e-getta) ed e2e: vedi tests/README.md e tests/e2e/README.md
+# 2. suite PHPUnit su PHP 7.4, 8.1, 8.2 e 8.3 in parallelo (container usa-e-getta) ed e2e: vedi tests/README.md e tests/e2e/README.md
 bash tests/tools/run-phpunit-matrix.sh
 python -I tests/e2e/run_all.py
 
